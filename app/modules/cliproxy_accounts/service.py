@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from typing import NoReturn
@@ -31,6 +32,7 @@ from app.modules.claude_sidecar.quota import (
     parse_auth_files,
     snapshot_from_json,
 )
+from app.modules.cliproxy_accounts.prefix_lock import PrefixWriteLockTimeout, cliproxy_prefix_write_lock
 from app.modules.cliproxy_accounts.repository import CliproxyCredentialPrefixRepository
 from app.modules.cliproxy_accounts.schemas import (
     CliproxyAccountsResponse,
@@ -49,6 +51,8 @@ from app.modules.cliproxy_accounts.validation import (
 )
 from app.modules.proxy.claude_sidecar_dispatch import sidecar_config_from_settings
 from app.modules.settings.repository import SettingsRepository
+
+logger = logging.getLogger(__name__)
 
 
 class CliproxyAccountsService:
@@ -111,29 +115,50 @@ class CliproxyAccountsService:
         return CliproxyAccountsResponse(status="healthy", providers=providers)
 
     async def update_fields(self, name: str, change: CredentialFieldChange) -> CliproxyCredentialFieldsResponse:
-        settings, account, raw, accounts = await self._require_account(name)
+        settings, account, raw, _accounts = await self._require_account(name)
         if change.update_excluded_models and not account.excluded_models_available:
             raise DashboardBadRequestError("Excluded models could not be read, so they cannot be replaced")
-        if change.update_prefix and change.prefix:
+        if not change.update_prefix:
+            await self._patch_fields(settings, name, change)
+            _audit_fields(account, change)
+            return _fields_response(account, raw, change, await self._stored_prefixes())
+        try:
+            async with cliproxy_prefix_write_lock(self._prefixes.session):
+                return await self._update_prefix_fields(name, change)
+        except PrefixWriteLockTimeout as exc:
+            raise DashboardConflictError("Another credential prefix update is in progress") from exc
+
+    async def _update_prefix_fields(self, name: str, change: CredentialFieldChange) -> CliproxyCredentialFieldsResponse:
+        """Patch one prefix while this worker holds the cross-process write lock.
+
+        The lock is already held. Re-read the registry inside it so an older
+        request cannot commit after a newer upstream PATCH, then put the
+        previous prefix back upstream if the registry commit fails.
+        """
+
+        settings, account, raw, accounts = await self._require_account(name)
+        stored = await self._stored_prefixes()
+        if change.prefix:
             message = prefix_conflict_message(
                 change.prefix,
                 credential_name=name,
-                effective=effective_prefixes(accounts, await self._stored_prefixes()),
+                effective=effective_prefixes(accounts, stored),
                 routing_owners=routing_prefix_owners(settings),
             )
             if message is not None:
                 raise DashboardConflictError(message)
-
-        client = ClaudeSidecarClient(sidecar_config_from_settings(settings))
+        previous = stored.get(account.name) or account.prefix or ""
+        await self._patch_fields(settings, name, change)
         try:
-            await client.patch_auth_file_fields(name, _field_payload(change))
-        except ClaudeSidecarUnavailableError as exc:
-            raise DashboardServiceUnavailableError(_sanitize_message(exc.message)) from exc
-        except ClaudeSidecarError as exc:
-            _raise_management_error(exc)
-
-        if change.update_prefix:
             await self._store_prefix(account, change.prefix)
+        except IntegrityError as exc:
+            await self._restore_prefix(settings, name, previous)
+            await self._prefixes.session.rollback()
+            raise DashboardConflictError(f"Prefix {change.prefix} is already assigned to another credential") from exc
+        except Exception:
+            await self._restore_prefix(settings, name, previous)
+            await self._prefixes.session.rollback()
+            raise
         _audit_fields(account, change)
         return _fields_response(account, raw, change, await self._stored_prefixes())
 
@@ -187,18 +212,33 @@ class CliproxyAccountsService:
         rows = await self._prefixes.list_all()
         return {row.credential_name: row.prefix for row in rows}
 
-    async def _store_prefix(self, account: SidecarAuthQuota, prefix: str | None) -> None:
+    async def _patch_fields(self, settings: DashboardSettings, name: str, change: CredentialFieldChange) -> None:
+        client = ClaudeSidecarClient(sidecar_config_from_settings(settings))
         try:
-            if prefix:
-                await self._prefixes.upsert(
-                    credential_name=account.name,
-                    auth_index=account.auth_index,
-                    prefix=prefix,
-                )
-            else:
-                await self._prefixes.delete(account.name)
-        except IntegrityError as exc:
-            raise DashboardConflictError(f"Prefix {prefix} is already assigned to another credential") from exc
+            await client.patch_auth_file_fields(name, _field_payload(change))
+        except ClaudeSidecarUnavailableError as exc:
+            raise DashboardServiceUnavailableError(_sanitize_message(exc.message)) from exc
+        except ClaudeSidecarError as exc:
+            _raise_management_error(exc)
+
+    async def _restore_prefix(self, settings: DashboardSettings, name: str, previous: str) -> None:
+        client = ClaudeSidecarClient(sidecar_config_from_settings(settings))
+        try:
+            await client.patch_auth_file_fields(name, {"prefix": previous})
+        except (ClaudeSidecarError, ClaudeSidecarUnavailableError):
+            logger.warning("CLIProxyAPI prefix restore failed after the registry commit failed", exc_info=True)
+
+    async def _store_prefix(self, account: SidecarAuthQuota, prefix: str | None) -> None:
+        if prefix:
+            await self._prefixes.upsert(
+                credential_name=account.name,
+                auth_index=account.auth_index,
+                prefix=prefix,
+            )
+        else:
+            await self._prefixes.delete(account.name)
+        await self._prefixes.session.flush()
+        await self._prefixes.session.commit()
 
 
 def _inventory_guard(settings: DashboardSettings) -> tuple[CliproxyAccountsStatus, str] | None:

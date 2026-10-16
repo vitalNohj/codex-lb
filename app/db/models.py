@@ -1086,6 +1086,22 @@ class CliproxyCredentialPrefix(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+class CliproxyPrefixWriteClaim(Base):
+    """Cross-process lock for CLIProxyAPI prefix writes on SQLite.
+
+    One row (``lock_name`` ``prefixes``) is taken with a conditional upsert
+    so two workers sharing the database file cannot interleave a management
+    PATCH and the registry commit. PostgreSQL uses ``pg_advisory_xact_lock``
+    for the same section instead of this table.
+    """
+
+    __tablename__ = "cliproxy_prefix_write_claims"
+
+    lock_name: Mapped[str] = mapped_column(String, primary_key=True)
+    holder_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class SchedulerLeader(Base):
     __tablename__ = "scheduler_leader"
 

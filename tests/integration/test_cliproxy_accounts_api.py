@@ -6,7 +6,9 @@ from collections.abc import Mapping
 from datetime import datetime, timedelta, timezone
 
 import pytest
+from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
 from app.core.clients.claude_sidecar import ClaudeSidecarError, ClaudeSidecarUnavailableError
 from app.core.types import JsonValue
@@ -21,6 +23,8 @@ from app.modules.claude_sidecar.quota import (
     SidecarRateLimitHold,
     snapshot_to_json,
 )
+from app.modules.cliproxy_accounts.prefix_lock import cliproxy_prefix_write_lock
+from app.modules.cliproxy_accounts.repository import CliproxyCredentialPrefixRepository
 from app.modules.settings.repository import SettingsRepository
 
 pytestmark = pytest.mark.integration
@@ -599,3 +603,80 @@ async def test_patch_fields_refuses_to_replace_unreadable_excluded_models(async_
     assert response.status_code == 400
     assert "could not be read" in response.json()["error"]["message"]
     assert _FakeClient.field_calls == []
+
+
+@pytest.mark.asyncio
+async def test_prefix_write_lock_keeps_overlapping_holders_in_order(async_client):
+    del async_client
+    order: list[str] = []
+
+    async def hold(label: str) -> None:
+        async with SessionLocal() as session:
+            async with cliproxy_prefix_write_lock(session):
+                order.append(f"in-{label}")
+                await asyncio.sleep(0.05)
+                order.append(f"out-{label}")
+
+    await asyncio.gather(hold("a"), hold("b"))
+
+    assert len(order) == 4
+    assert order[0].startswith("in-")
+    assert order[1] == f"out-{order[0].removeprefix('in-')}"
+    assert order[2].startswith("in-")
+    assert order[3] == f"out-{order[2].removeprefix('in-')}"
+
+
+@pytest.mark.asyncio
+async def test_prefix_registry_failure_restores_the_upstream_prefix(async_client, monkeypatch):
+    _install(monkeypatch)
+    await _ready(async_client)
+
+    async def fail_upsert(self, *, credential_name: str, auth_index: str | None, prefix: str) -> None:
+        del self, credential_name, auth_index, prefix
+        raise IntegrityError("INSERT", {}, Exception("unique"))
+
+    monkeypatch.setattr(CliproxyCredentialPrefixRepository, "upsert", fail_upsert)
+
+    response = await async_client.patch(
+        "/api/cliproxy/accounts/claude-a.json/fields",
+        json={"prefix": "acct1"},
+    )
+
+    assert response.status_code == 409
+    assert [call["prefix"] for call in _FakeClient.field_calls] == ["acct1", ""]
+    assert await _stored_prefixes() == {}
+
+
+@pytest.mark.asyncio
+async def test_guest_cannot_edit_cliproxy_credential_fields(app_instance, monkeypatch):
+    _install(monkeypatch)
+    async with app_instance.router.lifespan_context(app_instance):
+        local_transport = ASGITransport(app=app_instance, client=("127.0.0.1", 50000))
+        async with AsyncClient(transport=local_transport, base_url="http://localhost") as local_client:
+            await _ready(local_client)
+            current = (await local_client.get("/api/settings")).json()
+            current["guestAccessEnabled"] = True
+            updated = await local_client.put("/api/settings", json=current)
+            assert updated.status_code == 200
+
+        remote_transport = ASGITransport(app=app_instance, client=("203.0.113.20", 50001))
+        async with AsyncClient(transport=remote_transport, base_url="http://lb.example") as remote_client:
+            listed = await remote_client.get("/api/cliproxy/accounts")
+            assert listed.status_code == 200
+            assert listed.json()["status"] == "healthy"
+
+            fields = await remote_client.patch(
+                "/api/cliproxy/accounts/claude-a.json/fields",
+                json={"prefix": "acct1"},
+            )
+            status = await remote_client.patch(
+                "/api/cliproxy/accounts/claude-a.json/status",
+                json={"disabled": True, "confirm": True},
+            )
+
+    assert fields.status_code == 403
+    assert fields.json()["error"]["code"] == "read_only_access"
+    assert status.status_code == 403
+    assert status.json()["error"]["code"] == "read_only_access"
+    assert _FakeClient.field_calls == []
+    assert _FakeClient.status_calls == []

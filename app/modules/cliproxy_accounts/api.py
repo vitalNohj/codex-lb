@@ -2,7 +2,11 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Query
 
-from app.core.auth.dependencies import set_dashboard_error_format, validate_dashboard_session
+from app.core.auth.dependencies import (
+    require_dashboard_write_access,
+    set_dashboard_error_format,
+    validate_dashboard_session,
+)
 from app.core.exceptions import DashboardBadRequestError
 from app.dependencies import CliproxyAccountsContext, get_cliproxy_accounts_context
 from app.modules.cliproxy_accounts.schemas import (
@@ -42,6 +46,7 @@ async def list_cliproxy_accounts(
 async def update_cliproxy_credential_fields(
     name: str,
     body: CliproxyCredentialFieldsUpdate,
+    _write_access=Depends(require_dashboard_write_access),
     context: CliproxyAccountsContext = Depends(get_cliproxy_accounts_context),
 ) -> CliproxyCredentialFieldsResponse:
     """Update prefix, weight, priority, or excluded models for one credential."""
@@ -56,6 +61,7 @@ async def update_cliproxy_credential_fields(
 async def update_cliproxy_credential_status(
     name: str,
     body: CliproxyCredentialStatusUpdate,
+    _write_access=Depends(require_dashboard_write_access),
     context: CliproxyAccountsContext = Depends(get_cliproxy_accounts_context),
 ) -> CliproxyCredentialStatusResponse:
     """Enable or disable one credential after the panel confirms it.
