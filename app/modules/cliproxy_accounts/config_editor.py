@@ -130,7 +130,11 @@ def _restore(current: str, submitted: str) -> str:
                 f"redacted placeholder has no existing secret to keep at {_format_path(span.path)}"
             )
         original = originals[reference]
-        replacements.append((span.start, span.end, _original_slice(current, original)))
+        if not _may_restore(span.path, original.path):
+            raise CliproxyConfigPlaceholderError(
+                f"redacted placeholder cannot be moved onto {_format_path(span.path)}"
+            )
+        replacements.append((span.start, span.end, _restored_slice(current, original, submitted, span)))
     return _apply_replacements(submitted, replacements)
 
 
@@ -306,10 +310,55 @@ def _reference_token(index: int) -> str:
 
 
 def _placeholder_reference(value: str) -> int | None:
-    match = _PLACEHOLDER_RE.fullmatch(value)
+    match = _PLACEHOLDER_RE.fullmatch(value.strip("\r\n"))
     if match is None:
         return None
     return int(match.group(1))
+
+
+def _may_restore(destination: ConfigPath, original: ConfigPath) -> bool:
+    return destination == original or _path_is_secret_destination(destination)
+
+
+def _path_is_secret_destination(path: ConfigPath) -> bool:
+    if not path:
+        return False
+    if isinstance(path[-1], int):
+        owner = _sequence_owner(path)
+        return owner is not None and _key_is_secret(owner)
+    own_key = path[-1]
+    if not isinstance(own_key, str):
+        return False
+    if _key_is_secret(own_key):
+        return True
+    if _normalize_key(own_key) in _ICE_VALUE_KEYS and _path_in_ice_server(path):
+        return True
+    ancestors = tuple(part for part in path[:-1] if isinstance(part, str))
+    return _normalize_key(own_key) == "key" and any(_key_is_secret(ancestor) for ancestor in ancestors)
+
+
+def _sequence_owner(path: ConfigPath) -> str | None:
+    index = len(path) - 1
+    while index >= 0 and isinstance(path[index], int):
+        index -= 1
+    owner = path[index] if index >= 0 else None
+    return owner if isinstance(owner, str) else None
+
+
+def _path_in_ice_server(path: ConfigPath) -> bool:
+    for index, part in enumerate(path):
+        if isinstance(part, str) and _normalize_key(part) == "ice-servers" and index + 1 < len(path):
+            if isinstance(path[index + 1], int):
+                return True
+    return False
+
+
+def _restored_slice(current: str, original: _SecretSpan, submitted: str, destination: _SecretSpan) -> str:
+    body = _original_slice(current, original)
+    if destination.style not in _BLOCK_STYLES:
+        return body
+    breaks = _trailing_break_length(submitted, destination)
+    return body + submitted[destination.end - breaks : destination.end]
 
 
 def _span_replacement(text: str, span: _SecretSpan, token: str) -> tuple[int, int, str]:

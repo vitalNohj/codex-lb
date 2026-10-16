@@ -108,6 +108,26 @@ def test_deleting_one_list_placeholder_keeps_the_other_secret() -> None:
     assert REDACTION_MARK not in edit.restored
 
 
+def test_a_placeholder_cannot_be_moved_onto_a_nonsecret_field() -> None:
+    current = 'access:\n  api-keys:\n    - "first-key"\n'
+    redacted = redact_config_yaml(current)
+    submitted = redacted + f'label: "{REDACTION_MARK}:0»"\n'
+
+    with pytest.raises(CliproxyConfigPlaceholderError, match="cannot be moved"):
+        prepare_config_edit(current, submitted)
+
+
+def test_restoring_a_block_scalar_placeholder_keeps_the_next_key() -> None:
+    current = "token: |\n  secret-line\nnext: 1\n"
+    submitted = f"token: |\n  {REDACTION_MARK}:0»\nnext: 1\n"
+    edit = prepare_config_edit(current, submitted)
+
+    assert "secret-line" in edit.restored
+    assert "next: 1" in edit.restored
+    assert "secret-linenext" not in edit.restored
+    assert REDACTION_MARK not in edit.restored
+
+
 def test_a_block_scalar_secret_keeps_the_following_key() -> None:
     current = "token: |\n  secret-line\n  second-line\nnext: 1\n"
     redacted = redact_config_yaml(current)
