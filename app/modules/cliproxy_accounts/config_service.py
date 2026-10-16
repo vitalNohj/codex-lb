@@ -32,7 +32,7 @@ from app.core.clients.cliproxy_routing_config import (
 from app.core.utils.request_id import get_request_id
 from app.db.models import AuditLog, DashboardSettings
 from app.modules.cliproxy_accounts.config_editor import (
-    REDACTED_PLACEHOLDER,
+    REDACTION_MARK,
     CliproxyConfigEditorError,
     CliproxyConfigPlaceholderError,
     CliproxyConfigYamlError,
@@ -47,6 +47,11 @@ from app.modules.cliproxy_accounts.config_schemas import (
     CliproxyConfigPreview,
     CliproxyConfigStatus,
     CliproxyConfigView,
+)
+from app.modules.cliproxy_accounts.config_write_lock import (
+    CliproxyConfigWriteBusy,
+    cliproxy_config_lock_key,
+    cliproxy_config_write_lock,
 )
 from app.modules.proxy.claude_sidecar_dispatch import sidecar_config_from_settings
 from app.modules.settings.repository import SettingsRepository
@@ -222,12 +227,42 @@ class CliproxyConfigService:
         actor_ip: str | None,
         details: dict[str, str | int | bool],
     ) -> None:
-        if REDACTED_PLACEHOLDER in updated:
+        if REDACTION_MARK in updated:
             raise CliproxyConfigOperationError(
                 400,
                 "redacted_placeholder",
                 "redacted placeholder cannot be written to the config file",
             )
+        try:
+            async with cliproxy_config_write_lock(
+                cliproxy_config_lock_key(opened.settings.claude_sidecar_base_url),
+                timeout=0,
+            ):
+                await self._upload(
+                    opened,
+                    updated,
+                    action=action,
+                    audit_action=audit_action,
+                    actor_ip=actor_ip,
+                    details=details,
+                )
+        except CliproxyConfigWriteBusy as exc:
+            raise CliproxyConfigOperationError(
+                409,
+                "config_write_busy",
+                "Another CLIProxyAPI config write is in progress",
+            ) from exc
+
+    async def _upload(
+        self,
+        opened: _OpenedConfig,
+        updated: str,
+        *,
+        action: str,
+        audit_action: str,
+        actor_ip: str | None,
+        details: dict[str, str | int | bool],
+    ) -> None:
         client = self._client(opened.settings)
         try:
             again = await client.fetch_config_yaml()

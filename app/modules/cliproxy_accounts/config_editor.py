@@ -9,21 +9,23 @@ from __future__ import annotations
 
 import difflib
 import hashlib
+import re
 from dataclasses import dataclass
 
 import yaml
 
-REDACTED_PLACEHOLDER = "«codex-lb-redacted»"
-REDACTED_CHANGED = "«codex-lb-redacted:changed»"
+REDACTION_MARK = "«codex-lb-redacted"
+REDACTED_PLACEHOLDER = f"{REDACTION_MARK}»"
+REDACTED_CHANGED = f"{REDACTION_MARK}:changed»"
 _PLACEHOLDER_VALUES = frozenset({REDACTED_PLACEHOLDER, REDACTED_CHANGED})
-_PLACEHOLDER_TOKEN = f'"{REDACTED_PLACEHOLDER}"'
+_PLACEHOLDER_RE = re.compile(rf"^{re.escape(REDACTION_MARK)}:(\d+)»$")
 _CHANGED_TOKEN = f'"{REDACTED_CHANGED}"'
+_BLOCK_STYLES = frozenset({"|", ">"})
 
 _MAX_BYTES = 1_000_000
 _MAX_NODES = 10_000
 _BOOL_TAG = "tag:yaml.org,2002:bool"
 _NULL_TAG = "tag:yaml.org,2002:null"
-_SKIP_SECRET_TAGS = frozenset({_BOOL_TAG, _NULL_TAG})
 _SECRET_PARTS = frozenset({"secret", "token", "password", "passwd", "credential", "apikey"})
 _ICE_VALUE_KEYS = frozenset({"username", "credential", "password"})
 
@@ -48,6 +50,7 @@ class _SecretSpan:
     start: int
     end: int
     value: str
+    style: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,15 +64,14 @@ def content_sha256(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def redact_config_yaml(text: str, *, changed_paths: set[ConfigPath] | None = None) -> str:
-    """Return ``text`` with secret scalars replaced by the redaction placeholder."""
+def redact_config_yaml(text: str) -> str:
+    """Return ``text`` with each secret replaced by its own numbered placeholder."""
 
     spans = _secret_spans(text)
-    replacements = [
-        (span.start, span.end, _CHANGED_TOKEN if changed_paths and span.path in changed_paths else _PLACEHOLDER_TOKEN)
-        for span in spans
-    ]
-    return _apply_replacements(text, replacements)
+    return _apply_replacements(
+        text,
+        [_span_replacement(text, span, _reference_token(index)) for index, span in enumerate(spans)],
+    )
 
 
 def prepare_config_edit(current: str | None, submitted: str) -> ConfigEdit:
@@ -85,9 +87,8 @@ def prepare_config_edit(current: str | None, submitted: str) -> ConfigEdit:
         _secret_spans(current_text)
     restored = _restore(current_text, submitted)
     _assert_placeholder_not_written(current_text, restored)
-    changed_paths = _changed_secret_paths(current_text, restored) if current_text else set()
     before = redact_config_yaml(current_text) if current_text else ""
-    after = redact_config_yaml(restored, changed_paths=changed_paths)
+    after = _diff_after(current_text, submitted)
     return ConfigEdit(restored=restored, diff=_unified_diff(before, after), changed=restored != current_text)
 
 
@@ -111,41 +112,34 @@ def routing_flags(text: str) -> tuple[bool | None, bool | None]:
 def _restore(current: str, submitted: str) -> str:
     submitted_spans = _secret_spans(submitted)
     if not current:
-        if any(span.value in _PLACEHOLDER_VALUES for span in submitted_spans):
+        if any(
+            _placeholder_reference(span.value) is not None or span.value in _PLACEHOLDER_VALUES
+            for span in submitted_spans
+        ):
             raise CliproxyConfigPlaceholderError("redacted placeholder has no existing secret to keep")
         return submitted
 
-    current_by_path: dict[ConfigPath, _SecretSpan] = {}
-    for span in _secret_spans(current):
-        current_by_path[span.path] = span
-
+    originals = _secret_spans(current)
     replacements: list[tuple[int, int, str]] = []
     for span in submitted_spans:
-        if span.value not in _PLACEHOLDER_VALUES:
+        reference = _placeholder_reference(span.value)
+        if reference is None and span.value not in _PLACEHOLDER_VALUES:
             continue
-        original = current_by_path.get(span.path)
-        if original is None:
+        if reference is None or reference >= len(originals):
             raise CliproxyConfigPlaceholderError(
                 f"redacted placeholder has no existing secret to keep at {_format_path(span.path)}"
             )
-        replacements.append((span.start, span.end, current[original.start : original.end]))
+        original = originals[reference]
+        replacements.append((span.start, span.end, _original_slice(current, original)))
     return _apply_replacements(submitted, replacements)
 
 
 def _assert_placeholder_not_written(current: str, restored: str) -> None:
-    if REDACTED_CHANGED in restored:
+    if restored.count(REDACTION_MARK) > current.count(REDACTION_MARK):
         raise CliproxyConfigPlaceholderError("redacted placeholder cannot be written to the config file")
     for span in _secret_spans(restored):
-        if span.value in _PLACEHOLDER_VALUES:
+        if _placeholder_reference(span.value) is not None or span.value in _PLACEHOLDER_VALUES:
             raise CliproxyConfigPlaceholderError("redacted placeholder cannot be written to the config file")
-    if restored.count(REDACTED_PLACEHOLDER) > current.count(REDACTED_PLACEHOLDER):
-        raise CliproxyConfigPlaceholderError("redacted placeholder cannot be written to the config file")
-
-
-def _changed_secret_paths(current: str, restored: str) -> set[ConfigPath]:
-    current_values = {span.path: span.value for span in _secret_spans(current)}
-    restored_values = {span.path: span.value for span in _secret_spans(restored)}
-    return {path for path, value in restored_values.items() if current_values.get(path) != value}
 
 
 def _secret_spans(text: str) -> list[_SecretSpan]:
@@ -191,11 +185,11 @@ def _walk(
 ) -> None:
     _visit(node, seen)
     if isinstance(node, yaml.ScalarNode):
-        if node.tag not in _SKIP_SECRET_TAGS and _should_redact(
+        if node.tag != _NULL_TAG and isinstance(node.value, str) and _should_redact(
             own_key, node.value, ancestors, secret_items, in_ice_server
         ):
             start, end = _scalar_span(node)
-            spans.append(_SecretSpan(path, start, end, node.value))
+            spans.append(_SecretSpan(path, start, end, node.value, node.style))
         return
     if isinstance(node, yaml.SequenceNode):
         items_are_secret = secret_items or (own_key is not None and _key_is_secret(own_key))
@@ -246,7 +240,7 @@ def _should_redact(
         return False
     # A redacted URL no longer contains userinfo, so the placeholder itself has to
     # stay on the secret path or the original credential cannot be spliced back.
-    if value in _PLACEHOLDER_VALUES:
+    if REDACTION_MARK in value:
         return True
     if _embeds_userinfo(value):
         return True
@@ -305,6 +299,52 @@ def _visit(node: yaml.Node, seen: set[int]) -> None:
 def _reject_size(text: str) -> None:
     if len(text.encode("utf-8")) > _MAX_BYTES:
         raise CliproxyConfigYamlError("YAML document is too large")
+
+
+def _reference_token(index: int) -> str:
+    return f'"{REDACTION_MARK}:{index}»"'
+
+
+def _placeholder_reference(value: str) -> int | None:
+    match = _PLACEHOLDER_RE.fullmatch(value)
+    if match is None:
+        return None
+    return int(match.group(1))
+
+
+def _span_replacement(text: str, span: _SecretSpan, token: str) -> tuple[int, int, str]:
+    breaks = _trailing_break_length(text, span) if span.style in _BLOCK_STYLES else 0
+    return span.start, span.end, token + text[span.end - breaks : span.end]
+
+
+def _original_slice(text: str, span: _SecretSpan) -> str:
+    breaks = _trailing_break_length(text, span) if span.style in _BLOCK_STYLES else 0
+    return text[span.start : span.end - breaks]
+
+
+def _trailing_break_length(text: str, span: _SecretSpan) -> int:
+    index = span.end
+    while index > span.start and text[index - 1] == "\n":
+        index -= 1
+        if index > span.start and text[index - 1] == "\r":
+            index -= 1
+    if index <= span.start:
+        return 0
+    return span.end - index
+
+
+def _diff_after(current: str, submitted: str) -> str:
+    if not current:
+        return redact_config_yaml(submitted)
+    spans = _secret_spans(submitted)
+    return _apply_replacements(
+        submitted,
+        [
+            _span_replacement(submitted, span, _CHANGED_TOKEN)
+            for span in spans
+            if _placeholder_reference(span.value) is None and span.value not in _PLACEHOLDER_VALUES
+        ],
+    )
 
 
 def _apply_replacements(text: str, replacements: list[tuple[int, int, str]]) -> str:

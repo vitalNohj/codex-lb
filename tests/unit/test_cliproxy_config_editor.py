@@ -5,6 +5,7 @@ import pytest
 from app.modules.cliproxy_accounts.config_editor import (
     REDACTED_CHANGED,
     REDACTED_PLACEHOLDER,
+    REDACTION_MARK,
     CliproxyConfigPlaceholderError,
     CliproxyConfigYamlError,
     prepare_config_edit,
@@ -58,7 +59,7 @@ def test_redacts_api_keys_management_secret_tokens_and_turn_credentials() -> Non
 
     for secret in _SECRETS:
         assert secret not in redacted
-    assert REDACTED_PLACEHOLDER in redacted
+    assert f"{REDACTION_MARK}:0»" in redacted
     assert "port: 8317" in redacted
     assert "session-affinity: true" in redacted
     assert "turn:turn.example.com:3478" in redacted
@@ -71,7 +72,7 @@ def test_placeholder_round_trip_keeps_the_existing_secret() -> None:
     edit = prepare_config_edit(_CONFIG, submitted)
 
     assert edit.changed
-    assert REDACTED_PLACEHOLDER not in edit.restored
+    assert REDACTION_MARK not in edit.restored
     assert REDACTED_CHANGED not in edit.restored
     assert _CLIENT_KEY in edit.restored
     assert _MANAGEMENT in edit.restored
@@ -86,14 +87,37 @@ def test_placeholder_round_trip_keeps_the_existing_secret() -> None:
 
 def test_a_replaced_secret_is_written_and_stays_out_of_the_diff() -> None:
     redacted = redact_config_yaml(_CONFIG)
-    submitted = redacted.replace(f'"{REDACTED_PLACEHOLDER}"', '"brand-new-key"', 1)
+    submitted = redacted.replace(f'"{REDACTION_MARK}:0»"', '"brand-new-key"', 1)
     edit = prepare_config_edit(_CONFIG, submitted)
 
     assert "brand-new-key" in edit.restored
     assert "brand-new-key" not in edit.diff
     assert _CLIENT_KEY not in edit.diff
     assert REDACTED_CHANGED in edit.diff
-    assert REDACTED_PLACEHOLDER not in edit.restored
+    assert REDACTION_MARK not in edit.restored
+
+
+def test_deleting_one_list_placeholder_keeps_the_other_secret() -> None:
+    current = 'access:\n  api-keys:\n    - "first-key"\n    - "second-key"\n'
+    redacted = redact_config_yaml(current)
+    submitted = "".join(line for line in redacted.splitlines(keepends=True) if f"{REDACTION_MARK}:0»" not in line)
+    edit = prepare_config_edit(current, submitted)
+
+    assert "first-key" not in edit.restored
+    assert '"second-key"' in edit.restored
+    assert REDACTION_MARK not in edit.restored
+
+
+def test_a_block_scalar_secret_keeps_the_following_key() -> None:
+    current = "token: |\n  secret-line\n  second-line\nnext: 1\n"
+    redacted = redact_config_yaml(current)
+
+    assert "secret-line" not in redacted
+    assert "second-line" not in redacted
+    assert redacted.index(f"{REDACTION_MARK}:0»") < redacted.index("next: 1")
+    edit = prepare_config_edit(current, redacted)
+    assert edit.changed is False
+    assert edit.restored == current
 
 
 def test_leaving_every_placeholder_is_not_a_change() -> None:

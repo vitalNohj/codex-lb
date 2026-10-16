@@ -2,14 +2,16 @@ from __future__ import annotations
 
 import hashlib
 import json
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import select
 
 from app.core.clients.claude_sidecar import ClaudeSidecarError
-from app.db.models import AuditLog, CliproxyConfigSnapshot
+from app.db.models import AuditLog, CliproxyConfigSnapshot, CliproxyConfigWriteClaim
 from app.db.session import SessionLocal
-from app.modules.cliproxy_accounts.config_editor import REDACTED_CHANGED, REDACTED_PLACEHOLDER
+from app.modules.cliproxy_accounts.config_editor import REDACTED_CHANGED, REDACTED_PLACEHOLDER, REDACTION_MARK
+from app.modules.cliproxy_accounts.config_write_lock import cliproxy_config_lock_key
 
 pytestmark = pytest.mark.integration
 
@@ -125,7 +127,7 @@ async def test_config_view_is_redacted_and_disabled_until_the_integration_is_on(
     assert payload["sessionAffinity"] is True
     assert payload["forceModelPrefix"] is False
     assert payload["rollbackAvailable"] is False
-    assert REDACTED_PLACEHOLDER in payload["yaml"]
+    assert f"{REDACTION_MARK}:0»" in payload["yaml"]
     assert "port: 8317" in payload["yaml"]
     _assert_no_secrets(response.text)
 
@@ -167,7 +169,7 @@ async def test_preview_is_a_dry_run_and_confirm_round_trips_placeholders(async_c
     _assert_no_secrets(replaced.text)
     assert len(_FakeConfigClient.puts) == 1
     written = _FakeConfigClient.puts[0]
-    assert REDACTED_PLACEHOLDER not in written
+    assert REDACTION_MARK not in written
     for secret in _SECRETS:
         assert secret in written
     assert "debug: true" in written
@@ -192,7 +194,7 @@ async def test_a_changed_secret_is_written_without_appearing_in_the_diff(async_c
     _install_fake(monkeypatch)
     await _enable(async_client)
     current = (await async_client.get("/api/cliproxy/config")).json()
-    submitted = current["yaml"].replace(f'"{REDACTED_PLACEHOLDER}"', '"brand-new-key"', 1)
+    submitted = current["yaml"].replace(f'"{REDACTION_MARK}:0»"', '"brand-new-key"', 1)
 
     preview = await async_client.post(
         "/api/cliproxy/config/preview",
@@ -214,7 +216,7 @@ async def test_a_changed_secret_is_written_without_appearing_in_the_diff(async_c
     assert _GITHUB not in written
     assert _CLIENT_KEY in written
     assert _MANAGEMENT in written
-    assert REDACTED_PLACEHOLDER not in written
+    assert REDACTION_MARK not in written
 
 
 @pytest.mark.asyncio
@@ -280,7 +282,7 @@ async def test_rollback_restores_the_snapshotted_file(async_client, monkeypatch)
     assert "debug: false" in restored.json()["yaml"]
     _assert_no_secrets(restored.text)
     assert _FakeConfigClient.yaml == _CONFIG
-    assert REDACTED_PLACEHOLDER not in _FakeConfigClient.puts[-1]
+    assert REDACTION_MARK not in _FakeConfigClient.puts[-1]
 
     audits = await _audit_rows("cliproxy_config_rollback")
     assert len(audits) == 1
@@ -345,7 +347,7 @@ async def test_routing_flag_patches_snapshot_and_keep_the_rest_of_the_file(async
     assert "session-affinity: true" in written
     for secret in _SECRETS:
         assert secret in written
-    assert REDACTED_PLACEHOLDER not in written
+    assert REDACTION_MARK not in written
 
     audits = await _audit_rows("cliproxy_config_routing_patch")
     assert len(audits) == 1
@@ -395,3 +397,28 @@ async def test_create_writes_a_new_document_and_rejects_a_placeholder_with_no_se
     assert created.status_code == 200
     assert "fresh-secret" not in created.text
     assert _FakeConfigClient.yaml == 'management:\n  secret-key: "fresh-secret"\n'
+
+
+@pytest.mark.asyncio
+async def test_a_live_write_lease_rejects_a_second_replace(async_client, monkeypatch) -> None:
+    _install_fake(monkeypatch)
+    await _enable(async_client)
+    current = (await async_client.get("/api/cliproxy/config")).json()
+    submitted = current["yaml"].replace("debug: false", "debug: true", 1)
+    async with SessionLocal() as session:
+        session.add(
+            CliproxyConfigWriteClaim(
+                lock_key=cliproxy_config_lock_key("http://127.0.0.1:8317"),
+                holder_id="other-worker",
+                expires_at=datetime.now(UTC) + timedelta(seconds=30),
+            )
+        )
+        await session.commit()
+
+    blocked = await async_client.put(
+        "/api/cliproxy/config",
+        json={"yaml": submitted, "contentSha256": current["contentSha256"], "confirm": True},
+    )
+    assert blocked.status_code == 409
+    assert blocked.json()["error"]["code"] == "config_write_busy"
+    assert _FakeConfigClient.puts == []

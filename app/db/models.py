@@ -2955,6 +2955,21 @@ class CliproxyConfigSnapshot(Base):
     action: Mapped[str] = mapped_column(String(32), nullable=False)
 
 
+class CliproxyConfigWriteClaim(Base):
+    """Lease that serializes CLIProxyAPI config writes for one upstream.
+
+    The snapshot commit happens before the management upload returns, so a
+    transaction-scoped lock would release too early. The holder renews this
+    lease until the upload and its failure recovery finish.
+    """
+
+    __tablename__ = "cliproxy_config_write_claims"
+
+    lock_key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    holder_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 _PRIMARY_WINDOW_INDEX_EXPR = func.coalesce(UsageHistory.window, literal_column("'primary'"))
 
 Index("idx_usage_recorded_at", UsageHistory.recorded_at)
