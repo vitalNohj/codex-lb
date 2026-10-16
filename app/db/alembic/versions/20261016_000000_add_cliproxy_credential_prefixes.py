@@ -3,7 +3,10 @@
 CLIProxyAPI v8.0.30 does not return ``prefix`` from the auth-file list, so
 the panel stores the prefix it assigned. The registry starts empty. A second
 table is the SQLite lock that keeps a prefix PATCH and its registry commit
-in one order across workers. Existing traffic does not read either table.
+in one order across workers. Databases that already applied an earlier copy
+of this revision get that lock table from
+``20261016_010000_add_cliproxy_prefix_write_claims`` instead. Existing traffic
+does not read either table.
 
 Revision ID: 20261016_000000_add_cliproxy_credential_prefixes
 Revises: 20261013_000000_add_dashboard_hourly_rollup_retention

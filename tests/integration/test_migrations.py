@@ -4924,3 +4924,46 @@ async def test_lifetime_rollup_migrations_downgrades_are_non_destructive(tmp_pat
         assert result.current_revision == _HEAD_REVISION
     finally:
         await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_prefix_write_claim_migration_repairs_a_stamped_prefixes_revision(tmp_path):
+    """A database stamped with the original prefix revision, before the lock
+    table was edited into that same revision, still gains the claim table
+    from the successor migration."""
+
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'prefix-write-claims.sqlite'}"
+    prefixes_revision = "20261016_000000_add_cliproxy_credential_prefixes"
+    claims_revision = "20261016_010000_add_cliproxy_prefix_write_claims"
+
+    await to_thread.run_sync(lambda: run_upgrade(db_url, prefixes_revision, bootstrap_legacy=False))
+    engine = create_async_engine(db_url, future=True)
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(text("DROP TABLE cliproxy_prefix_write_claims"))
+        async with engine.connect() as conn:
+            tables = {
+                row[0]
+                for row in (await conn.execute(text("SELECT name FROM sqlite_master WHERE type = 'table'"))).fetchall()
+            }
+            version = (await conn.execute(text("SELECT version_num FROM alembic_version"))).scalar_one()
+        assert "cliproxy_credential_prefixes" in tables
+        assert "cliproxy_prefix_write_claims" not in tables
+        assert version == prefixes_revision
+
+        await to_thread.run_sync(lambda: run_upgrade(db_url, claims_revision, bootstrap_legacy=False))
+        async with engine.connect() as conn:
+            tables = {
+                row[0]
+                for row in (await conn.execute(text("SELECT name FROM sqlite_master WHERE type = 'table'"))).fetchall()
+            }
+            version = (await conn.execute(text("SELECT version_num FROM alembic_version"))).scalar_one()
+        assert "cliproxy_prefix_write_claims" in tables
+        assert version == claims_revision
+
+        await to_thread.run_sync(lambda: run_upgrade(db_url, claims_revision, bootstrap_legacy=False))
+        async with engine.connect() as conn:
+            version = (await conn.execute(text("SELECT version_num FROM alembic_version"))).scalar_one()
+        assert version == claims_revision
+    finally:
+        await engine.dispose()

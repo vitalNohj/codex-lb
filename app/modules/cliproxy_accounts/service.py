@@ -148,16 +148,18 @@ class CliproxyAccountsService:
             if message is not None:
                 raise DashboardConflictError(message)
         previous = stored.get(account.name) or account.prefix or ""
-        await self._patch_fields(settings, name, change)
+        # Build the client before the registry flush. A failed flush expires
+        # ``settings``, and reading it again raises PendingRollbackError
+        # before the previous prefix can be put back upstream.
+        client = ClaudeSidecarClient(sidecar_config_from_settings(settings))
+        await _send_auth_file_fields(client, name, _field_payload(change))
         try:
             await self._store_prefix(account, change.prefix)
         except IntegrityError as exc:
-            await self._restore_prefix(settings, name, previous)
-            await self._prefixes.session.rollback()
+            await self._compensate_failed_prefix_store(client, name, previous)
             raise DashboardConflictError(f"Prefix {change.prefix} is already assigned to another credential") from exc
         except Exception:
-            await self._restore_prefix(settings, name, previous)
-            await self._prefixes.session.rollback()
+            await self._compensate_failed_prefix_store(client, name, previous)
             raise
         _audit_fields(account, change)
         return _fields_response(account, raw, change, await self._stored_prefixes())
@@ -214,19 +216,19 @@ class CliproxyAccountsService:
 
     async def _patch_fields(self, settings: DashboardSettings, name: str, change: CredentialFieldChange) -> None:
         client = ClaudeSidecarClient(sidecar_config_from_settings(settings))
-        try:
-            await client.patch_auth_file_fields(name, _field_payload(change))
-        except ClaudeSidecarUnavailableError as exc:
-            raise DashboardServiceUnavailableError(_sanitize_message(exc.message)) from exc
-        except ClaudeSidecarError as exc:
-            _raise_management_error(exc)
+        await _send_auth_file_fields(client, name, _field_payload(change))
 
-    async def _restore_prefix(self, settings: DashboardSettings, name: str, previous: str) -> None:
-        client = ClaudeSidecarClient(sidecar_config_from_settings(settings))
+    async def _restore_prefix(self, client: ClaudeSidecarClient, name: str, previous: str) -> None:
         try:
             await client.patch_auth_file_fields(name, {"prefix": previous})
         except (ClaudeSidecarError, ClaudeSidecarUnavailableError):
             logger.warning("CLIProxyAPI prefix restore failed after the registry commit failed", exc_info=True)
+
+    async def _compensate_failed_prefix_store(self, client: ClaudeSidecarClient, name: str, previous: str) -> None:
+        try:
+            await self._restore_prefix(client, name, previous)
+        finally:
+            await self._prefixes.session.rollback()
 
     async def _store_prefix(self, account: SidecarAuthQuota, prefix: str | None) -> None:
         if prefix:
@@ -239,6 +241,15 @@ class CliproxyAccountsService:
             await self._prefixes.delete(account.name)
         await self._prefixes.session.flush()
         await self._prefixes.session.commit()
+
+
+async def _send_auth_file_fields(client: ClaudeSidecarClient, name: str, fields: Mapping[str, JsonValue]) -> None:
+    try:
+        await client.patch_auth_file_fields(name, fields)
+    except ClaudeSidecarUnavailableError as exc:
+        raise DashboardServiceUnavailableError(_sanitize_message(exc.message)) from exc
+    except ClaudeSidecarError as exc:
+        _raise_management_error(exc)
 
 
 def _inventory_guard(settings: DashboardSettings) -> tuple[CliproxyAccountsStatus, str] | None:

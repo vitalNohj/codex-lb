@@ -8,7 +8,6 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
 
 from app.core.clients.claude_sidecar import ClaudeSidecarError, ClaudeSidecarUnavailableError
 from app.core.types import JsonValue
@@ -24,7 +23,6 @@ from app.modules.claude_sidecar.quota import (
     snapshot_to_json,
 )
 from app.modules.cliproxy_accounts.prefix_lock import cliproxy_prefix_write_lock
-from app.modules.cliproxy_accounts.repository import CliproxyCredentialPrefixRepository
 from app.modules.settings.repository import SettingsRepository
 
 pytestmark = pytest.mark.integration
@@ -627,15 +625,26 @@ async def test_prefix_write_lock_keeps_overlapping_holders_in_order(async_client
 
 
 @pytest.mark.asyncio
-async def test_prefix_registry_failure_restores_the_upstream_prefix(async_client, monkeypatch):
+async def test_prefix_registry_flush_failure_restores_the_upstream_prefix(async_client, monkeypatch):
     _install(monkeypatch)
     await _ready(async_client)
-
-    async def fail_upsert(self, *, credential_name: str, auth_index: str | None, prefix: str) -> None:
-        del self, credential_name, auth_index, prefix
-        raise IntegrityError("INSERT", {}, Exception("unique"))
-
-    monkeypatch.setattr(CliproxyCredentialPrefixRepository, "upsert", fail_upsert)
+    async with SessionLocal() as session:
+        session.add(
+            CliproxyCredentialPrefix(
+                credential_name="taken.json",
+                auth_index=None,
+                prefix="acct1",
+                updated_at=datetime.now(timezone.utc),
+            )
+        )
+        await session.commit()
+    # The in-memory check would reject this before the flush. Skip it so the
+    # unique constraint is what fails, which is the race the lock cannot see
+    # once the row is already committed.
+    monkeypatch.setattr(
+        "app.modules.cliproxy_accounts.service.prefix_conflict_message",
+        lambda *_args, **_kwargs: None,
+    )
 
     response = await async_client.patch(
         "/api/cliproxy/accounts/claude-a.json/fields",
@@ -643,8 +652,9 @@ async def test_prefix_registry_failure_restores_the_upstream_prefix(async_client
     )
 
     assert response.status_code == 409
+    assert response.json()["error"]["code"] == "conflict"
     assert [call["prefix"] for call in _FakeClient.field_calls] == ["acct1", ""]
-    assert await _stored_prefixes() == {}
+    assert await _stored_prefixes() == {"taken.json": "acct1"}
 
 
 @pytest.mark.asyncio
