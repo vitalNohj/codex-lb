@@ -7,7 +7,7 @@ second empty table leases config writes so two workers cannot replace that
 snapshot at the same time.
 
 Revision ID: 20261016_000000_add_cliproxy_config_snapshots
-Revises: 20261013_000000_add_dashboard_hourly_rollup_retention
+Revises: 20261016_010000_add_cliproxy_prefix_write_claims
 Create Date: 2026-10-16
 """
 
@@ -17,7 +17,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision = "20261016_000000_add_cliproxy_config_snapshots"
-down_revision = "20261013_000000_add_dashboard_hourly_rollup_retention"
+down_revision = "20261016_010000_add_cliproxy_prefix_write_claims"
 branch_labels = None
 depends_on = None
 
