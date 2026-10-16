@@ -29,6 +29,27 @@ def _load(name: str) -> list[dict]:
     return files
 
 
+def test_default_provider_keeps_claude_semantics_and_drops_other_providers():
+    """The Claude caller must keep today's filter, including anthropic account types."""
+    files = [
+        {"name": "claude.json", "provider": "claude", "email": "claude@example.com"},
+        {"name": "anthropic.json", "account_type": "anthropic", "email": "anthropic@example.com"},
+        {
+            "name": "xai.json",
+            "provider": "xai",
+            "type": "xai",
+            "email": "xai@example.com",
+            "access_token": "cliproxy-test-access-token",
+        },
+        {"name": "openai.json", "provider": "openai", "type": "openai", "email": "openai@example.com"},
+    ]
+
+    accounts = parse_auth_files(files)
+
+    assert [account.email for account in accounts] == ["claude@example.com", "anthropic@example.com"]
+    assert all(account.provider == "claude" for account in accounts)
+
+
 def test_parse_live_fixture_keeps_claude_entry_without_quota_block():
     files = _load("claude_sidecar_auth_files.json")
 

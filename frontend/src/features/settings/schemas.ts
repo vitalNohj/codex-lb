@@ -833,6 +833,38 @@ export const ClaudeSidecarRoutingResponseSchema = z.object({
   savedAccount: ClaudeSidecarRoutingAccountSchema.nullable().optional(),
 });
 
+export const CliproxyAccountsStatusSchema = z.enum([
+  "healthy",
+  "not_configured",
+  "unauthorized",
+  "unreachable",
+  "error",
+]);
+export const CliproxyCredentialSchema = z.object({
+  name: z.string(),
+  authIndex: z.string().nullable().optional(),
+  email: z.string().nullable().optional(),
+  provider: z.string(),
+  health: z.string(),
+  disabled: z.boolean().default(false),
+  unavailable: z.boolean().default(false),
+  quotaExceeded: z.boolean().default(false),
+  prefix: z.string().nullable().optional(),
+  models: z.array(z.string()).default([]),
+  modelsError: z.string().nullable().optional(),
+});
+export const CliproxyProviderCredentialsSchema = z.object({
+  provider: z.string(),
+  credentials: z.array(CliproxyCredentialSchema).default([]),
+});
+export const CliproxyAccountsResponseSchema = z.object({
+  status: CliproxyAccountsStatusSchema,
+  message: z.string().nullable().optional(),
+  providers: z.array(CliproxyProviderCredentialsSchema).default([]),
+});
+export type CliproxyCredential = z.infer<typeof CliproxyCredentialSchema>;
+export type CliproxyAccountsResponse = z.infer<typeof CliproxyAccountsResponseSchema>;
+
 type ParsedDashboardSettings = z.infer<typeof DashboardSettingsSchema>;
 type StickyThresholdPresenceFlags = Pick<
   ParsedDashboardSettings,

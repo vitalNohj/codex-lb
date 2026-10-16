@@ -1,5 +1,6 @@
 import { Bot } from "lucide-react";
 
+import { CliproxyCredentials } from "@/features/settings/components/cliproxy-credentials";
 import * as SidecarIntegrationCard from "@/features/settings/components/sidecar-integration-card";
 import { useClaudeSidecar } from "@/features/settings/hooks/use-settings";
 import type {
@@ -116,6 +117,13 @@ export function ClaudeSidecarSettings({ settings, busy, onSave, bare = false }: 
               <SidecarIntegrationCard.FullModels />
             </div>
             <SidecarIntegrationCard.DiscoveredModels />
+          </SidecarIntegrationCard.Panel>
+          <SidecarIntegrationCard.Panel
+            title="Credentials"
+            description="Read-only CLIProxyAPI accounts, with health and models. This list does not change routing."
+            span="full"
+          >
+            <CliproxyCredentials enabled={managementKeyConfigured} />
           </SidecarIntegrationCard.Panel>
           {managementKeyConfigured ? (
             <SidecarIntegrationCard.Panel

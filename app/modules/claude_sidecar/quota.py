@@ -61,6 +61,7 @@ class SidecarAuthQuota:
     expired: datetime | None = None
     excluded_models: tuple[str, ...] = ()
     excluded_models_available: bool = False
+    prefix: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -90,16 +91,34 @@ def parse_auth_files(
     raw: Iterable[Mapping[str, JsonValue]],
     *,
     auth_dir: Path | None = None,
+    provider: str | None = "claude",
 ) -> list[SidecarAuthQuota]:
+    """Parse management auth-file entries for one provider.
+
+    ``provider="claude"`` (the default) keeps the historical Claude filter,
+    including ``account_type=anthropic``. ``provider=None`` keeps every entry.
+    Any other provider matches ``provider`` / ``type`` after lowercasing.
+    """
     root = (auth_dir or default_auth_dir()).resolve()
     accounts: list[SidecarAuthQuota] = []
     for entry in raw:
         if not is_json_mapping(entry):
             continue
-        if not _is_claude_entry(entry):
+        if not _matches_provider(entry, provider):
             continue
         accounts.append(_parse_one(entry, auth_dir=root))
     return accounts
+
+
+def _matches_provider(entry: Mapping[str, JsonValue], provider: str | None) -> bool:
+    if provider is None:
+        return True
+    wanted = provider.strip().lower()
+    if wanted == "claude":
+        return _is_claude_entry(entry)
+    if not wanted:
+        return False
+    return _auth_provider(entry) == wanted
 
 
 def _is_claude_entry(entry: Mapping[str, JsonValue]) -> bool:
@@ -160,6 +179,7 @@ def _parse_one(entry: Mapping[str, JsonValue], *, auth_dir: Path) -> SidecarAuth
         expired=_expired_from_entry(entry, auth_dir=auth_dir),
         excluded_models=tuple(excluded) if excluded is not None else (),
         excluded_models_available=excluded is not None,
+        prefix=_str(entry.get("prefix")),
     )
 
 
@@ -429,6 +449,7 @@ def snapshot_to_json(snapshot: SidecarQuotaSnapshot) -> str:
                 "oauth_usage": _oauth_usage_to_json(account.oauth_usage),
                 "excluded_models": list(account.excluded_models),
                 "excluded_models_available": account.excluded_models_available,
+                "prefix": account.prefix,
             }
             for account in snapshot.accounts
         ],
@@ -507,6 +528,7 @@ def snapshot_from_json(raw: str | None) -> SidecarQuotaSnapshot | None:
                     # save would write over the real exclusions.
                     excluded_models=tuple(normalize_excluded_models(entry.get("excluded_models"))),
                     excluded_models_available=bool(entry.get("excluded_models_available", False)),
+                    prefix=_str(entry.get("prefix")),
                 )
             )
     message_field = parsed.get("message")

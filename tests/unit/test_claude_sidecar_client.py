@@ -519,3 +519,30 @@ async def test_set_session_affinity_skips_upload_when_already_off(monkeypatch) -
     await client.set_session_affinity(False)
 
     assert session.puts == []
+
+
+@pytest.mark.asyncio
+async def test_list_auth_file_models_reads_model_ids(monkeypatch) -> None:
+    session = _FakeSession(
+        get_response=_FakeResponse(
+            200,
+            json.dumps(
+                {
+                    "models": [
+                        {"id": "grok-4", "display_name": "Grok 4", "owned_by": "xai"},
+                        {"id": "grok-4-fast"},
+                    ]
+                }
+            ),
+        )
+    )
+    monkeypatch.setattr("app.core.clients.claude_sidecar.lease_http_session", lambda: _Lease(session))
+    client = ClaudeSidecarClient(_config(management_key="mgmt"))
+
+    models = await client.list_auth_file_models("grok user@example.com.json")
+
+    assert models == ["grok-4", "grok-4-fast"]
+    assert session.last_url == (
+        "http://127.0.0.1:8317/v0/management/auth-files/models?name=grok+user%40example.com.json"
+    )
+    assert session.last_headers["Authorization"] == "Bearer mgmt"

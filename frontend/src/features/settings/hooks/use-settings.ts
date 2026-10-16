@@ -12,6 +12,7 @@ import {
   getClaudeSidecarQuota,
   getClaudeSidecarRouting,
   getClaudeSidecarStatus,
+  getCliproxyAccounts,
   getOllamaSidecarStatus,
   getOmniRouteSidecarStatus,
   getOpenCodeGoSidecarStatus,
@@ -591,6 +592,15 @@ export function useClaudeSidecar(options?: { routingEnabled?: boolean }) {
     sessionAffinityMutation,
     testMutation,
   };
+}
+
+export function useCliproxyCredentials(enabled: boolean) {
+  const credentialsQuery = useQuery({
+    queryKey: ["settings", "cliproxy-accounts"],
+    queryFn: () => getCliproxyAccounts(),
+    enabled,
+  });
+  return { credentialsQuery };
 }
 
 export function useClaudeSidecarQuota() {

@@ -20,6 +20,7 @@ from app.modules.automations.repository import AutomationsRepository
 from app.modules.automations.service import AutomationsService
 from app.modules.claude_sidecar.service import ClaudeSidecarService
 from app.modules.claude_sidecar.usage_repository import ClaudeSidecarUsageRepository
+from app.modules.cliproxy_accounts.service import CliproxyAccountsService
 from app.modules.dashboard.repository import DashboardRepository
 from app.modules.dashboard.service import DashboardService
 from app.modules.dashboard_auth.repository import DashboardAuthRepository
@@ -135,6 +136,13 @@ class ClaudeSidecarContext:
     session: AsyncSession
     settings_repository: SettingsRepository
     service: ClaudeSidecarService
+
+
+@dataclass(slots=True)
+class CliproxyAccountsContext:
+    session: AsyncSession
+    settings_repository: SettingsRepository
+    service: CliproxyAccountsService
 
 
 @dataclass(slots=True)
@@ -390,6 +398,14 @@ def get_claude_sidecar_context(
     claude_usage_repository = ClaudeSidecarUsageRepository(session)
     service = ClaudeSidecarService(settings_repository, claude_usage_repository)
     return ClaudeSidecarContext(session=session, settings_repository=settings_repository, service=service)
+
+
+def get_cliproxy_accounts_context(
+    session: AsyncSession = Depends(get_session),
+) -> CliproxyAccountsContext:
+    settings_repository = SettingsRepository(session)
+    service = CliproxyAccountsService(settings_repository)
+    return CliproxyAccountsContext(session=session, settings_repository=settings_repository, service=service)
 
 
 def get_openrouter_sidecar_context(

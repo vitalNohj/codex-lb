@@ -9,6 +9,7 @@ from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import cast
+from urllib.parse import urlencode
 
 import aiohttp
 
@@ -201,6 +202,32 @@ class ClaudeSidecarClient:
             if is_json_mapping(entry):
                 files.append(cast(Mapping[str, JsonValue], entry))
         return files
+
+    async def list_auth_file_models(self, name: str) -> list[str]:
+        """Return model ids for one auth file via ``GET /v0/management/auth-files/models``."""
+        query = urlencode({"name": name})
+        data = await self._management_json(
+            "GET",
+            f"/v0/management/auth-files/models?{query}",
+            "fetch CLIProxyAPI auth-file models",
+        )
+        if not is_json_mapping(data):
+            raise ClaudeSidecarError(502, "Invalid response format from CLIProxyAPI auth-file models API", body=data)
+        raw_models = data.get("models")
+        if not isinstance(raw_models, list):
+            raise ClaudeSidecarError(502, "Missing 'models' key in CLIProxyAPI auth-file models response", body=data)
+        models: list[str] = []
+        for entry in raw_models:
+            if isinstance(entry, str):
+                model_id = entry.strip()
+            elif is_json_mapping(entry):
+                raw_id = entry.get("id")
+                model_id = raw_id.strip() if isinstance(raw_id, str) else ""
+            else:
+                continue
+            if model_id:
+                models.append(model_id)
+        return models
 
     async def get_routing_strategy(self) -> str:
         url = f"{self.base_url}/v0/management/routing/strategy"
