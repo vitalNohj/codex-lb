@@ -250,6 +250,7 @@ describe("CliproxyCredentials", () => {
           ],
           apiKeys: [
             {
+              id: "key-openrouter",
               kind: "openai-compatibility",
               index: 0,
               name: "openrouter",
@@ -274,6 +275,7 @@ describe("CliproxyCredentials", () => {
       http.post("*/api/cliproxy/api-keys", async ({ request }) => {
         created.push(await request.json());
         return HttpResponse.json({
+          id: "key-second",
           kind: "openai-compatibility",
           index: 1,
           name: "second",
@@ -327,6 +329,168 @@ describe("CliproxyCredentials", () => {
     await user.click(addButtons[0]);
     await waitFor(() => {
       expect(catalog).toEqual([{ model: "grok-4" }]);
+    });
+  });
+
+  it("keeps model mappings and spaced names out of unrelated saves", async () => {
+    const user = userEvent.setup();
+    const updates: unknown[] = [];
+    server.use(
+      http.get("*/api/cliproxy/accounts", () =>
+        HttpResponse.json({
+          status: "healthy",
+          message: null,
+          providers: [],
+          apiKeys: [
+            {
+              id: "spaced-name",
+              kind: "openai-compatibility",
+              index: 0,
+              name: "My OpenRouter",
+              baseUrl: "https://openrouter.ai/api/v1",
+              disabled: false,
+              supportsDisable: true,
+              hasApiKey: true,
+              models: [{ name: "upstream-model", alias: "friendly-model" }],
+              discoveredModels: ["friendly-model"],
+              modelsError: null,
+              prefix: null,
+            },
+          ],
+        }),
+      ),
+      http.get("*/api/settings", () => HttpResponse.json(createDashboardSettings({ claudeSidecarFullModels: [] }))),
+      http.patch("*/api/cliproxy/api-keys/openai-compatibility/0", async ({ request }) => {
+        updates.push(await request.json());
+        return HttpResponse.json({
+          id: "spaced-name",
+          kind: "openai-compatibility",
+          index: 0,
+          name: "My OpenRouter",
+          baseUrl: "https://openrouter.ai/api/v1",
+          disabled: true,
+          supportsDisable: true,
+          hasApiKey: true,
+          models: [{ name: "upstream-model", alias: "friendly-model" }],
+          discoveredModels: ["friendly-model"],
+        });
+      }),
+    );
+
+    renderCredentials(true);
+    await user.click(await screen.findByRole("switch", { name: "Enabled for My OpenRouter" }));
+    await waitFor(() => {
+      expect(updates).toEqual([
+        {
+          kind: "openai-compatibility",
+          accountId: "spaced-name",
+          baseUrl: "https://openrouter.ai/api/v1",
+          disabled: true,
+        },
+      ]);
+    });
+
+    const url = document.getElementById("cliproxy-api-key-url-spaced-name");
+    if (!(url instanceof HTMLInputElement)) {
+      throw new Error("missing base URL field");
+    }
+    await user.clear(url);
+    await user.type(url, "https://proxy.example/v1");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => {
+      expect(updates[1]).toEqual({
+        kind: "openai-compatibility",
+        accountId: "spaced-name",
+        baseUrl: "https://proxy.example/v1",
+      });
+    });
+    expect(updates[1]).not.toHaveProperty("name");
+    expect(updates[1]).not.toHaveProperty("models");
+  });
+
+  it("drops a deleted account's drafts instead of saving them onto the next account", async () => {
+    const user = userEvent.setup();
+    const updates: unknown[] = [];
+    const removed: unknown[] = [];
+    let accounts = [
+      {
+        id: "account-a",
+        kind: "openai-compatibility",
+        index: 0,
+        name: "first",
+        baseUrl: "https://first.example/v1",
+        disabled: false,
+        supportsDisable: true,
+        hasApiKey: true,
+        models: [{ name: "one", alias: "one" }],
+        discoveredModels: ["one"],
+        modelsError: null,
+        prefix: null,
+      },
+      {
+        id: "account-b",
+        kind: "openai-compatibility",
+        index: 1,
+        name: "second",
+        baseUrl: "https://kept.example/v1",
+        disabled: false,
+        supportsDisable: true,
+        hasApiKey: true,
+        models: [{ name: "two", alias: "two" }],
+        discoveredModels: ["two"],
+        modelsError: null,
+        prefix: null,
+      },
+    ];
+    server.use(
+      http.get("*/api/cliproxy/accounts", () =>
+        HttpResponse.json({
+          status: "healthy",
+          message: null,
+          providers: [],
+          apiKeys: accounts,
+        }),
+      ),
+      http.get("*/api/settings", () => HttpResponse.json(createDashboardSettings({ claudeSidecarFullModels: [] }))),
+      http.delete("*/api/cliproxy/api-keys/openai-compatibility/0", async ({ request }) => {
+        removed.push(await request.json());
+        accounts = [{ ...accounts[1], index: 0 }];
+        return HttpResponse.json({ kind: "openai-compatibility", index: 0, deleted: true });
+      }),
+      http.patch("*/api/cliproxy/api-keys/openai-compatibility/:index", async ({ request }) => {
+        updates.push(await request.json());
+        return HttpResponse.json(accounts[0]);
+      }),
+    );
+
+    renderCredentials(true);
+    const leakedUrl = await screen.findByDisplayValue("https://first.example/v1");
+    const leakedSecret = document.getElementById("cliproxy-api-key-secret-account-a");
+    if (!(leakedSecret instanceof HTMLInputElement)) {
+      throw new Error("missing first account editor");
+    }
+    await user.clear(leakedUrl);
+    await user.type(leakedUrl, "https://deleted.example/v1");
+    await user.type(leakedSecret, "leaked-secret");
+    await user.click(await screen.findByRole("button", { name: "Delete first" }));
+    await user.click(screen.getByRole("button", { name: "Remove" }));
+    await waitFor(() => {
+      expect(removed).toEqual([{ confirm: true, accountId: "account-a" }]);
+    });
+
+    const keptUrl = await screen.findByDisplayValue("https://kept.example/v1");
+    expect(keptUrl).toBeInTheDocument();
+    expect(screen.queryByDisplayValue("https://deleted.example/v1")).not.toBeInTheDocument();
+    expect(screen.queryByDisplayValue("leaked-secret")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => {
+      expect(updates).toEqual([
+        {
+          kind: "openai-compatibility",
+          accountId: "account-b",
+          baseUrl: "https://kept.example/v1",
+        },
+      ]);
     });
   });
 

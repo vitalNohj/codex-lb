@@ -1075,12 +1075,11 @@ class AuditLog(Base):
 
 
 class CliproxyPrefixWriteClaim(Base):
-    """Cross-process lock for CLIProxyAPI credential status writes on SQLite.
+    """Cross-process lock rows for CLIProxyAPI panel writes on SQLite.
 
-    One ``status`` row is taken with a conditional upsert so two workers
-    sharing the database file cannot both decide they are not disabling the
-    last enabled account. PostgreSQL uses ``pg_advisory_xact_lock`` instead
-    of this table.
+    Status updates use the ``status`` row. API-key list edits use one
+    ``api-key:<kind>`` row per provider list. PostgreSQL uses
+    ``pg_advisory_xact_lock`` instead of this table.
     """
 
     __tablename__ = "cliproxy_prefix_write_claims"

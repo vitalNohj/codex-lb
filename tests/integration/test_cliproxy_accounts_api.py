@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -45,6 +45,7 @@ class _FakeClient:
     list_delay_seconds: float = 0.0
     api_key_lists: dict[str, list[dict[str, JsonValue]]] = {}
     management_calls: list[tuple[str, str, Mapping[str, JsonValue] | None]] = []
+    management_get_hook: Callable[[], Awaitable[None]] | None = None
 
     def __init__(self, _config) -> None:
         pass
@@ -84,6 +85,9 @@ class _FakeClient:
         body: Mapping[str, JsonValue] | None,
     ) -> dict[str, JsonValue]:
         self.management_calls.append((method, path, None if body is None else dict(body)))
+        hook = type(self).management_get_hook
+        if method == "GET" and hook is not None:
+            await hook()
         route, _, query = path.partition("?")
         key = route.rsplit("/", 1)[-1]
         if method == "GET":
@@ -113,6 +117,7 @@ def _reset_fake() -> None:
     _FakeClient.list_delay_seconds = 0.0
     _FakeClient.api_key_lists = {}
     _FakeClient.management_calls = []
+    _FakeClient.management_get_hook = None
     _FakeClient.files = [
         {
             "name": "claude-a.json",
@@ -1112,6 +1117,7 @@ async def test_api_key_accounts_are_edited_without_returning_the_key(async_clien
     assert account["prefix"] == "keep-me"
     assert account["discoveredModels"] == ["openrouter/auto"]
     assert account["supportsDisable"] is True
+    assert account["id"]
 
     updated = await async_client.patch(
         "/api/cliproxy/api-keys/openai-compatibility/0",
@@ -1120,6 +1126,7 @@ async def test_api_key_accounts_are_edited_without_returning_the_key(async_clien
             "name": "openrouter",
             "baseUrl": "https://openrouter.ai/api/v1",
             "models": ["other-model"],
+            "accountId": account["id"],
         },
     )
     assert updated.status_code == 200
@@ -1161,11 +1168,170 @@ async def test_api_key_accounts_are_edited_without_returning_the_key(async_clien
     removed = await async_client.request(
         "DELETE",
         "/api/cliproxy/api-keys/openai-compatibility/0",
-        json={"confirm": True},
+        json={"confirm": True, "accountId": updated.json()["id"]},
     )
     assert removed.status_code == 200
     assert removed.json()["deleted"] is True
     assert _FakeClient.api_key_lists["openai-compatibility"][0]["name"] == "second"
+
+
+@pytest.mark.asyncio
+async def test_api_key_saves_keep_mappings_spaced_names_and_reject_stale_ids(async_client, monkeypatch):
+    _install(monkeypatch)
+    _FakeClient.api_key_lists["openai-compatibility"] = [
+        {
+            "name": "My OpenRouter",
+            "base-url": "https://openrouter.ai/api/v1",
+            "api-key-entries": [{"api-key": "sk-old"}],
+            "models": [{"name": "upstream-model", "alias": "friendly-model"}],
+            "prefix": "keep-me",
+            "disabled": False,
+        },
+        {
+            "name": "second",
+            "base-url": "https://b.example/v1",
+            "api-key-entries": [{"api-key": "sk-b"}],
+            "models": [{"name": "other", "alias": "other"}],
+        },
+        {
+            "name": "third",
+            "base-url": "https://c.example/v1",
+            "api-key-entries": [{"api-key": "sk-c"}],
+            "models": [{"name": "third-model", "alias": "third-model"}],
+        },
+    ]
+    await _ready(async_client)
+    listed = await async_client.get("/api/cliproxy/accounts")
+    accounts = listed.json()["apiKeys"]
+    first, second, third = accounts
+
+    url_only = await async_client.patch(
+        "/api/cliproxy/api-keys/openai-compatibility/0",
+        json={
+            "kind": "openai-compatibility",
+            "baseUrl": "https://openrouter.ai/api/v1",
+            "accountId": first["id"],
+            "disabled": True,
+        },
+    )
+    assert url_only.status_code == 200
+    stored = _FakeClient.api_key_lists["openai-compatibility"][0]
+    assert stored["name"] == "My OpenRouter"
+    assert stored["models"] == [{"name": "upstream-model", "alias": "friendly-model"}]
+    assert stored["prefix"] == "keep-me"
+    assert stored["api-key-entries"][0]["api-key"] == "sk-old"
+    assert stored["disabled"] is True
+
+    renamed = await async_client.patch(
+        "/api/cliproxy/api-keys/openai-compatibility/0",
+        json={
+            "kind": "openai-compatibility",
+            "name": "My OpenRouter",
+            "baseUrl": "https://proxy.example/v1",
+            "models": ["friendly-model", "added-model"],
+            "accountId": url_only.json()["id"],
+        },
+    )
+    assert renamed.status_code == 200
+    stored = _FakeClient.api_key_lists["openai-compatibility"][0]
+    assert stored["name"] == "My OpenRouter"
+    assert stored["base-url"] == "https://proxy.example/v1"
+    assert stored["models"] == [
+        {"name": "upstream-model", "alias": "friendly-model"},
+        {"name": "added-model", "alias": "added-model"},
+    ]
+
+    rejected_name = await async_client.patch(
+        "/api/cliproxy/api-keys/openai-compatibility/0",
+        json={
+            "kind": "openai-compatibility",
+            "name": "Still Two Words",
+            "baseUrl": "https://proxy.example/v1",
+            "accountId": renamed.json()["id"],
+        },
+    )
+    assert rejected_name.status_code == 400
+    assert _FakeClient.api_key_lists["openai-compatibility"][0]["name"] == "My OpenRouter"
+
+    wrong = await async_client.patch(
+        "/api/cliproxy/api-keys/openai-compatibility/1",
+        json={
+            "kind": "openai-compatibility",
+            "baseUrl": "https://hijack.example/v1",
+            "accountId": "not-the-account",
+        },
+    )
+    assert wrong.status_code == 409
+    assert _FakeClient.api_key_lists["openai-compatibility"][1]["base-url"] == "https://b.example/v1"
+
+    removed = await async_client.request(
+        "DELETE",
+        "/api/cliproxy/api-keys/openai-compatibility/0",
+        json={"confirm": True, "accountId": renamed.json()["id"]},
+    )
+    assert removed.status_code == 200
+    stale = await async_client.patch(
+        "/api/cliproxy/api-keys/openai-compatibility/1",
+        json={
+            "kind": "openai-compatibility",
+            "baseUrl": "https://hijack.example/v1",
+            "accountId": second["id"],
+        },
+    )
+    assert stale.status_code == 409
+    missed = await async_client.request(
+        "DELETE",
+        "/api/cliproxy/api-keys/openai-compatibility/1",
+        json={"confirm": True, "accountId": second["id"]},
+    )
+    assert missed.status_code == 409
+    assert [item["name"] for item in _FakeClient.api_key_lists["openai-compatibility"]] == ["second", "third"]
+    assert _FakeClient.api_key_lists["openai-compatibility"][1]["base-url"] == "https://c.example/v1"
+
+
+@pytest.mark.asyncio
+async def test_overlapping_api_key_creates_keep_both_accounts(async_client, monkeypatch):
+    _install(monkeypatch)
+    await _ready(async_client)
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    paused = {"done": False}
+
+    async def pause_first_get() -> None:
+        if paused["done"]:
+            return
+        paused["done"] = True
+        entered.set()
+        await release.wait()
+
+    _FakeClient.management_get_hook = pause_first_get
+
+    async def create(name: str) -> None:
+        response = await async_client.post(
+            "/api/cliproxy/api-keys",
+            json={
+                "kind": "openai-compatibility",
+                "name": name,
+                "baseUrl": f"https://{name}.example/v1",
+                "apiKey": f"sk-{name}",
+                "models": [name],
+            },
+        )
+        assert response.status_code == 200
+
+    first = asyncio.create_task(create("alpha"))
+    await asyncio.wait_for(entered.wait(), timeout=5)
+    second = asyncio.create_task(create("beta"))
+    await asyncio.sleep(0.2)
+    assert not second.done()
+    release.set()
+    await first
+    await second
+
+    names = [item["name"] for item in _FakeClient.api_key_lists["openai-compatibility"]]
+    assert names == ["alpha", "beta"]
+    methods = [call[0] for call in _FakeClient.management_calls if call[0] in {"GET", "PUT"}]
+    assert methods == ["GET", "PUT", "GET", "PUT"]
 
 
 @pytest.mark.asyncio

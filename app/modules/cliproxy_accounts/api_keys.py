@@ -10,12 +10,14 @@ when the list is replaced.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from urllib.parse import urlsplit
 
 from app.core.clients.claude_sidecar import ClaudeSidecarClient, ClaudeSidecarError
-from app.core.exceptions import DashboardBadRequestError
+from app.core.exceptions import DashboardBadRequestError, DashboardConflictError
 from app.core.types import JsonValue
 from app.core.utils.json_guards import is_json_mapping
 from app.modules.cliproxy_accounts.management import build_management
@@ -88,6 +90,7 @@ class ApiKeyWrite:
     disabled: bool | None
     update_models: bool
     update_disabled: bool
+    update_name: bool
 
 
 def api_key_kind(slug: str) -> ApiKeyKind:
@@ -110,11 +113,7 @@ def normalize_api_key_write(
     creating: bool,
 ) -> ApiKeyWrite:
     resolved = api_key_kind(kind)
-    label = _optional_name(name) if resolved.named else None
-    if resolved.named and creating and not label:
-        raise DashboardBadRequestError("Name is required")
-    if resolved.named and name is not None and name.strip() and label is None:
-        raise DashboardBadRequestError("Name must be a single short label")
+    label, update_name = _name_for_write(resolved, name, creating=creating)
     url = _base_url(base_url)
     secret = _optional_secret(api_key)
     if creating and not secret:
@@ -131,6 +130,7 @@ def normalize_api_key_write(
         disabled=disabled,
         update_models=update_models or creating,
         update_disabled=update_disabled and resolved.supports_disable,
+        update_name=update_name,
     )
 
 
@@ -178,24 +178,30 @@ async def update_api_key_account(
     raw_files: Sequence[Mapping[str, JsonValue]],
     index: int,
     write: ApiKeyWrite,
+    account_id: str,
 ) -> CliproxyApiKeyAccount:
     kind = api_key_kind(write.kind)
     payload = await _request(client, "GET", kind.path, None)
     items = [dict(item) for item in _items(payload, kind.response_key) if is_json_mapping(item)]
-    if index < 0 or index >= len(items):
-        raise DashboardBadRequestError("API-key account was not found")
-    items[index] = _edited_item(kind, items[index], write)
+    current = _require_account(kind, items, index, account_id)
+    items[index] = _edited_item(kind, current, write)
     stored = await _request(client, "PUT", kind.path, {"items": items})
     saved = [item for item in _items(stored, kind.response_key) if is_json_mapping(item)] or items
     if index >= len(saved):
-        raise DashboardBadRequestError("API-key account was not found")
+        raise DashboardConflictError(_STALE_ACCOUNT)
     return await _project(client, kind, index, saved[index], raw_files)
 
 
-async def delete_api_key_account(client: ClaudeSidecarClient, kind_slug: str, index: int) -> None:
+async def delete_api_key_account(
+    client: ClaudeSidecarClient,
+    kind_slug: str,
+    index: int,
+    account_id: str,
+) -> None:
     kind = api_key_kind(kind_slug)
-    if index < 0:
-        raise DashboardBadRequestError("API-key account was not found")
+    payload = await _request(client, "GET", kind.path, None)
+    items = [item for item in _items(payload, kind.response_key) if is_json_mapping(item)]
+    _require_account(kind, items, index, account_id)
     await _request(client, "DELETE", f"{kind.path}?index={index}", None)
 
 
@@ -246,6 +252,7 @@ async def _project(
     disabled = item.get("disabled") if kind.supports_disable and isinstance(item.get("disabled"), bool) else None
     name = _text(item.get("name")) if kind.named else None
     return CliproxyApiKeyAccount(
+        id=api_key_account_id(kind, item),
         kind=kind.slug,
         index=index,
         name=name or _fallback_name(kind, index),
@@ -319,10 +326,10 @@ def _edited_item(kind: ApiKeyKind, current: Mapping[str, JsonValue], write: ApiK
 
     updated = dict(current)
     updated["base-url"] = write.base_url
-    if kind.named and write.name:
-        updated["name"] = write.name
+    if kind.named and write.update_name:
+        updated["name"] = _kept_or_new_name(current, write.name or "")
     if write.update_models:
-        updated["models"] = _model_payload(write.models)
+        updated["models"] = _merged_model_payload(current.get("models"), write.models)
     if write.api_key:
         if kind.named:
             updated["api-key-entries"] = _replace_first_key(current.get("api-key-entries"), write.api_key)
@@ -348,8 +355,104 @@ def _replace_first_key(raw: JsonValue | None, api_key: str) -> list[JsonValue]:
     return [{"api-key": api_key}, *entries[1:]]
 
 
+_STALE_ACCOUNT = "This API-key account changed before the edit was saved. Reload and try again."
+
+
+def api_key_account_id(kind: ApiKeyKind, item: Mapping[str, JsonValue]) -> str:
+    """Identity of one stored entry, excluding the secret and the list index.
+
+    Edit and delete send this token back. The write checks the entry currently
+    at the requested index and rejects the request when the token does not
+    match, so a stale page cannot land on a neighbor after the list shifts.
+    """
+
+    disabled = item.get("disabled") if kind.supports_disable and isinstance(item.get("disabled"), bool) else None
+    payload = {
+        "authIndex": _text(item.get("auth-index")) or "",
+        "baseUrl": _text(item.get("base-url")) or "",
+        "disabled": disabled,
+        "kind": kind.slug,
+        "models": [{"alias": model.alias, "name": model.name} for model in _configured_models(item.get("models"))],
+        "name": (_text(item.get("name")) or "") if kind.named else "",
+        "prefix": _text(item.get("prefix")) or "",
+    }
+    encoded = json.dumps(payload, separators=(",", ":"), sort_keys=True)
+    return hashlib.sha256(encoded.encode()).hexdigest()
+
+
+def _require_account(
+    kind: ApiKeyKind,
+    items: Sequence[Mapping[str, JsonValue]],
+    index: int,
+    account_id: str,
+) -> Mapping[str, JsonValue]:
+    if index < 0 or index >= len(items) or api_key_account_id(kind, items[index]) != account_id:
+        raise DashboardConflictError(_STALE_ACCOUNT)
+    return items[index]
+
+
+def _name_for_write(kind: ApiKeyKind, name: str | None, *, creating: bool) -> tuple[str | None, bool]:
+    if not kind.named:
+        return None, False
+    if name is None:
+        if creating:
+            raise DashboardBadRequestError("Name is required")
+        return None, False
+    text = name.strip()
+    if not text:
+        raise DashboardBadRequestError("Name is required")
+    if len(text) > _MAX_NAME_LENGTH or "/" in text or "\\" in text:
+        raise DashboardBadRequestError("Name must be a single short label")
+    if creating:
+        label = _optional_name(text)
+        if label is None:
+            raise DashboardBadRequestError("Name must be a single short label")
+        return label, True
+    return text, True
+
+
+def _kept_or_new_name(current: Mapping[str, JsonValue], submitted: str) -> str:
+    stored = _text(current.get("name"))
+    if stored is not None and submitted == stored:
+        return stored
+    label = _optional_name(submitted)
+    if label is None:
+        raise DashboardBadRequestError("Name must be a single short label")
+    return label
+
+
 def _model_payload(models: Sequence[str]) -> list[JsonValue]:
     return [{"name": model, "alias": model} for model in models]
+
+
+def _merged_model_payload(raw: JsonValue | None, models: Sequence[str]) -> list[JsonValue]:
+    """Keep stored name/alias pairs for ids the form still lists.
+
+    A new id becomes an identity mapping. An omitted models field never calls
+    this, so a URL or key change leaves the stored mappings alone.
+    """
+
+    existing = _configured_models(raw)
+    by_alias: dict[str, CliproxyApiKeyModel] = {}
+    by_name: dict[str, CliproxyApiKeyModel] = {}
+    for model in existing:
+        by_alias.setdefault(model.alias.casefold(), model)
+        by_name.setdefault(model.name.casefold(), model)
+    merged: list[JsonValue] = []
+    seen: set[str] = set()
+    for model_id in models:
+        key = model_id.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        match = by_alias.get(key) or by_name.get(key)
+        if match is None:
+            merged.append({"name": model_id, "alias": model_id})
+            continue
+        merged.append({"name": match.name, "alias": match.alias})
+        seen.add(match.alias.casefold())
+        seen.add(match.name.casefold())
+    return merged
 
 
 def _configured_models(raw: JsonValue | None) -> list[CliproxyApiKeyModel]:

@@ -34,6 +34,10 @@ class StatusWriteLockTimeout(Exception):
     """The status write claim stayed held past the acquisition timeout."""
 
 
+class ApiKeyWriteLockTimeout(Exception):
+    """The API-key list claim stayed held past the acquisition timeout."""
+
+
 class _ClaimLock:
     def __init__(self, name: str, pg_key: str, timeout_message: str, timeout_type: type[Exception]) -> None:
         self.name = name
@@ -56,6 +60,30 @@ async def cliproxy_status_write_lock(session: AsyncSession) -> AsyncIterator[Non
     """Hold the status-write lock across the inventory check and upstream PATCH."""
 
     async with _claim_lock(session, _STATUS_LOCK):
+        yield
+
+
+_API_KEY_LIST_LOCKS: dict[str, _ClaimLock] = {}
+
+
+def _api_key_list_lock(kind: str) -> _ClaimLock:
+    existing = _API_KEY_LIST_LOCKS.get(kind)
+    if existing is not None:
+        return existing
+    created = _ClaimLock(
+        name=f"api-key:{kind}",
+        pg_key=f"cliproxy-api-key-list:{kind}",
+        timeout_message="Another API-key account update is in progress",
+        timeout_type=ApiKeyWriteLockTimeout,
+    )
+    return _API_KEY_LIST_LOCKS.setdefault(kind, created)
+
+
+@asynccontextmanager
+async def cliproxy_api_key_list_lock(session: AsyncSession, kind: str) -> AsyncIterator[None]:
+    """Hold one provider list lock from the read through the upstream mutation."""
+
+    async with _claim_lock(session, _api_key_list_lock(kind)):
         yield
 
 

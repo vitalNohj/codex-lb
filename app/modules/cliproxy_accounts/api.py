@@ -239,7 +239,10 @@ async def update_cliproxy_api_key(
         update_disabled="disabled" in provided,
         creating=False,
     )
-    return await context.service.update_api_key(index, write)
+    account_id = (body.account_id or "").strip()
+    if not account_id:
+        raise DashboardBadRequestError("Account id is required")
+    return await context.service.update_api_key(index, write, account_id)
 
 
 @router.delete("/api-keys/{kind}/{index}", response_model=CliproxyApiKeyDeleteResponse)
@@ -252,7 +255,10 @@ async def delete_cliproxy_api_key(
 ) -> CliproxyApiKeyDeleteResponse:
     if not body.confirm:
         raise DashboardBadRequestError("Confirm before removing this API-key account")
-    await context.service.delete_api_key(kind, index)
+    account_id = body.account_id.strip()
+    if not account_id:
+        raise DashboardBadRequestError("Account id is required")
+    await context.service.delete_api_key(kind, index, account_id)
     return CliproxyApiKeyDeleteResponse(kind=kind, index=index, deleted=True)
 
 

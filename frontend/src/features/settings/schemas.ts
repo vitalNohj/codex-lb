@@ -899,6 +899,7 @@ export const CliproxyApiKeyModelSchema = z.object({
   alias: z.string(),
 });
 export const CliproxyApiKeyAccountSchema = z.object({
+  id: z.string(),
   kind: z.string(),
   index: z.number().int(),
   name: z.string(),
@@ -927,9 +928,11 @@ export const CliproxyApiKeyWriteRequestSchema = z.object({
   apiKey: z.string().nullable().optional(),
   models: z.array(z.string()).optional(),
   disabled: z.boolean().nullable().optional(),
+  accountId: z.string().optional(),
 });
 export const CliproxyApiKeyDeleteRequestSchema = z.object({
   confirm: z.boolean(),
+  accountId: z.string(),
 });
 export const CliproxyApiKeyDeleteResponseSchema = z.object({
   kind: z.string(),

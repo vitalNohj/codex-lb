@@ -34,6 +34,7 @@ from app.modules.claude_sidecar.quota import (
 )
 from app.modules.cliproxy_accounts.api_keys import (
     ApiKeyWrite,
+    api_key_kind,
     create_api_key_account,
     delete_api_key_account,
     list_api_key_accounts,
@@ -78,7 +79,12 @@ from app.modules.cliproxy_accounts.schemas import (
     CliproxyProviderCredentials,
     CliproxyQuotaWindow,
 )
-from app.modules.cliproxy_accounts.status_lock import StatusWriteLockTimeout, cliproxy_status_write_lock
+from app.modules.cliproxy_accounts.status_lock import (
+    ApiKeyWriteLockTimeout,
+    StatusWriteLockTimeout,
+    cliproxy_api_key_list_lock,
+    cliproxy_status_write_lock,
+)
 from app.modules.cliproxy_accounts.upload import normalize_credential_name, prepare_upload_document
 from app.modules.cliproxy_accounts.validation import CredentialFieldChange, disabling_last_enabled_account
 from app.modules.proxy.claude_sidecar_dispatch import sidecar_config_from_settings
@@ -298,9 +304,12 @@ class CliproxyAccountsService:
         )
 
     async def create_api_key(self, write: ApiKeyWrite) -> CliproxyApiKeyAccount:
-        client, raw_files = await self._management_client()
         try:
-            account = await create_api_key_account(client, raw_files, write)
+            async with cliproxy_api_key_list_lock(self._session, write.kind):
+                client, raw_files = await self._management_client()
+                account = await create_api_key_account(client, raw_files, write)
+        except ApiKeyWriteLockTimeout as exc:
+            raise DashboardConflictError("Another API-key account update is in progress") from exc
         except ClaudeSidecarUnavailableError as exc:
             raise DashboardServiceUnavailableError(public_message(exc.message)) from exc
         except ClaudeSidecarError as exc:
@@ -308,10 +317,13 @@ class CliproxyAccountsService:
         _audit_api_key("cliproxy_api_key_created", account)
         return account
 
-    async def update_api_key(self, index: int, write: ApiKeyWrite) -> CliproxyApiKeyAccount:
-        client, raw_files = await self._management_client()
+    async def update_api_key(self, index: int, write: ApiKeyWrite, account_id: str) -> CliproxyApiKeyAccount:
         try:
-            account = await update_api_key_account(client, raw_files, index, write)
+            async with cliproxy_api_key_list_lock(self._session, write.kind):
+                client, raw_files = await self._management_client()
+                account = await update_api_key_account(client, raw_files, index, write, account_id)
+        except ApiKeyWriteLockTimeout as exc:
+            raise DashboardConflictError("Another API-key account update is in progress") from exc
         except ClaudeSidecarUnavailableError as exc:
             raise DashboardServiceUnavailableError(public_message(exc.message)) from exc
         except ClaudeSidecarError as exc:
@@ -319,17 +331,21 @@ class CliproxyAccountsService:
         _audit_api_key("cliproxy_api_key_updated", account)
         return account
 
-    async def delete_api_key(self, kind: str, index: int) -> None:
-        client, _raw_files = await self._management_client()
+    async def delete_api_key(self, kind: str, index: int, account_id: str) -> None:
+        resolved = api_key_kind(kind)
         try:
-            await delete_api_key_account(client, kind, index)
+            async with cliproxy_api_key_list_lock(self._session, resolved.slug):
+                client, _raw_files = await self._management_client()
+                await delete_api_key_account(client, resolved.slug, index, account_id)
+        except ApiKeyWriteLockTimeout as exc:
+            raise DashboardConflictError("Another API-key account update is in progress") from exc
         except ClaudeSidecarUnavailableError as exc:
             raise DashboardServiceUnavailableError(public_message(exc.message)) from exc
         except ClaudeSidecarError as exc:
             _raise_management_error(exc)
         AuditService.log_async(
             "cliproxy_api_key_deleted",
-            details={"kind": kind, "index": index},
+            details={"kind": resolved.slug, "index": index},
         )
 
     async def add_catalog_model(self, model: str) -> CliproxyCatalogModelResponse:

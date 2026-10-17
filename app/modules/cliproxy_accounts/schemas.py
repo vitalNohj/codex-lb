@@ -60,6 +60,7 @@ class CliproxyApiKeyModel(DashboardModel):
 class CliproxyApiKeyAccount(DashboardModel):
     """One API-key provider entry. The key itself is never included."""
 
+    id: str
     kind: str
     index: int
     name: str
@@ -189,10 +190,12 @@ class CliproxyApiKeyWriteRequest(DashboardModel):
     api_key: str | None = None
     models: list[str] = Field(default_factory=list)
     disabled: bool | None = None
+    account_id: str | None = None
 
 
 class CliproxyApiKeyDeleteRequest(DashboardModel):
     confirm: bool
+    account_id: str
 
 
 class CliproxyApiKeyDeleteResponse(DashboardModel):

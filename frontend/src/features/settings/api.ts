@@ -235,8 +235,8 @@ export function updateCliproxyApiKey(kind: string, index: number, payload: unkno
   );
 }
 
-export function deleteCliproxyApiKey(kind: string, index: number) {
-  const validated = CliproxyApiKeyDeleteRequestSchema.parse({ confirm: true });
+export function deleteCliproxyApiKey(kind: string, index: number, accountId: string) {
+  const validated = CliproxyApiKeyDeleteRequestSchema.parse({ confirm: true, accountId });
   return del(
     `${CLIPROXY_API_KEYS_PATH}/${encodeURIComponent(kind)}/${index}`,
     CliproxyApiKeyDeleteResponseSchema,

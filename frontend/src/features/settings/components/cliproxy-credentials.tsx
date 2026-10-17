@@ -75,6 +75,14 @@ function modelKey(model: string): string {
   return model.trim().toLowerCase();
 }
 
+function clientModelIds(account: CliproxyApiKeyAccount): string[] {
+  return account.models.map((model) => model.alias || model.name).filter((model) => model.length > 0);
+}
+
+function sameModelIds(left: string[], right: string[]): boolean {
+  return left.length === right.length && left.every((model, index) => model === right[index]);
+}
+
 function integerOrEmpty(value: string): number | null | undefined {
   const trimmed = value.trim();
   if (!trimmed) {
@@ -545,6 +553,7 @@ function ApiKeyAccountCard({
   catalog: ReadonlySet<string>;
   onSave: (body: {
     kind: string;
+    accountId: string;
     name?: string | null;
     baseUrl: string;
     apiKey?: string;
@@ -555,11 +564,21 @@ function ApiKeyAccountCard({
   onAddModel: (model: string) => void;
 }) {
   const named = API_KEY_KINDS.find((kind) => kind.slug === account.kind)?.named ?? false;
+  const serverModels = clientModelIds(account);
+  const [boundId, setBoundId] = useState(account.id);
   const [name, setName] = useState(account.name);
   const [baseUrl, setBaseUrl] = useState(account.baseUrl);
-  const [models, setModels] = useState(account.models.map((model) => model.alias || model.name).join(", "));
+  const [models, setModels] = useState(serverModels.join(", "));
   const [apiKey, setApiKey] = useState("");
   const [pendingDelete, setPendingDelete] = useState(false);
+  if (boundId !== account.id) {
+    setBoundId(account.id);
+    setName(account.name);
+    setBaseUrl(account.baseUrl);
+    setModels(serverModels.join(", "));
+    setApiKey("");
+    setPendingDelete(false);
+  }
   const discovered = account.discoveredModels.length > 0
     ? account.discoveredModels
     : account.models.map((model) => model.alias || model.name);
@@ -569,17 +588,22 @@ function ApiKeyAccountCard({
     event.preventDefault();
     const body: {
       kind: string;
+      accountId: string;
       name?: string | null;
       baseUrl: string;
       apiKey?: string;
-      models: string[];
+      models?: string[];
     } = {
       kind: account.kind,
+      accountId: account.id,
       baseUrl: baseUrl.trim(),
-      models: splitModels(models),
     };
-    if (named) {
+    if (named && name.trim() !== account.name) {
       body.name = name.trim();
+    }
+    const nextModels = splitModels(models);
+    if (!sameModelIds(nextModels, serverModels)) {
+      body.models = nextModels;
     }
     const secret = apiKey.trim();
     if (secret) {
@@ -605,14 +629,21 @@ function ApiKeyAccountCard({
       </div>
       <p className="text-xs text-muted-foreground">Quota unknown</p>
       {account.supportsDisable ? (
-        <label className="flex items-center justify-between gap-3 text-sm font-medium" htmlFor={`cliproxy-api-key-enabled-${account.kind}-${account.index}`}>
+        <label className="flex items-center justify-between gap-3 text-sm font-medium" htmlFor={`cliproxy-api-key-enabled-${account.id}`}>
           Enabled
           <Switch
-            id={`cliproxy-api-key-enabled-${account.kind}-${account.index}`}
+            id={`cliproxy-api-key-enabled-${account.id}`}
             checked={account.disabled !== true}
             disabled={busy}
             aria-label={`Enabled for ${label}`}
-            onCheckedChange={(enabled) => onSave({ kind: account.kind, name: account.name, baseUrl: account.baseUrl, disabled: !enabled })}
+            onCheckedChange={(enabled) =>
+              onSave({
+                kind: account.kind,
+                accountId: account.id,
+                baseUrl: account.baseUrl,
+                disabled: !enabled,
+              })
+            }
           />
         </label>
       ) : null}
@@ -624,18 +655,18 @@ function ApiKeyAccountCard({
       <form className="grid gap-3 sm:grid-cols-2" onSubmit={save}>
         {named ? (
           <div className="space-y-1">
-            <Label htmlFor={`cliproxy-api-key-name-${account.kind}-${account.index}`}>Name</Label>
-            <Input id={`cliproxy-api-key-name-${account.kind}-${account.index}`} value={name} disabled={busy} onChange={(event) => setName(event.target.value)} />
+            <Label htmlFor={`cliproxy-api-key-name-${account.id}`}>Name</Label>
+            <Input id={`cliproxy-api-key-name-${account.id}`} value={name} disabled={busy} onChange={(event) => setName(event.target.value)} />
           </div>
         ) : null}
         <div className="space-y-1">
-          <Label htmlFor={`cliproxy-api-key-url-${account.kind}-${account.index}`}>Base URL</Label>
-          <Input id={`cliproxy-api-key-url-${account.kind}-${account.index}`} value={baseUrl} disabled={busy} onChange={(event) => setBaseUrl(event.target.value)} />
+            <Label htmlFor={`cliproxy-api-key-url-${account.id}`}>Base URL</Label>
+            <Input id={`cliproxy-api-key-url-${account.id}`} value={baseUrl} disabled={busy} onChange={(event) => setBaseUrl(event.target.value)} />
         </div>
         <div className="space-y-1">
-          <Label htmlFor={`cliproxy-api-key-secret-${account.kind}-${account.index}`}>Replace API key</Label>
+          <Label htmlFor={`cliproxy-api-key-secret-${account.id}`}>Replace API key</Label>
           <Input
-            id={`cliproxy-api-key-secret-${account.kind}-${account.index}`}
+            id={`cliproxy-api-key-secret-${account.id}`}
             type="password"
             autoComplete="off"
             value={apiKey}
@@ -645,9 +676,9 @@ function ApiKeyAccountCard({
           />
         </div>
         <div className="space-y-1 sm:col-span-2">
-          <Label htmlFor={`cliproxy-api-key-models-${account.kind}-${account.index}`}>Models</Label>
+          <Label htmlFor={`cliproxy-api-key-models-${account.id}`}>Models</Label>
           <Input
-            id={`cliproxy-api-key-models-${account.kind}-${account.index}`}
+            id={`cliproxy-api-key-models-${account.id}`}
             value={models}
             disabled={busy}
             onChange={(event) => setModels(event.target.value)}
@@ -805,13 +836,20 @@ export function CliproxyCredentials({ enabled }: { enabled: boolean }) {
           />
           {apiKeys.map((account) => (
             <ApiKeyAccountCard
-              key={`${account.kind}:${account.index}`}
+              key={account.id}
               account={account}
               busy={apiKeyMutation.isPending || catalogMutation.isPending}
               shared={shared}
               catalog={catalog}
               onSave={(body) => apiKeyMutation.mutate({ action: "update", kind: account.kind, index: account.index, body })}
-              onDelete={() => apiKeyMutation.mutate({ action: "delete", kind: account.kind, index: account.index })}
+              onDelete={() =>
+                apiKeyMutation.mutate({
+                  action: "delete",
+                  kind: account.kind,
+                  index: account.index,
+                  accountId: account.id,
+                })
+              }
               onAddModel={(model) => catalogMutation.mutate(model)}
             />
           ))}

@@ -681,7 +681,7 @@ export function useCliproxyCredentials(enabled: boolean) {
       input:
         | { action: "create"; body: unknown }
         | { action: "update"; kind: string; index: number; body: unknown }
-        | { action: "delete"; kind: string; index: number },
+        | { action: "delete"; kind: string; index: number; accountId: string },
     ) => {
       if (input.action === "create") {
         await createCliproxyApiKey(input.body);
@@ -691,7 +691,7 @@ export function useCliproxyCredentials(enabled: boolean) {
         await updateCliproxyApiKey(input.kind, input.index, input.body);
         return;
       }
-      await deleteCliproxyApiKey(input.kind, input.index);
+      await deleteCliproxyApiKey(input.kind, input.index, input.accountId);
     },
     onError: (error: Error) => {
       toast.error(error.message || "Failed to update the API-key account");
