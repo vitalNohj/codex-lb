@@ -111,8 +111,6 @@ def test_codex_windows_match_router_selection_inputs() -> None:
         codex_long_window_ids={account.id: "seven_day"},
         sidecar_accounts=(),
         holds=(),
-        prefixes_by_name={},
-        prefixes_by_index={},
         now=_NOW,
     )
 
@@ -139,8 +137,6 @@ def test_codex_without_usage_is_listed_unknown() -> None:
         codex_long_window_ids={},
         sidecar_accounts=(),
         holds=(),
-        prefixes_by_name={},
-        prefixes_by_index={},
         now=_NOW,
     )
 
@@ -167,8 +163,6 @@ def test_exhausted_long_window_limits_provider_headroom() -> None:
         codex_long_window_ids={"acc-tight": "seven_day"},
         sidecar_accounts=(),
         holds=(),
-        prefixes_by_name={},
-        prefixes_by_index={},
         now=_NOW,
     )
 
@@ -202,7 +196,7 @@ def test_non_routing_xai_window_does_not_lower_headroom() -> None:
             ),
         ),
     )
-    state = routing_state_for_auth(auth, holds=(), prefixes_by_name={}, prefixes_by_index={}, now=_NOW)
+    state = routing_state_for_auth(auth, holds=(), now=_NOW)
     assert state is not None
     feed = compose_quota_feed(
         generated_at=_NOW,
@@ -210,8 +204,6 @@ def test_non_routing_xai_window_does_not_lower_headroom() -> None:
         codex_long_window_ids={},
         sidecar_accounts=(auth,),
         holds=(),
-        prefixes_by_name={},
-        prefixes_by_index={},
         now=_NOW,
     )
 
@@ -228,8 +220,6 @@ def test_paused_codex_account_is_listed_and_not_available() -> None:
         codex_long_window_ids={"acc-paused": "monthly"},
         sidecar_accounts=(),
         holds=(),
-        prefixes_by_name={},
-        prefixes_by_index={},
         now=_NOW,
     )
 
@@ -294,14 +284,12 @@ def test_claude_xai_and_unknown_rows_match_sidecar_routing_state() -> None:
         codex_long_window_ids={},
         sidecar_accounts=accounts,
         holds=(),
-        prefixes_by_name={},
-        prefixes_by_index={},
         now=_NOW,
     )
 
-    claude_state = routing_state_for_auth(claude, holds=(), prefixes_by_name={}, prefixes_by_index={}, now=_NOW)
-    xai_state = routing_state_for_auth(xai, holds=(), prefixes_by_name={}, prefixes_by_index={}, now=_NOW)
-    unknown_state = routing_state_for_auth(unknown, holds=(), prefixes_by_name={}, prefixes_by_index={}, now=_NOW)
+    claude_state = routing_state_for_auth(claude, holds=(), now=_NOW)
+    xai_state = routing_state_for_auth(xai, holds=(), now=_NOW)
+    unknown_state = routing_state_for_auth(unknown, holds=(), now=_NOW)
     assert claude_state is not None and xai_state is not None and unknown_state is not None
 
     claude_hour = _window(feed, claude_state.account_id, "five_hour")
@@ -353,7 +341,7 @@ def test_cliproxy_codex_oauth_windows_use_codex_source() -> None:
             seven_day=SidecarOAuthUsageBucket(remaining_percent=70.0, resets_at=reset),
         ),
     )
-    state = routing_state_for_auth(auth, holds=(), prefixes_by_name={}, prefixes_by_index={}, now=_NOW)
+    state = routing_state_for_auth(auth, holds=(), now=_NOW)
     assert state is not None
     feed = compose_quota_feed(
         generated_at=_NOW,
@@ -361,8 +349,6 @@ def test_cliproxy_codex_oauth_windows_use_codex_source() -> None:
         codex_long_window_ids={},
         sidecar_accounts=(auth,),
         holds=(),
-        prefixes_by_name={},
-        prefixes_by_index={},
         now=_NOW,
     )
 
@@ -402,7 +388,7 @@ def test_xai_rate_limit_hold_matches_router_exhaustion() -> None:
         provider="xai",
         kind=XAI_LIMIT_FREE_USAGE,
     )
-    state = routing_state_for_auth(auth, holds=(hold,), prefixes_by_name={}, prefixes_by_index={}, now=_NOW)
+    state = routing_state_for_auth(auth, holds=(hold,), now=_NOW)
     assert state is not None
     feed = compose_quota_feed(
         generated_at=_NOW,
@@ -410,8 +396,6 @@ def test_xai_rate_limit_hold_matches_router_exhaustion() -> None:
         codex_long_window_ids={},
         sidecar_accounts=(auth,),
         holds=(hold,),
-        prefixes_by_name={},
-        prefixes_by_index={},
         now=_NOW,
     )
 

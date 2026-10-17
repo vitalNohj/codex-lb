@@ -32,9 +32,8 @@ class CliproxyCredential(DashboardModel):
     disabled: bool = False
     unavailable: bool = False
     quota_exceeded: bool = False
-    # CLIProxyAPI v8.0.30 omits prefix from GET /v0/management/auth-files.
-    # The value shown here comes from codex-lb's prefix registry when one is
-    # stored, and from the auth-file list only when the registry has none.
+    # Read from the auth file when CLIProxyAPI returns one. The panel does
+    # not assign or rewrite it.
     prefix: str | None = None
     weight: int | None = None
     priority: int | None = None
@@ -53,18 +52,42 @@ class CliproxyProviderCredentials(DashboardModel):
     credentials: list[CliproxyCredential] = Field(default_factory=list)
 
 
+class CliproxyApiKeyModel(DashboardModel):
+    name: str
+    alias: str
+
+
+class CliproxyApiKeyAccount(DashboardModel):
+    """One API-key provider entry. The key itself is never included."""
+
+    id: str
+    kind: str
+    index: int
+    name: str
+    base_url: str
+    disabled: bool | None = None
+    supports_disable: bool
+    has_api_key: bool
+    models: list[CliproxyApiKeyModel] = Field(default_factory=list)
+    discovered_models: list[str] = Field(default_factory=list)
+    models_error: str | None = None
+    auth_index: str | None = None
+    prefix: str | None = None
+
+
 class CliproxyAccountsResponse(DashboardModel):
     status: CliproxyAccountsStatus
     message: str | None = None
     providers: list[CliproxyProviderCredentials] = Field(default_factory=list)
+    api_keys: list[CliproxyApiKeyAccount] = Field(default_factory=list)
+    api_keys_message: str | None = None
+    shared_model_ids: list[str] = Field(default_factory=list)
 
 
 class CliproxyCredentialFieldsUpdate(DashboardModel):
-    prefix: str | None = None
     weight: int | None = None
     priority: int | None = None
     excluded_models: list[str] | None = None
-    confirm: bool = False
 
 
 class CliproxyCredentialFieldsResponse(DashboardModel):
@@ -158,3 +181,33 @@ class CliproxyCredentialUploadResponse(DashboardModel):
     name: str
     provider: str
     prefix: str | None = None
+
+
+class CliproxyApiKeyWriteRequest(DashboardModel):
+    kind: str
+    name: str | None = None
+    base_url: str
+    api_key: str | None = None
+    models: list[str] = Field(default_factory=list)
+    disabled: bool | None = None
+    account_id: str | None = None
+
+
+class CliproxyApiKeyDeleteRequest(DashboardModel):
+    confirm: bool
+    account_id: str
+
+
+class CliproxyApiKeyDeleteResponse(DashboardModel):
+    kind: str
+    index: int
+    deleted: bool
+
+
+class CliproxyCatalogModelRequest(DashboardModel):
+    model: str
+
+
+class CliproxyCatalogModelResponse(DashboardModel):
+    model: str
+    full_models: list[str] = Field(default_factory=list)

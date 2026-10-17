@@ -2,10 +2,7 @@ from __future__ import annotations
 
 from app.db.models import DashboardSettings
 from app.modules.claude_sidecar.quota import SidecarAuthQuota, parse_auth_files
-from app.modules.cliproxy_accounts.summaries import (
-    build_cliproxy_provider_summaries,
-    cliproxy_account_pool_enabled,
-)
+from app.modules.cliproxy_accounts.summaries import build_cliproxy_provider_summaries
 
 
 def _entry(**overrides) -> dict:
@@ -91,7 +88,7 @@ def test_parse_auth_files_without_provider_keeps_every_entry():
     assert by_email["person@example.com"].prefix is None
 
 
-def test_provider_summaries_group_claude_and_xai_separately():
+def test_provider_summaries_skip_claude_and_group_xai():
     settings = DashboardSettings(id=1, claude_sidecar_base_url="http://127.0.0.1:8317")
     summaries = build_cliproxy_provider_summaries(
         settings,
@@ -109,7 +106,7 @@ def test_provider_summaries_group_claude_and_xai_separately():
     )
 
     by_id = {summary.account_id: summary for summary in summaries}
-    assert set(by_id) == {"cliproxy-claude", "cliproxy-xai"}
+    assert set(by_id) == {"cliproxy-xai"}
     xai = by_id["cliproxy-xai"]
     assert xai.synthetic is True
     assert xai.read_only is True
@@ -118,7 +115,3 @@ def test_provider_summaries_group_claude_and_xai_separately():
     assert xai.status == "active"
     assert [row.email for row in xai.sidecar_auths] == ["xai@example.com", "xai-b@example.com"]
     assert xai.sidecar_auths[1].paused is True
-
-
-def test_account_pool_stays_off_by_default():
-    assert cliproxy_account_pool_enabled() is False

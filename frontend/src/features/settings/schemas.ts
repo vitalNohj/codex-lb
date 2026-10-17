@@ -869,11 +869,9 @@ export const CliproxyCredentialSchema = z.object({
   usageRequests: z.number().int().nonnegative().nullable().optional(),
 });
 export const CliproxyCredentialFieldsUpdateSchema = z.object({
-  prefix: z.string().nullable().optional(),
   weight: z.number().int().nullable().optional(),
   priority: z.number().int().nullable().optional(),
   excludedModels: z.array(z.string()).optional(),
-  confirm: z.boolean().optional(),
 });
 export const CliproxyCredentialFieldsResponseSchema = z.object({
   name: z.string(),
@@ -896,10 +894,57 @@ export const CliproxyProviderCredentialsSchema = z.object({
   provider: z.string(),
   credentials: z.array(CliproxyCredentialSchema).default([]),
 });
+export const CliproxyApiKeyModelSchema = z.object({
+  name: z.string(),
+  alias: z.string(),
+});
+export const CliproxyApiKeyAccountSchema = z.object({
+  id: z.string(),
+  kind: z.string(),
+  index: z.number().int(),
+  name: z.string(),
+  baseUrl: z.string(),
+  disabled: z.boolean().nullable().optional(),
+  supportsDisable: z.boolean(),
+  hasApiKey: z.boolean(),
+  models: z.array(CliproxyApiKeyModelSchema).default([]),
+  discoveredModels: z.array(z.string()).default([]),
+  modelsError: z.string().nullable().optional(),
+  authIndex: z.string().nullable().optional(),
+  prefix: z.string().nullable().optional(),
+});
 export const CliproxyAccountsResponseSchema = z.object({
   status: CliproxyAccountsStatusSchema,
   message: z.string().nullable().optional(),
   providers: z.array(CliproxyProviderCredentialsSchema).default([]),
+  apiKeys: z.array(CliproxyApiKeyAccountSchema).default([]),
+  apiKeysMessage: z.string().nullable().optional(),
+  sharedModelIds: z.array(z.string()).default([]),
+});
+export const CliproxyApiKeyWriteRequestSchema = z.object({
+  kind: z.string(),
+  name: z.string().nullable().optional(),
+  baseUrl: z.string(),
+  apiKey: z.string().nullable().optional(),
+  models: z.array(z.string()).optional(),
+  disabled: z.boolean().nullable().optional(),
+  accountId: z.string().optional(),
+});
+export const CliproxyApiKeyDeleteRequestSchema = z.object({
+  confirm: z.boolean(),
+  accountId: z.string(),
+});
+export const CliproxyApiKeyDeleteResponseSchema = z.object({
+  kind: z.string(),
+  index: z.number().int(),
+  deleted: z.boolean(),
+});
+export const CliproxyCatalogModelRequestSchema = z.object({
+  model: z.string(),
+});
+export const CliproxyCatalogModelResponseSchema = z.object({
+  model: z.string(),
+  fullModels: z.array(z.string()).default([]),
 });
 export const CliproxyOauthMethodSchema = z.enum(["browser", "device"]);
 export const CliproxyOauthStatusSchema = z.enum(["pending", "success", "error"]);
@@ -973,6 +1018,7 @@ export const CliproxyOauthStateSchema = z.object({
   errorMessage: z.string().nullable(),
 });
 export type CliproxyCredential = z.infer<typeof CliproxyCredentialSchema>;
+export type CliproxyApiKeyAccount = z.infer<typeof CliproxyApiKeyAccountSchema>;
 export type CliproxyAccountsResponse = z.infer<typeof CliproxyAccountsResponseSchema>;
 export type CliproxyCredentialFieldsUpdate = z.infer<typeof CliproxyCredentialFieldsUpdateSchema>;
 export type CliproxyCredentialStatusUpdate = z.infer<typeof CliproxyCredentialStatusUpdateSchema>;

@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import asyncio
-import logging
+import json
 from collections import defaultdict
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from typing import NoReturn
 
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit.service import AuditService
 from app.core.clients.claude_sidecar import ClaudeSidecarClient, ClaudeSidecarError, ClaudeSidecarUnavailableError
@@ -32,6 +32,15 @@ from app.modules.claude_sidecar.quota import (
     parse_auth_files,
     snapshot_from_json,
 )
+from app.modules.cliproxy_accounts.api_keys import (
+    ApiKeyWrite,
+    api_key_kind,
+    create_api_key_account,
+    delete_api_key_account,
+    list_api_key_accounts,
+    shared_model_ids,
+    update_api_key_account,
+)
 from app.modules.cliproxy_accounts.management import CliproxyManagement, build_management
 from app.modules.cliproxy_accounts.oauth_flow import (
     callback_body,
@@ -44,12 +53,6 @@ from app.modules.cliproxy_accounts.oauth_flow import (
     remembered_oauth_provider,
     validate_oauth_state,
 )
-from app.modules.cliproxy_accounts.prefix_lock import (
-    PrefixWriteLockTimeout,
-    StatusWriteLockTimeout,
-    cliproxy_prefix_write_lock,
-    cliproxy_status_write_lock,
-)
 from app.modules.cliproxy_accounts.providers import OauthProvider, oauth_provider
 from app.modules.cliproxy_accounts.redaction import public_message
 from app.modules.cliproxy_accounts.refresh_jobs import (
@@ -58,10 +61,11 @@ from app.modules.cliproxy_accounts.refresh_jobs import (
     begin_refresh,
     current_refresh,
 )
-from app.modules.cliproxy_accounts.repository import CliproxyCredentialPrefixRepository
 from app.modules.cliproxy_accounts.schemas import (
     CliproxyAccountsResponse,
     CliproxyAccountsStatus,
+    CliproxyApiKeyAccount,
+    CliproxyCatalogModelResponse,
     CliproxyCredential,
     CliproxyCredentialDeleteResponse,
     CliproxyCredentialFieldsResponse,
@@ -75,36 +79,30 @@ from app.modules.cliproxy_accounts.schemas import (
     CliproxyProviderCredentials,
     CliproxyQuotaWindow,
 )
-from app.modules.cliproxy_accounts.upload import normalize_credential_name, prepare_upload_document
-from app.modules.cliproxy_accounts.validation import (
-    CredentialFieldChange,
-    disabling_last_enabled_account,
-    effective_prefixes,
-    prefix_conflict_message,
-    routing_prefix_owners,
-    tag_is_changing,
+from app.modules.cliproxy_accounts.status_lock import (
+    ApiKeyWriteLockTimeout,
+    StatusWriteLockTimeout,
+    cliproxy_api_key_list_lock,
+    cliproxy_status_write_lock,
 )
+from app.modules.cliproxy_accounts.upload import normalize_credential_name, prepare_upload_document
+from app.modules.cliproxy_accounts.validation import CredentialFieldChange, disabling_last_enabled_account
 from app.modules.proxy.claude_sidecar_dispatch import sidecar_config_from_settings
+from app.modules.proxy.sidecar_routing import parse_sidecar_full_models
 from app.modules.settings.repository import SettingsRepository
-
-logger = logging.getLogger(__name__)
 
 
 class CliproxyAccountsService:
     """List CLIProxyAPI credentials and edit their management fields.
 
-    Writes go to CLIProxyAPI's auth-file field and status endpoints. Prefixes
-    are also stored here, because the auth-file list does not return them.
-    Nothing in this service dispatches a request or changes ``force-model-prefix``.
+    Writes go to CLIProxyAPI's auth-file field and status endpoints, and to
+    the API-key config lists. A prefix already on an account is left as
+    CLIProxyAPI stored it. Nothing here rewrites the model on a request.
     """
 
-    def __init__(
-        self,
-        settings_repository: SettingsRepository,
-        prefixes: CliproxyCredentialPrefixRepository,
-    ) -> None:
+    def __init__(self, settings_repository: SettingsRepository, session: AsyncSession) -> None:
         self._settings_repository = settings_repository
-        self._prefixes = prefixes
+        self._session = session
 
     async def list_credentials(self, *, provider: str | None = None) -> CliproxyAccountsResponse:
         settings = await self._settings_repository.get_or_create()
@@ -122,24 +120,17 @@ class CliproxyAccountsService:
             status: CliproxyAccountsStatus = "unauthorized" if exc.status_code in {401, 403} else "error"
             return CliproxyAccountsResponse(status=status, message=_sanitize_message(exc.message))
 
-        accounts = await asyncio.to_thread(parse_auth_files, raw_files, provider=provider)
+        oauth_files = _oauth_files(raw_files)
+        accounts = await asyncio.to_thread(parse_auth_files, oauth_files, provider=provider)
         quota = snapshot_from_json(settings.claude_sidecar_quota_state_json)
         holds = quota.rate_limit_holds if quota is not None else ()
-        stored_prefixes = await self._stored_prefixes()
-        raw_by_name = _raw_entries_by_name(raw_files)
-        credentials = await asyncio.gather(
-            *(
-                _credential(
-                    client,
-                    account,
-                    quota,
-                    holds,
-                    stored_prefixes.get(account.name),
-                    raw_by_name.get(account.name),
-                )
-                for account in accounts
+        raw_by_name = _raw_entries_by_name(oauth_files)
+        credentials = list(
+            await asyncio.gather(
+                *(_credential(client, account, quota, holds, raw_by_name.get(account.name)) for account in accounts)
             )
         )
+        api_keys, api_keys_message = await self._api_keys(client, raw_files)
         grouped: dict[str, list[CliproxyCredential]] = defaultdict(list)
         for credential in credentials:
             grouped[credential.provider].append(credential)
@@ -147,59 +138,21 @@ class CliproxyAccountsService:
             CliproxyProviderCredentials(provider=name, credentials=sorted(grouped[name], key=_credential_sort_key))
             for name in sorted(grouped)
         ]
-        return CliproxyAccountsResponse(status="healthy", providers=providers)
+        return CliproxyAccountsResponse(
+            status="healthy",
+            providers=providers,
+            api_keys=api_keys,
+            api_keys_message=api_keys_message,
+            shared_model_ids=shared_model_ids(credentials, api_keys),
+        )
 
     async def update_fields(self, name: str, change: CredentialFieldChange) -> CliproxyCredentialFieldsResponse:
         settings, account, raw, _accounts = await self._require_account(name)
         if change.update_excluded_models and not account.excluded_models_available:
             raise DashboardBadRequestError("Excluded models could not be read, so they cannot be replaced")
-        if not change.update_prefix:
-            await self._patch_fields(settings, name, change)
-            _audit_fields(account, change)
-            return _fields_response(account, raw, change, await self._stored_prefixes())
-        try:
-            async with cliproxy_prefix_write_lock(self._prefixes.session):
-                return await self._update_prefix_fields(name, change)
-        except PrefixWriteLockTimeout as exc:
-            raise DashboardConflictError("Another credential prefix update is in progress") from exc
-
-    async def _update_prefix_fields(self, name: str, change: CredentialFieldChange) -> CliproxyCredentialFieldsResponse:
-        """Patch one prefix while this worker holds the cross-process write lock.
-
-        The lock is already held. Re-read the registry inside it so an older
-        request cannot commit after a newer upstream PATCH, then put the
-        previous prefix back upstream if the registry commit fails.
-        """
-
-        settings, account, raw, accounts = await self._require_account(name)
-        stored = await self._stored_prefixes()
-        if change.prefix:
-            message = prefix_conflict_message(
-                change.prefix,
-                credential_name=name,
-                effective=effective_prefixes(accounts, stored),
-                routing_owners=routing_prefix_owners(settings),
-            )
-            if message is not None:
-                raise DashboardConflictError(message)
-        previous = stored.get(account.name) or account.prefix or ""
-        if tag_is_changing(previous, change.prefix) and not change.confirm:
-            raise DashboardBadRequestError("Confirm before changing this account's tag")
-        # Build the client before the registry flush. A failed flush expires
-        # ``settings``, and reading it again raises PendingRollbackError
-        # before the previous prefix can be put back upstream.
-        client = ClaudeSidecarClient(sidecar_config_from_settings(settings))
-        await _send_auth_file_fields(client, name, _field_payload(change))
-        try:
-            await self._store_prefix(account, change.prefix)
-        except IntegrityError as exc:
-            await self._compensate_failed_prefix_store(client, name, previous)
-            raise DashboardConflictError(f"Prefix {change.prefix} is already assigned to another credential") from exc
-        except Exception:
-            await self._compensate_failed_prefix_store(client, name, previous)
-            raise
+        await self._patch_fields(settings, name, change)
         _audit_fields(account, change)
-        return _fields_response(account, raw, change, await self._stored_prefixes())
+        return _fields_response(account, raw, change)
 
     async def set_credential_disabled(
         self,
@@ -218,12 +171,10 @@ class CliproxyAccountsService:
         """
 
         try:
-            async with cliproxy_status_write_lock(self._prefixes.session):
+            async with cliproxy_status_write_lock(self._session):
                 settings, account, _raw, accounts = await self._require_account(name)
                 if disabling_last_enabled_account(accounts, name=account.name, disabled=disabled) and not confirm:
-                    raise DashboardBadRequestError(
-                        "Confirm before disabling the last enabled CLIProxyAPI account"
-                    )
+                    raise DashboardBadRequestError("Confirm before disabling the last enabled CLIProxyAPI account")
                 client = ClaudeSidecarClient(sidecar_config_from_settings(settings))
                 await _patch_disabled(client, account, disabled=disabled)
         except StatusWriteLockTimeout as exc:
@@ -339,46 +290,97 @@ class CliproxyAccountsService:
         except ClaudeSidecarError as exc:
             _audit_delete(account, deleted=False, message=public_message(exc.message))
             raise DashboardUpstreamError(_delete_failed_message(exc.message)) from exc
-        await self._prefixes.delete(account.name)
-        await self._prefixes.session.flush()
-        await self._prefixes.session.commit()
         _audit_delete(account, deleted=True, message=None)
         return CliproxyCredentialDeleteResponse(name=account.name, disabled=True, deleted=True)
 
     async def upload_credential(self, name: str, document: str) -> CliproxyCredentialUploadResponse:
         safe_name = normalize_credential_name(name)
         prepared = prepare_upload_document(document)
-        if prepared.prefix is None:
-            await self._upload_file(safe_name, prepared.provider, prepared.body, prefix=None)
-            return CliproxyCredentialUploadResponse(name=safe_name, provider=prepared.provider, prefix=None)
-        try:
-            async with cliproxy_prefix_write_lock(self._prefixes.session):
-                await self._upload_with_prefix(safe_name, prepared.provider, prepared.body, prepared.prefix)
-        except PrefixWriteLockTimeout as exc:
-            raise DashboardConflictError("Another credential prefix update is in progress") from exc
+        await self._upload_file(safe_name, prepared.provider, prepared.body, prefix=prepared.prefix)
         return CliproxyCredentialUploadResponse(
             name=safe_name,
             provider=prepared.provider,
             prefix=prepared.prefix,
         )
 
-    async def _upload_with_prefix(self, name: str, provider: str, body: bytes, prefix: str) -> None:
-        settings, accounts = await self._load_accounts()
-        stored = await self._stored_prefixes()
-        message = prefix_conflict_message(
-            prefix,
-            credential_name=name,
-            effective=effective_prefixes(accounts, stored),
-            routing_owners=routing_prefix_owners(settings),
+    async def create_api_key(self, write: ApiKeyWrite) -> CliproxyApiKeyAccount:
+        try:
+            async with cliproxy_api_key_list_lock(self._session, write.kind):
+                client, raw_files = await self._management_client()
+                account = await create_api_key_account(client, raw_files, write)
+        except ApiKeyWriteLockTimeout as exc:
+            raise DashboardConflictError("Another API-key account update is in progress") from exc
+        except ClaudeSidecarUnavailableError as exc:
+            raise DashboardServiceUnavailableError(public_message(exc.message)) from exc
+        except ClaudeSidecarError as exc:
+            _raise_management_error(exc)
+        _audit_api_key("cliproxy_api_key_created", account)
+        return account
+
+    async def update_api_key(self, index: int, write: ApiKeyWrite, account_id: str) -> CliproxyApiKeyAccount:
+        try:
+            async with cliproxy_api_key_list_lock(self._session, write.kind):
+                client, raw_files = await self._management_client()
+                account = await update_api_key_account(client, raw_files, index, write, account_id)
+        except ApiKeyWriteLockTimeout as exc:
+            raise DashboardConflictError("Another API-key account update is in progress") from exc
+        except ClaudeSidecarUnavailableError as exc:
+            raise DashboardServiceUnavailableError(public_message(exc.message)) from exc
+        except ClaudeSidecarError as exc:
+            _raise_management_error(exc)
+        _audit_api_key("cliproxy_api_key_updated", account)
+        return account
+
+    async def delete_api_key(self, kind: str, index: int, account_id: str) -> None:
+        resolved = api_key_kind(kind)
+        try:
+            async with cliproxy_api_key_list_lock(self._session, resolved.slug):
+                client, _raw_files = await self._management_client()
+                await delete_api_key_account(client, resolved.slug, index, account_id)
+        except ApiKeyWriteLockTimeout as exc:
+            raise DashboardConflictError("Another API-key account update is in progress") from exc
+        except ClaudeSidecarUnavailableError as exc:
+            raise DashboardServiceUnavailableError(public_message(exc.message)) from exc
+        except ClaudeSidecarError as exc:
+            _raise_management_error(exc)
+        AuditService.log_async(
+            "cliproxy_api_key_deleted",
+            details={"kind": resolved.slug, "index": index},
         )
-        if message is not None:
-            raise DashboardConflictError(message)
+
+    async def add_catalog_model(self, model: str) -> CliproxyCatalogModelResponse:
+        """Pin one discovered model id on the CLIProxyAPI full-model list."""
+
+        text = model.strip()
+        if not text or len(text) > 200 or any(char.isspace() for char in text):
+            raise DashboardBadRequestError("Model id must be a single token")
+        settings = await self._ready_settings()
+        current = list(parse_sidecar_full_models(settings.claude_sidecar_full_models_json))
+        if text.casefold() not in {item.casefold() for item in current}:
+            current.append(text)
+            await self._settings_repository.update(claude_sidecar_full_models_json=json.dumps(current))
+        return CliproxyCatalogModelResponse(model=text, full_models=current)
+
+    async def _management_client(self) -> tuple[ClaudeSidecarClient, list[Mapping[str, JsonValue]]]:
+        settings = await self._ready_settings()
         client = ClaudeSidecarClient(sidecar_config_from_settings(settings))
-        await _upload_auth_file(client, name, body)
-        await self._prefixes.upsert(credential_name=name, auth_index=None, prefix=prefix)
-        await self._prefixes.session.flush()
-        await self._prefixes.session.commit()
-        _audit_upload(name, provider, prefix)
+        try:
+            raw_files = await client.list_auth_files()
+        except ClaudeSidecarUnavailableError as exc:
+            raise DashboardServiceUnavailableError(public_message(exc.message)) from exc
+        except ClaudeSidecarError as exc:
+            _raise_management_error(exc)
+        return client, raw_files
+
+    async def _api_keys(
+        self,
+        client: ClaudeSidecarClient,
+        raw_files: Sequence[Mapping[str, JsonValue]],
+    ) -> tuple[list[CliproxyApiKeyAccount], str | None]:
+        try:
+            return await list_api_key_accounts(client, raw_files)
+        except ClaudeSidecarUnavailableError as exc:
+            return [], _sanitize_message(exc.message)
 
     async def _upload_file(self, name: str, provider: str, body: bytes, *, prefix: str | None) -> None:
         settings = await self._ready_settings()
@@ -403,7 +405,7 @@ class CliproxyAccountsService:
             raise DashboardServiceUnavailableError(public_message(exc.message)) from exc
         except ClaudeSidecarError as exc:
             _raise_management_error(exc)
-        accounts = await asyncio.to_thread(parse_auth_files, raw_files, provider=None)
+        accounts = await asyncio.to_thread(parse_auth_files, _oauth_files(raw_files), provider=None)
         return settings, accounts
 
     async def _require_account(
@@ -421,43 +423,16 @@ class CliproxyAccountsService:
             raise DashboardServiceUnavailableError(_sanitize_message(exc.message)) from exc
         except ClaudeSidecarError as exc:
             _raise_management_error(exc)
-        accounts = await asyncio.to_thread(parse_auth_files, raw_files, provider=None)
+        oauth_files = _oauth_files(raw_files)
+        accounts = await asyncio.to_thread(parse_auth_files, oauth_files, provider=None)
         account = next((item for item in accounts if item.name == name), None)
         if account is None:
             raise DashboardNotFoundError("CLIProxyAPI credential was not found")
-        return settings, account, _raw_entries_by_name(raw_files).get(name), accounts
-
-    async def _stored_prefixes(self) -> dict[str, str]:
-        rows = await self._prefixes.list_all()
-        return {row.credential_name: row.prefix for row in rows}
+        return settings, account, _raw_entries_by_name(oauth_files).get(name), accounts
 
     async def _patch_fields(self, settings: DashboardSettings, name: str, change: CredentialFieldChange) -> None:
         client = ClaudeSidecarClient(sidecar_config_from_settings(settings))
         await _send_auth_file_fields(client, name, _field_payload(change))
-
-    async def _restore_prefix(self, client: ClaudeSidecarClient, name: str, previous: str) -> None:
-        try:
-            await client.patch_auth_file_fields(name, {"prefix": previous})
-        except (ClaudeSidecarError, ClaudeSidecarUnavailableError):
-            logger.warning("CLIProxyAPI prefix restore failed after the registry commit failed", exc_info=True)
-
-    async def _compensate_failed_prefix_store(self, client: ClaudeSidecarClient, name: str, previous: str) -> None:
-        try:
-            await self._restore_prefix(client, name, previous)
-        finally:
-            await self._prefixes.session.rollback()
-
-    async def _store_prefix(self, account: SidecarAuthQuota, prefix: str | None) -> None:
-        if prefix:
-            await self._prefixes.upsert(
-                credential_name=account.name,
-                auth_index=account.auth_index,
-                prefix=prefix,
-            )
-        else:
-            await self._prefixes.delete(account.name)
-        await self._prefixes.session.flush()
-        await self._prefixes.session.commit()
 
 
 async def _send_auth_file_fields(client: ClaudeSidecarClient, name: str, fields: Mapping[str, JsonValue]) -> None:
@@ -467,6 +442,27 @@ async def _send_auth_file_fields(client: ClaudeSidecarClient, name: str, fields:
         raise DashboardServiceUnavailableError(_sanitize_message(exc.message)) from exc
     except ClaudeSidecarError as exc:
         _raise_management_error(exc)
+
+
+def _oauth_files(raw_files: Sequence[Mapping[str, JsonValue]]) -> list[Mapping[str, JsonValue]]:
+    return [entry for entry in raw_files if not _runtime_only(entry)]
+
+
+def _runtime_only(entry: Mapping[str, JsonValue]) -> bool:
+    return entry.get("runtime_only") is True
+
+
+def _audit_api_key(event: str, account: CliproxyApiKeyAccount) -> None:
+    AuditService.log_async(
+        event,
+        details={
+            "kind": account.kind,
+            "index": account.index,
+            "name": account.name,
+            "base_url": account.base_url,
+            "model_count": len(account.models),
+        },
+    )
 
 
 def _inventory_guard(settings: DashboardSettings) -> tuple[CliproxyAccountsStatus, str] | None:
@@ -483,7 +479,6 @@ async def _credential(
     account: SidecarAuthQuota,
     stored: SidecarQuotaSnapshot | None,
     holds: tuple[SidecarRateLimitHold, ...],
-    stored_prefix: str | None,
     raw: Mapping[str, JsonValue] | None,
 ) -> CliproxyCredential:
     models, models_error = await _models_for(client, account.name)
@@ -510,7 +505,7 @@ async def _credential(
         disabled=account.disabled,
         unavailable=account.unavailable,
         quota_exceeded=account.quota_exceeded,
-        prefix=stored_prefix if stored_prefix else account.prefix,
+        prefix=account.prefix,
         weight=_json_int(raw.get("weight")) if raw is not None else None,
         priority=_json_int(raw.get("priority")) if raw is not None else None,
         excluded_models=list(account.excluded_models),
@@ -603,8 +598,6 @@ def _json_int(value: JsonValue | None) -> int | None:
 
 def _field_payload(change: CredentialFieldChange) -> dict[str, JsonValue]:
     payload: dict[str, JsonValue] = {}
-    if change.update_prefix:
-        payload["prefix"] = change.prefix or ""
     if change.update_weight:
         payload["weight"] = change.weight
     if change.update_priority:
@@ -618,14 +611,8 @@ def _fields_response(
     account: SidecarAuthQuota,
     raw: Mapping[str, JsonValue] | None,
     change: CredentialFieldChange,
-    stored: Mapping[str, str],
 ) -> CliproxyCredentialFieldsResponse:
-    if change.update_prefix:
-        prefix = change.prefix
-    elif account.name in stored:
-        prefix = stored[account.name]
-    else:
-        prefix = account.prefix
+    prefix = account.prefix
     excluded_state: ExcludedModelsState = "available" if account.excluded_models_available else "unreadable"
     excluded = list(change.excluded_models or ()) if change.update_excluded_models else list(account.excluded_models)
     return CliproxyCredentialFieldsResponse(
@@ -645,8 +632,6 @@ def _audit_fields(account: SidecarAuthQuota, change: CredentialFieldChange) -> N
         "provider": account.provider or "unknown",
         "changed_fields": list(change.changed_fields),
     }
-    if change.update_prefix:
-        details["prefix"] = change.prefix
     if change.update_weight:
         details["weight"] = change.weight
     if change.update_priority:

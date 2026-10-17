@@ -16,7 +16,7 @@ import {
   formatPurchasedCredits,
 } from "@/features/dashboard/account-credit-display";
 import type { AccountSummary } from "@/features/dashboard/schemas";
-import { isClaudeSidecar } from "@/features/dashboard/utils";
+import { isClaudeSidecar, isCliproxyProviderAccount } from "@/features/dashboard/utils";
 import type { SidecarAuthAccount } from "@/features/accounts/schemas";
 import { useDateDisplayFormatStore } from "@/hooks/use-date-format";
 import { usePrivacyStore } from "@/hooks/use-privacy";
@@ -348,6 +348,16 @@ export function AccountList({
 	          <span className="text-right">{t("apiKeys.table.actions")}</span>
         </div>
         {sortedAccounts.flatMap((account, index) => {
+          if (isCliproxyProviderAccount(account)) {
+            return (account.sidecarAuths ?? []).map((auth, authIndex) => (
+              <CliproxyAuthListRow
+                key={`${account.accountId}-${auth.name}`}
+                account={account}
+                auth={auth}
+                index={index + authIndex}
+              />
+            ));
+          }
           if (isClaudeSidecar(account)) {
             return (account.sidecarAuths ?? []).map((auth, authIndex) => (
               <ClaudeAuthListRow
@@ -509,6 +519,42 @@ export function AccountList({
           );
         })}
       </div>
+    </div>
+  );
+}
+
+function CliproxyAuthListRow({
+  account,
+  auth,
+  index,
+}: {
+  account: AccountSummary;
+  auth: SidecarAuthAccount;
+  index: number;
+}) {
+  const title = auth.email ?? auth.name;
+  const windows = auth.quotaWindows ?? [];
+  return (
+    <div
+      data-testid="account-list-row"
+      className="grid min-h-[4.5rem] items-center gap-3 px-3 py-2 text-sm"
+      style={{ animationDelay: `${index * 50}ms`, gridTemplateColumns: ACCOUNT_LIST_COLUMNS }}
+    >
+      <div className="min-w-0">
+        <p className="truncate font-medium leading-tight">{title}</p>
+        <p className="mt-1 truncate text-xs text-muted-foreground">{formatSlug(auth.provider ?? account.provider ?? "unknown")}</p>
+      </div>
+      <StatusBadge status={normalizeStatus(auth.status ?? account.status)} />
+      <span className="text-xs text-muted-foreground">{formatSlug(account.provider ?? "unknown")}</span>
+      <div className="text-xs text-muted-foreground">
+        {windows.length > 0
+          ? windows.map((window) => `${window.label} ${formatPercentNullable(window.percentRemaining)}`).join(" · ")
+          : "Quota unknown"}
+      </div>
+      <span className="text-xs text-muted-foreground">Models unknown</span>
+      <span className="text-muted-foreground">-</span>
+      <span className="text-muted-foreground">-</span>
+      <span className="text-muted-foreground">-</span>
     </div>
   );
 }

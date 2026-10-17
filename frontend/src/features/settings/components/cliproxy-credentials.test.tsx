@@ -5,6 +5,7 @@ import { http, HttpResponse } from "msw";
 import { describe, expect, it } from "vitest";
 
 import { CliproxyCredentials } from "@/features/settings/components/cliproxy-credentials";
+import { createDashboardSettings } from "@/test/mocks/factories";
 import { server } from "@/test/mocks/server";
 
 const TOKEN = "cliproxy-test-access-token";
@@ -163,9 +164,8 @@ describe("CliproxyCredentials", () => {
     expect(screen.queryByRole("article")).not.toBeInTheDocument();
   });
 
-  it("confirms a tag change and turning off the last enabled account", async () => {
+  it("confirms turning off the last enabled account", async () => {
     const user = userEvent.setup();
-    const fieldBodies: unknown[] = [];
     const statusBodies: unknown[] = [];
     server.use(
       http.get("*/api/cliproxy/accounts", () =>
@@ -185,7 +185,7 @@ describe("CliproxyCredentials", () => {
                   disabled: false,
                   unavailable: false,
                   quotaExceeded: false,
-                  prefix: null,
+                  prefix: "acct2",
                   weight: null,
                   priority: null,
                   excludedModels: [],
@@ -198,18 +198,6 @@ describe("CliproxyCredentials", () => {
           ],
         }),
       ),
-      http.patch("*/api/cliproxy/accounts/grok-a.json/fields", async ({ request }) => {
-        fieldBodies.push(await request.json());
-        return HttpResponse.json({
-          name: "grok-a.json",
-          prefix: "acct1",
-          weight: null,
-          priority: null,
-          excludedModels: [],
-          excludedModelsState: "available",
-          disabled: false,
-        });
-      }),
       http.patch("*/api/cliproxy/accounts/grok-a.json/status", async ({ request }) => {
         statusBodies.push(await request.json());
         return HttpResponse.json({ name: "grok-a.json", disabled: true });
@@ -218,15 +206,8 @@ describe("CliproxyCredentials", () => {
 
     renderCredentials(true);
 
-    const prefix = await screen.findByRole("textbox", { name: "Prefix for grok@example.com" });
-    await user.type(prefix, "acct1");
-    await user.click(screen.getByRole("button", { name: "Save tag for grok@example.com" }));
-    expect(fieldBodies).toEqual([]);
-    await user.click(screen.getByRole("button", { name: "Change tag" }));
-    await waitFor(() => {
-      expect(fieldBodies).toEqual([{ prefix: "acct1", confirm: true }]);
-    });
-
+    expect(await screen.findByText("acct2")).toBeInTheDocument();
+    expect(screen.queryByRole("textbox", { name: "Prefix for grok@example.com" })).not.toBeInTheDocument();
     const enabled = screen.getByRole("switch", { name: "Enabled for grok@example.com" });
     await waitFor(() => expect(enabled).toBeEnabled());
     await user.click(enabled);
@@ -238,14 +219,13 @@ describe("CliproxyCredentials", () => {
     });
   });
 
-  it("keeps an unsaved tag when weight autosave refreshes the card", async () => {
+  it("adds an API-key account and a discovered model without showing the key", async () => {
     const user = userEvent.setup();
-    let weight: number | null = null;
-    let reads = 0;
+    const created: unknown[] = [];
+    const catalog: unknown[] = [];
     server.use(
-      http.get("*/api/cliproxy/accounts", () => {
-        reads += 1;
-        return HttpResponse.json({
+      http.get("*/api/cliproxy/accounts", () =>
+        HttpResponse.json({
           status: "healthy",
           message: null,
           providers: [
@@ -262,43 +242,256 @@ describe("CliproxyCredentials", () => {
                   unavailable: false,
                   quotaExceeded: false,
                   prefix: "acct2",
-                  weight,
-                  priority: null,
-                  excludedModels: [],
-                  excludedModelsState: "available",
                   models: ["grok-4"],
                   modelsError: null,
                 },
               ],
             },
           ],
+          apiKeys: [
+            {
+              id: "key-openrouter",
+              kind: "openai-compatibility",
+              index: 0,
+              name: "openrouter",
+              baseUrl: "https://openrouter.ai/api/v1",
+              disabled: false,
+              supportsDisable: true,
+              hasApiKey: true,
+              models: [{ name: "grok-4", alias: "grok-4" }],
+              discoveredModels: ["grok-4"],
+              modelsError: null,
+              authIndex: "k1",
+              prefix: "keep-me",
+              apiKey: "sk-should-not-render",
+            },
+          ],
+          sharedModelIds: ["grok-4"],
+        }),
+      ),
+      http.get("*/api/settings", () =>
+        HttpResponse.json(createDashboardSettings({ claudeSidecarFullModels: [] })),
+      ),
+      http.post("*/api/cliproxy/api-keys", async ({ request }) => {
+        created.push(await request.json());
+        return HttpResponse.json({
+          id: "key-second",
+          kind: "openai-compatibility",
+          index: 1,
+          name: "second",
+          baseUrl: "https://example.test/v1",
+          disabled: false,
+          supportsDisable: true,
+          hasApiKey: true,
+          models: [{ name: "openai/gpt-4o", alias: "openai/gpt-4o" }],
+          discoveredModels: [],
+          prefix: null,
+          apiKey: "sk-created-secret",
         });
       }),
-      http.patch("*/api/cliproxy/accounts/grok-a.json/fields", async ({ request }) => {
-        const body = (await request.json()) as { weight?: number };
-        weight = body.weight ?? weight;
+      http.post("*/api/cliproxy/catalog/models", async ({ request }) => {
+        catalog.push(await request.json());
+        return HttpResponse.json({ model: "grok-4", fullModels: ["grok-4"] });
+      }),
+    );
+
+    renderCredentials(true);
+
+    expect(await screen.findByText(/load-balances these model ids/)).toBeInTheDocument();
+    expect(screen.getByText("keep-me")).toBeInTheDocument();
+    expect(screen.getAllByText("Quota unknown").length).toBeGreaterThan(0);
+    expect(screen.queryByText("sk-should-not-render")).not.toBeInTheDocument();
+    expect(screen.queryByRole("textbox", { name: "Prefix for grok@example.com" })).not.toBeInTheDocument();
+
+    await user.selectOptions(screen.getByLabelText("Provider"), "openai-compatibility");
+    const [accountName] = screen.getAllByLabelText("Name");
+    const [baseUrl] = screen.getAllByLabelText("Base URL");
+    const [models] = screen.getAllByLabelText("Models");
+    await user.type(accountName, "second");
+    await user.type(baseUrl, "https://example.test/v1");
+    await user.type(screen.getByLabelText("API key"), "sk-created-secret");
+    await user.type(models, "openai/gpt-4o");
+    await user.click(screen.getByRole("button", { name: "Add account" }));
+    await waitFor(() => {
+      expect(created).toEqual([
+        {
+          kind: "openai-compatibility",
+          name: "second",
+          baseUrl: "https://example.test/v1",
+          apiKey: "sk-created-secret",
+          models: ["openai/gpt-4o"],
+        },
+      ]);
+    });
+    expect(screen.queryByDisplayValue("sk-created-secret")).not.toBeInTheDocument();
+
+    const addButtons = screen.getAllByRole("button", { name: "Add grok-4 to the model list" });
+    await user.click(addButtons[0]);
+    await waitFor(() => {
+      expect(catalog).toEqual([{ model: "grok-4" }]);
+    });
+  });
+
+  it("keeps model mappings and spaced names out of unrelated saves", async () => {
+    const user = userEvent.setup();
+    const updates: unknown[] = [];
+    server.use(
+      http.get("*/api/cliproxy/accounts", () =>
+        HttpResponse.json({
+          status: "healthy",
+          message: null,
+          providers: [],
+          apiKeys: [
+            {
+              id: "spaced-name",
+              kind: "openai-compatibility",
+              index: 0,
+              name: "My OpenRouter",
+              baseUrl: "https://openrouter.ai/api/v1",
+              disabled: false,
+              supportsDisable: true,
+              hasApiKey: true,
+              models: [{ name: "upstream-model", alias: "friendly-model" }],
+              discoveredModels: ["friendly-model"],
+              modelsError: null,
+              prefix: null,
+            },
+          ],
+        }),
+      ),
+      http.get("*/api/settings", () => HttpResponse.json(createDashboardSettings({ claudeSidecarFullModels: [] }))),
+      http.patch("*/api/cliproxy/api-keys/openai-compatibility/0", async ({ request }) => {
+        updates.push(await request.json());
         return HttpResponse.json({
-          name: "grok-a.json",
-          prefix: "acct2",
-          weight,
-          priority: null,
-          excludedModels: [],
-          excludedModelsState: "available",
-          disabled: false,
+          id: "spaced-name",
+          kind: "openai-compatibility",
+          index: 0,
+          name: "My OpenRouter",
+          baseUrl: "https://openrouter.ai/api/v1",
+          disabled: true,
+          supportsDisable: true,
+          hasApiKey: true,
+          models: [{ name: "upstream-model", alias: "friendly-model" }],
+          discoveredModels: ["friendly-model"],
         });
       }),
     );
 
     renderCredentials(true);
-    const prefix = await screen.findByRole("textbox", { name: "Prefix for grok@example.com" });
-    await user.type(prefix, "acct9");
-    const weightInput = screen.getByRole("textbox", { name: "Weight for grok@example.com" });
-    await user.type(weightInput, "4");
-    weightInput.blur();
-    await waitFor(() => expect(reads).toBeGreaterThan(1));
-    expect(screen.getByRole("textbox", { name: "Prefix for grok@example.com" })).toHaveValue("acct2acct9");
-    expect(screen.getByRole("textbox", { name: "Weight for grok@example.com" })).toHaveValue("4");
-    expect(screen.getByRole("button", { name: "Save tag for grok@example.com" })).toBeEnabled();
+    await user.click(await screen.findByRole("switch", { name: "Enabled for My OpenRouter" }));
+    await waitFor(() => {
+      expect(updates).toEqual([
+        {
+          kind: "openai-compatibility",
+          accountId: "spaced-name",
+          baseUrl: "https://openrouter.ai/api/v1",
+          disabled: true,
+        },
+      ]);
+    });
+
+    const url = document.getElementById("cliproxy-api-key-url-spaced-name");
+    if (!(url instanceof HTMLInputElement)) {
+      throw new Error("missing base URL field");
+    }
+    await user.clear(url);
+    await user.type(url, "https://proxy.example/v1");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => {
+      expect(updates[1]).toEqual({
+        kind: "openai-compatibility",
+        accountId: "spaced-name",
+        baseUrl: "https://proxy.example/v1",
+      });
+    });
+    expect(updates[1]).not.toHaveProperty("name");
+    expect(updates[1]).not.toHaveProperty("models");
+  });
+
+  it("drops a deleted account's drafts instead of saving them onto the next account", async () => {
+    const user = userEvent.setup();
+    const updates: unknown[] = [];
+    const removed: unknown[] = [];
+    let accounts = [
+      {
+        id: "account-a",
+        kind: "openai-compatibility",
+        index: 0,
+        name: "first",
+        baseUrl: "https://first.example/v1",
+        disabled: false,
+        supportsDisable: true,
+        hasApiKey: true,
+        models: [{ name: "one", alias: "one" }],
+        discoveredModels: ["one"],
+        modelsError: null,
+        prefix: null,
+      },
+      {
+        id: "account-b",
+        kind: "openai-compatibility",
+        index: 1,
+        name: "second",
+        baseUrl: "https://kept.example/v1",
+        disabled: false,
+        supportsDisable: true,
+        hasApiKey: true,
+        models: [{ name: "two", alias: "two" }],
+        discoveredModels: ["two"],
+        modelsError: null,
+        prefix: null,
+      },
+    ];
+    server.use(
+      http.get("*/api/cliproxy/accounts", () =>
+        HttpResponse.json({
+          status: "healthy",
+          message: null,
+          providers: [],
+          apiKeys: accounts,
+        }),
+      ),
+      http.get("*/api/settings", () => HttpResponse.json(createDashboardSettings({ claudeSidecarFullModels: [] }))),
+      http.delete("*/api/cliproxy/api-keys/openai-compatibility/0", async ({ request }) => {
+        removed.push(await request.json());
+        accounts = [{ ...accounts[1], index: 0 }];
+        return HttpResponse.json({ kind: "openai-compatibility", index: 0, deleted: true });
+      }),
+      http.patch("*/api/cliproxy/api-keys/openai-compatibility/:index", async ({ request }) => {
+        updates.push(await request.json());
+        return HttpResponse.json(accounts[0]);
+      }),
+    );
+
+    renderCredentials(true);
+    const leakedUrl = await screen.findByDisplayValue("https://first.example/v1");
+    const leakedSecret = document.getElementById("cliproxy-api-key-secret-account-a");
+    if (!(leakedSecret instanceof HTMLInputElement)) {
+      throw new Error("missing first account editor");
+    }
+    await user.clear(leakedUrl);
+    await user.type(leakedUrl, "https://deleted.example/v1");
+    await user.type(leakedSecret, "leaked-secret");
+    await user.click(await screen.findByRole("button", { name: "Delete first" }));
+    await user.click(screen.getByRole("button", { name: "Remove" }));
+    await waitFor(() => {
+      expect(removed).toEqual([{ confirm: true, accountId: "account-a" }]);
+    });
+
+    const keptUrl = await screen.findByDisplayValue("https://kept.example/v1");
+    expect(keptUrl).toBeInTheDocument();
+    expect(screen.queryByDisplayValue("https://deleted.example/v1")).not.toBeInTheDocument();
+    expect(screen.queryByDisplayValue("leaked-secret")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => {
+      expect(updates).toEqual([
+        {
+          kind: "openai-compatibility",
+          accountId: "account-b",
+          baseUrl: "https://kept.example/v1",
+        },
+      ]);
+    });
   });
 
   it("saves weight, priority, and excluded-model chips without confirmation", async () => {

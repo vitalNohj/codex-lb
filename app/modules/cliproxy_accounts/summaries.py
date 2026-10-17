@@ -1,8 +1,7 @@
-"""Per-provider synthetic account cards for CLIProxyAPI credentials.
+"""Per-provider synthetic account cards for non-Claude CLIProxyAPI credentials.
 
-The cards stay unregistered until :data:`CLIPROXY_ACCOUNT_POOL_ENABLED` is
-turned on. Listing accounts therefore stays identical to today's Claude
-sidecar card until the rollout that actually routes these credentials.
+Claude credentials stay on the existing Claude sidecar card. A snapshot that
+only contains Claude accounts adds nothing here.
 """
 
 from __future__ import annotations
@@ -18,11 +17,6 @@ from app.modules.claude_sidecar.quota import (
     dashboard_status_for_auth,
 )
 
-# Product switch for putting CLIProxyAPI credentials into the accounts list.
-# Inventory endpoints do not consult this flag. Leave it false until routing
-# is ready so a deploy cannot add new account cards.
-CLIPROXY_ACCOUNT_POOL_ENABLED = False
-
 _PROVIDER_LABELS = {
     "claude": "Claude",
     "codex": "Codex",
@@ -31,26 +25,18 @@ _PROVIDER_LABELS = {
 }
 
 
-def cliproxy_account_pool_enabled() -> bool:
-    """Return whether per-provider CLIProxyAPI cards are added to account lists."""
-
-    return CLIPROXY_ACCOUNT_POOL_ENABLED
-
-
 def build_cliproxy_provider_summaries(
     settings: DashboardSettings,
     accounts: Sequence[SidecarAuthQuota],
     holds: Sequence[SidecarRateLimitHold] = (),
 ) -> list[AccountSummary]:
-    """Group credentials into one synthetic account per provider.
-
-    ``AccountsService`` calls this only while :func:`cliproxy_account_pool_enabled`
-    is true, so a deploy with the switch off does not add cards.
-    """
+    """Group non-Claude credentials into one synthetic account per provider."""
 
     grouped: dict[str, list[SidecarAuthQuota]] = {}
     for auth in accounts:
         provider = (auth.provider or "unknown").strip().lower() or "unknown"
+        if provider == "claude":
+            continue
         grouped.setdefault(provider, []).append(auth)
     return [_summary_for_provider(settings, provider, grouped[provider], holds) for provider in sorted(grouped)]
 

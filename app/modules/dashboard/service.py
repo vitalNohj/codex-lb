@@ -20,6 +20,7 @@ from app.modules.accounts.sidecar_summary import build_claude_sidecar_summary
 from app.modules.claude_sidecar.quota import snapshot_from_json
 from app.modules.claude_sidecar.usage_estimates import SECONDARY_WINDOW, build_claude_usage_estimates
 from app.modules.claude_sidecar.usage_repository import ClaudeSidecarUsageRepository
+from app.modules.cliproxy_accounts.summaries import build_cliproxy_provider_summaries
 from app.modules.dashboard.builders import (
     build_dashboard_overview_summary,
     build_overview_timeframe,
@@ -135,6 +136,7 @@ class DashboardService:
         omniroute_sidecar = await self._build_omniroute_sidecar_summary()
         if omniroute_sidecar is not None:
             account_summaries.append(omniroute_sidecar)
+        account_summaries.extend(await self._build_cliproxy_provider_summaries())
 
         primary_rows_raw = _rows_from_latest(primary_usage)
         secondary_rows_raw = _rows_from_latest(secondary_usage)
@@ -218,6 +220,13 @@ class DashboardService:
             windows=windows,
             trends=trends,
         )
+
+    async def _build_cliproxy_provider_summaries(self):
+        settings = await self._repo.get_settings()
+        snapshot = snapshot_from_json(settings.claude_sidecar_quota_state_json)
+        if snapshot is None:
+            return []
+        return build_cliproxy_provider_summaries(settings, snapshot.accounts, snapshot.rate_limit_holds)
 
     async def _build_claude_sidecar_summary(self):
         settings = await self._repo.get_settings()

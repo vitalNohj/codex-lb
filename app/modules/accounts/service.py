@@ -74,10 +74,7 @@ from app.modules.accounts.sidecar_summary import build_claude_sidecar_summary
 from app.modules.claude_sidecar.quota import snapshot_from_json
 from app.modules.claude_sidecar.usage_estimates import SECONDARY_WINDOW, build_claude_usage_estimates
 from app.modules.claude_sidecar.usage_repository import ClaudeSidecarUsageRepository
-from app.modules.cliproxy_accounts.summaries import (
-    build_cliproxy_provider_summaries,
-    cliproxy_account_pool_enabled,
-)
+from app.modules.cliproxy_accounts.summaries import build_cliproxy_provider_summaries
 from app.modules.limit_warmup.repository import LimitWarmupRepository
 from app.modules.openai_compat.endpoints import parse_openai_compat_endpoints
 from app.modules.proxy.account_cache import (
@@ -273,8 +270,7 @@ class AccountsService:
             ollama_synthetic = await self._ollama_sidecar_account_summary()
             if ollama_synthetic is not None:
                 summaries.append(ollama_synthetic)
-            if cliproxy_account_pool_enabled():
-                summaries.extend(await self._cliproxy_provider_account_summaries())
+            summaries.extend(await self._cliproxy_provider_account_summaries())
         return summaries
 
     async def _ollama_sidecar_account_summary(self) -> AccountSummary | None:

@@ -20,7 +20,6 @@ from app.modules.automations.repository import AutomationsRepository
 from app.modules.automations.service import AutomationsService
 from app.modules.claude_sidecar.service import ClaudeSidecarService
 from app.modules.claude_sidecar.usage_repository import ClaudeSidecarUsageRepository
-from app.modules.cliproxy_accounts.repository import CliproxyCredentialPrefixRepository
 from app.modules.cliproxy_accounts.service import CliproxyAccountsService
 from app.modules.dashboard.repository import DashboardRepository
 from app.modules.dashboard.service import DashboardService
@@ -406,7 +405,7 @@ def get_cliproxy_accounts_context(
     session: AsyncSession = Depends(get_session),
 ) -> CliproxyAccountsContext:
     settings_repository = SettingsRepository(session)
-    service = CliproxyAccountsService(settings_repository, CliproxyCredentialPrefixRepository(session))
+    service = CliproxyAccountsService(settings_repository, session)
     return CliproxyAccountsContext(session=session, settings_repository=settings_repository, service=service)
 
 
@@ -524,10 +523,9 @@ def get_quota_feed_context(
 ) -> QuotaFeedContext:
     accounts = AccountsRepository(session)
     usage = UsageRepository(session)
-    prefixes = CliproxyCredentialPrefixRepository(session)
     return QuotaFeedContext(
         session=session,
-        service=QuotaFeedService(accounts, usage, prefixes),
+        service=QuotaFeedService(accounts, usage),
     )
 
 

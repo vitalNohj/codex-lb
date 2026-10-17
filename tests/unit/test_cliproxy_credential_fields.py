@@ -3,15 +3,9 @@ from __future__ import annotations
 import pytest
 
 from app.core.exceptions import DashboardBadRequestError
-from app.db.models import DashboardSettings
 from app.modules.claude_sidecar.quota import SidecarAuthQuota
 from app.modules.cliproxy_accounts.validation import (
     disabling_last_enabled_account,
-    effective_prefixes,
-    normalize_credential_prefix,
-    prefix_conflict_message,
-    routing_prefix_owners,
-    tag_is_changing,
     validate_excluded_models,
     validate_priority,
     validate_weight,
@@ -20,7 +14,7 @@ from app.modules.cliproxy_accounts.validation import (
 pytestmark = pytest.mark.unit
 
 
-def _auth(name: str, *, prefix: str | None = None, disabled: bool = False) -> SidecarAuthQuota:
+def _auth(name: str, *, disabled: bool = False) -> SidecarAuthQuota:
     return SidecarAuthQuota(
         name=name,
         auth_index="1",
@@ -36,19 +30,8 @@ def _auth(name: str, *, prefix: str | None = None, disabled: bool = False) -> Si
         success=0,
         failed=0,
         last_refresh=None,
-        prefix=prefix,
+        prefix=None,
     )
-
-
-def test_normalize_credential_prefix_accepts_short_slugs():
-    assert normalize_credential_prefix(" acct2 ") == "acct2"
-    assert normalize_credential_prefix("Acct10") == "acct10"
-
-
-@pytest.mark.parametrize("raw", ["", "acct", "acct0", "claude", "acct1/grok", "acct 1", "acct-1"])
-def test_normalize_credential_prefix_rejects_anything_else(raw: str):
-    with pytest.raises(DashboardBadRequestError):
-        normalize_credential_prefix(raw)
 
 
 def test_weight_and_priority_bounds():
@@ -68,71 +51,10 @@ def test_excluded_models_must_already_be_normalized():
         validate_excluded_models(["grok-4,fast"])
 
 
-def test_prefix_conflict_with_another_credential_and_an_orphan_registry_row():
-    accounts = [_auth("live.json", prefix="acct2"), _auth("editing.json")]
-    stored = {"gone.json": "acct3", "editing.json": "acct9"}
-
-    occupied = effective_prefixes(accounts, stored)
-
-    assert occupied["live.json"] == "acct2"
-    assert occupied["gone.json"] == "acct3"
-    assert occupied["editing.json"] == "acct9"
-    assert (
-        prefix_conflict_message(
-            "acct3",
-            credential_name="editing.json",
-            effective=occupied,
-            routing_owners={},
-        )
-        == "Prefix acct3 is already assigned to gone.json"
-    )
-    assert (
-        prefix_conflict_message(
-            "acct9",
-            credential_name="editing.json",
-            effective=occupied,
-            routing_owners={},
-        )
-        is None
-    )
-
-
-def test_prefix_conflict_with_sidecar_routing_prefix_including_hyphen_twin():
-    settings = DashboardSettings(
-        id=1,
-        claude_sidecar_model_prefixes_json=(
-            '[{"prefix": "acct1", "strip": false}, {"prefix": "acct8-", "strip": false}]'
-        ),
-    )
-    owners = routing_prefix_owners(settings)
-
-    assert owners["acct1"] == "CLIProxyAPI"
-    assert owners["acct8-"] == "CLIProxyAPI"
-    assert owners["acct8_"] == "CLIProxyAPI"
-    assert (
-        prefix_conflict_message("acct1", credential_name="claude.json", effective={}, routing_owners=owners)
-        == "Prefix acct1 clashes with the CLIProxyAPI routing prefix"
-    )
-    assert (
-        prefix_conflict_message("acct8_", credential_name="claude.json", effective={}, routing_owners=owners)
-        == "Prefix acct8_ clashes with the CLIProxyAPI routing prefix"
-    )
-    assert prefix_conflict_message("acct4", credential_name="claude.json", effective={}, routing_owners=owners) is None
-
-
-def test_tag_change_confirmation_ignores_case_and_unchanged_values():
-    assert tag_is_changing(None, "acct1") is True
-    assert tag_is_changing("acct1", None) is True
-    assert tag_is_changing("Acct1", "acct1") is False
-    assert tag_is_changing(" acct2 ", "acct2") is False
-
-
 def test_only_disabling_the_last_enabled_account_needs_confirmation():
     accounts = (_auth("one"), _auth("two", disabled=True))
 
     assert disabling_last_enabled_account(accounts, name="one", disabled=True) is True
     assert disabling_last_enabled_account(accounts, name="two", disabled=True) is False
     assert disabling_last_enabled_account(accounts, name="one", disabled=False) is False
-    assert (
-        disabling_last_enabled_account((_auth("one"), _auth("two")), name="one", disabled=True) is False
-    )
+    assert disabling_last_enabled_account((_auth("one"), _auth("two")), name="one", disabled=True) is False

@@ -39,9 +39,21 @@ export function isClaudeSidecar(account: AccountSummary): boolean {
   );
 }
 
+export function isCliproxyProviderAccount(account: AccountSummary): boolean {
+  return (
+    account.synthetic === true &&
+    account.accountId.startsWith("cliproxy-") &&
+    (account.provider ?? "") !== "claude" &&
+    (account.sidecarAuths?.length ?? 0) > 0
+  );
+}
+
 export function accountTypeKey(account: AccountSummary): AccountTypeKey | "other" {
   if (!account.synthetic) {
     return "codex";
+  }
+  if (account.accountId.startsWith("cliproxy-")) {
+    return "cliproxy";
   }
   if (account.provider === "openrouter") {
     return "openrouter";

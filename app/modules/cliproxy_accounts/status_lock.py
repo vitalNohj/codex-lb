@@ -1,12 +1,8 @@
-"""Serialize CLIProxyAPI credential writes across serving workers.
+"""Serialize CLIProxyAPI credential status writes across serving workers.
 
-A prefix edit patches CLIProxyAPI and then commits the codex-lb registry.
-Those two steps have to stay in one order: if an older request commits the
-registry after a newer request, inventory keeps the stale prefix forever.
-A status edit has the same shape: the last-enabled check and the upstream
-PATCH have to see one inventory. SQLite takes a leased claim row per lock
-name. PostgreSQL holds ``pg_advisory_xact_lock`` on the request transaction
-until that commit.
+The last-enabled check and the upstream status PATCH have to see one
+inventory. SQLite takes a leased claim row. PostgreSQL holds
+``pg_advisory_xact_lock`` on the request transaction until that commit.
 """
 
 from __future__ import annotations
@@ -27,7 +23,6 @@ from app.db.session import SessionLocal, close_session
 
 logger = logging.getLogger(__name__)
 
-PREFIX_WRITE_LOCK_NAME = "prefixes"
 STATUS_WRITE_LOCK_NAME = "status"
 _LEASE_SECONDS = 30.0
 _RENEW_INTERVAL_SECONDS = 10.0
@@ -35,12 +30,12 @@ _RETRY_INTERVAL_SECONDS = 0.05
 _TIMEOUT_SECONDS = 20.0
 
 
-class PrefixWriteLockTimeout(Exception):
-    """The prefix write claim stayed held past the acquisition timeout."""
-
-
 class StatusWriteLockTimeout(Exception):
     """The status write claim stayed held past the acquisition timeout."""
+
+
+class ApiKeyWriteLockTimeout(Exception):
+    """The API-key list claim stayed held past the acquisition timeout."""
 
 
 class _ClaimLock:
@@ -52,12 +47,6 @@ class _ClaimLock:
         self.process_lock = asyncio.Lock()
 
 
-_PREFIX_LOCK = _ClaimLock(
-    PREFIX_WRITE_LOCK_NAME,
-    "cliproxy-prefix-writes",
-    "Another credential prefix update is in progress",
-    PrefixWriteLockTimeout,
-)
 _STATUS_LOCK = _ClaimLock(
     STATUS_WRITE_LOCK_NAME,
     "cliproxy-status-writes",
@@ -67,18 +56,34 @@ _STATUS_LOCK = _ClaimLock(
 
 
 @asynccontextmanager
-async def cliproxy_prefix_write_lock(session: AsyncSession) -> AsyncIterator[None]:
-    """Hold the prefix-write lock across the upstream PATCH and registry commit."""
-
-    async with _claim_lock(session, _PREFIX_LOCK):
-        yield
-
-
-@asynccontextmanager
 async def cliproxy_status_write_lock(session: AsyncSession) -> AsyncIterator[None]:
     """Hold the status-write lock across the inventory check and upstream PATCH."""
 
     async with _claim_lock(session, _STATUS_LOCK):
+        yield
+
+
+_API_KEY_LIST_LOCKS: dict[str, _ClaimLock] = {}
+
+
+def _api_key_list_lock(kind: str) -> _ClaimLock:
+    existing = _API_KEY_LIST_LOCKS.get(kind)
+    if existing is not None:
+        return existing
+    created = _ClaimLock(
+        name=f"api-key:{kind}",
+        pg_key=f"cliproxy-api-key-list:{kind}",
+        timeout_message="Another API-key account update is in progress",
+        timeout_type=ApiKeyWriteLockTimeout,
+    )
+    return _API_KEY_LIST_LOCKS.setdefault(kind, created)
+
+
+@asynccontextmanager
+async def cliproxy_api_key_list_lock(session: AsyncSession, kind: str) -> AsyncIterator[None]:
+    """Hold one provider list lock from the read through the upstream mutation."""
+
+    async with _claim_lock(session, _api_key_list_lock(kind)):
         yield
 
 

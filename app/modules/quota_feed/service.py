@@ -1,4 +1,4 @@
-"""Build the quota feed from the same inputs the router selects on.
+"""Build the quota feed from stored snapshots.
 
 Codex rows come from :func:`app.modules.proxy.load_balancer._build_states`.
 CLIProxyAPI rows come from :func:`account_state_for_auth`. The pool switch
@@ -18,13 +18,13 @@ from app.db.models import Account, AccountStatus, UsageHistory
 from app.modules.accounts.repository import AccountsRepository
 from app.modules.claude_sidecar.capacity_hold import StoredSnapshotReader
 from app.modules.claude_sidecar.quota import (
+    GrokCreditsQuota,
     GrokCreditWindow,
     SidecarAuthQuota,
     SidecarRateLimitHold,
     credential_provider,
 )
-from app.modules.cliproxy_accounts.repository import CliproxyCredentialPrefixRepository
-from app.modules.proxy.cliproxy_account_routing import _prefix_for_auth, _xai_window, account_state_for_auth
+from app.modules.proxy.cliproxy_quota_state import account_state_for_auth
 from app.modules.proxy.load_balancer import _build_states, _select_long_window_entry
 from app.modules.quota_feed.schemas import (
     ProviderHeadroom,
@@ -46,10 +46,7 @@ _BLOCKED_STATUSES = frozenset(
     }
 )
 _OAUTH_SOURCE = {"claude": "anthropic_oauth_usage", "codex": "codex_oauth_usage"}
-# Used only so a credential without a routable prefix still produces the
-# quota fields ``account_state_for_auth`` would produce once a prefix exists.
-# The stand-in is not returned.
-_STATE_PREFIX = "feed"
+_XAI_WINDOW_KINDS = frozenset({"weekly", "monthly", "credits"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,15 +64,9 @@ class QuotaFeedScope:
 
 
 class QuotaFeedService:
-    def __init__(
-        self,
-        accounts: AccountsRepository,
-        usage: UsageRepository,
-        prefixes: CliproxyCredentialPrefixRepository,
-    ) -> None:
+    def __init__(self, accounts: AccountsRepository, usage: UsageRepository) -> None:
         self._accounts = accounts
         self._usage = usage
-        self._prefixes = prefixes
 
     async def build(self, scope: QuotaFeedScope) -> QuotaFeedResponse:
         now = datetime.now(timezone.utc)
@@ -103,25 +94,18 @@ class QuotaFeedService:
         }
         sidecar_accounts: Sequence[SidecarAuthQuota] = ()
         holds: Sequence[SidecarRateLimitHold] = ()
-        prefixes_by_name: dict[str, str] = {}
-        prefixes_by_index: dict[str, str] = {}
         if scope.include_sidecar:
             settings = await get_settings_cache().get()
             snapshot = StoredSnapshotReader().read(settings.claude_sidecar_quota_state_json)
             if snapshot is not None:
                 sidecar_accounts = snapshot.accounts
                 holds = snapshot.rate_limit_holds
-            prefix_rows = await self._prefixes.list_all()
-            prefixes_by_name = {row.credential_name: row.prefix for row in prefix_rows}
-            prefixes_by_index = {row.auth_index: row.prefix for row in prefix_rows if row.auth_index}
         return compose_quota_feed(
             generated_at=now,
             codex_states=states,
             codex_long_window_ids=long_window_ids,
             sidecar_accounts=sidecar_accounts,
             holds=holds,
-            prefixes_by_name=prefixes_by_name,
-            prefixes_by_index=prefixes_by_index,
             now=now,
         )
 
@@ -130,14 +114,11 @@ def routing_state_for_auth(
     auth: SidecarAuthQuota,
     *,
     holds: Sequence[SidecarRateLimitHold],
-    prefixes_by_name: Mapping[str, str],
-    prefixes_by_index: Mapping[str, str],
     now: datetime,
 ) -> AccountState | None:
-    """The ``AccountState`` the selector would build for this credential."""
+    """The quota-feed ``AccountState`` for this CLIProxyAPI credential."""
 
-    prefix = _prefix_for_auth(auth, dict(prefixes_by_name), dict(prefixes_by_index)) or _STATE_PREFIX
-    return account_state_for_auth(auth, holds=holds, prefix=prefix, now=now)
+    return account_state_for_auth(auth, holds=holds, now=now)
 
 
 def compose_quota_feed(
@@ -147,21 +128,13 @@ def compose_quota_feed(
     codex_long_window_ids: Mapping[str, str],
     sidecar_accounts: Sequence[SidecarAuthQuota],
     holds: Sequence[SidecarRateLimitHold],
-    prefixes_by_name: Mapping[str, str],
-    prefixes_by_index: Mapping[str, str],
     now: datetime,
 ) -> QuotaFeedResponse:
     rows: list[tuple[AccountState, QuotaFeedAccount]] = [
         _codex_row(state, codex_long_window_ids.get(state.account_id, "seven_day")) for state in codex_states
     ]
     for auth in sidecar_accounts:
-        state = routing_state_for_auth(
-            auth,
-            holds=holds,
-            prefixes_by_name=prefixes_by_name,
-            prefixes_by_index=prefixes_by_index,
-            now=now,
-        )
+        state = routing_state_for_auth(auth, holds=holds, now=now)
         if state is None:
             continue
         rows.append(_sidecar_row(auth, state))
@@ -251,6 +224,15 @@ def _oauth_windows(state: AccountState, *, source: str) -> list[QuotaFeedWindow]
             source=source,
         ),
     ]
+
+
+def _xai_window(credits: GrokCreditsQuota | None) -> GrokCreditWindow | None:
+    if credits is None or not credits.windows:
+        return None
+    for window in credits.windows:
+        if window.id == "credits" or window.kind in _XAI_WINDOW_KINDS:
+            return window
+    return credits.windows[0]
 
 
 def _xai_windows(auth: SidecarAuthQuota, state: AccountState) -> list[QuotaFeedWindow]:

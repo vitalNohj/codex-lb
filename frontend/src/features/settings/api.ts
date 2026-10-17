@@ -5,6 +5,12 @@ import {
   AliasPoolsHealthResponseSchema,
   ClaudeSidecarModelsResponseSchema,
   CliproxyAccountsResponseSchema,
+  CliproxyApiKeyAccountSchema,
+  CliproxyApiKeyDeleteRequestSchema,
+  CliproxyApiKeyDeleteResponseSchema,
+  CliproxyApiKeyWriteRequestSchema,
+  CliproxyCatalogModelRequestSchema,
+  CliproxyCatalogModelResponseSchema,
   CliproxyCredentialFieldsResponseSchema,
   CliproxyCredentialFieldsUpdateSchema,
   CliproxyCredentialDeleteRequestSchema,
@@ -60,6 +66,7 @@ const SETTINGS_PATH = "/api/settings";
 const UPSTREAM_PROXY_PATH = `${SETTINGS_PATH}/upstream-proxy`;
 const CLAUDE_SIDECAR_PATH = "/api/claude-sidecar";
 const CLIPROXY_ACCOUNTS_PATH = "/api/cliproxy/accounts";
+const CLIPROXY_API_KEYS_PATH = "/api/cliproxy/api-keys";
 const CLIPROXY_OAUTH_PATH = "/api/cliproxy/oauth";
 const OPENROUTER_SIDECAR_PATH = "/api/openrouter-sidecar";
 const OPENAI_COMPAT_PATH = "/api/openai-compat";
@@ -212,6 +219,34 @@ export function deleteCliproxyCredential(name: string) {
     CliproxyCredentialDeleteResponseSchema,
     { body: validated },
   );
+}
+
+export function createCliproxyApiKey(payload: unknown) {
+  const validated = CliproxyApiKeyWriteRequestSchema.parse(payload);
+  return post(CLIPROXY_API_KEYS_PATH, CliproxyApiKeyAccountSchema, { body: validated });
+}
+
+export function updateCliproxyApiKey(kind: string, index: number, payload: unknown) {
+  const validated = CliproxyApiKeyWriteRequestSchema.parse(payload);
+  return patch(
+    `${CLIPROXY_API_KEYS_PATH}/${encodeURIComponent(kind)}/${index}`,
+    CliproxyApiKeyAccountSchema,
+    { body: validated },
+  );
+}
+
+export function deleteCliproxyApiKey(kind: string, index: number, accountId: string) {
+  const validated = CliproxyApiKeyDeleteRequestSchema.parse({ confirm: true, accountId });
+  return del(
+    `${CLIPROXY_API_KEYS_PATH}/${encodeURIComponent(kind)}/${index}`,
+    CliproxyApiKeyDeleteResponseSchema,
+    { body: validated },
+  );
+}
+
+export function addCliproxyCatalogModel(model: string) {
+  const validated = CliproxyCatalogModelRequestSchema.parse({ model });
+  return post("/api/cliproxy/catalog/models", CliproxyCatalogModelResponseSchema, { body: validated });
 }
 
 export function uploadCliproxyCredential(payload: unknown) {
