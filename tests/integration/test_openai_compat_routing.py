@@ -253,10 +253,18 @@ async def _create_api_key(
     *,
     allowed_models: list[str] | None = None,
     limits: list[LimitRuleInput] | None = None,
+    enforced_service_tier: str | None = None,
 ):
     async with SessionLocal() as session:
         service = ApiKeysService(ApiKeysRepository(session))
-        return await service.create_key(ApiKeyCreateData(name=name, allowed_models=allowed_models, limits=limits or []))
+        return await service.create_key(
+            ApiKeyCreateData(
+                name=name,
+                allowed_models=allowed_models,
+                limits=limits or [],
+                enforced_service_tier=enforced_service_tier,
+            )
+        )
 
 
 async def _reservation_statuses() -> list[str]:
@@ -585,6 +593,88 @@ async def test_responses_openai_compat_streams_image(async_client, fake_openai_c
     assert body.count(b"data: [DONE]") == 1
     assert len(fake_openai_compat.stream_payloads) == 1
     _assert_image_survived(fake_openai_compat.stream_payloads[0])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["/v1/responses", "/backend-api/codex/responses"])
+async def test_responses_openai_compat_preserves_function_call_history(async_client, fake_openai_compat, path):
+    response = await async_client.post(
+        path,
+        json={
+            "model": MODEL,
+            "input": [
+                {"type": "function_call", "call_id": "call_1", "name": "lookup", "arguments": "{}"},
+                {"type": "function_call_output", "call_id": "call_1", "output": "72F"},
+            ],
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    assert len(fake_openai_compat.chat_payloads) == 1
+    messages = fake_openai_compat.chat_payloads[0]["messages"]
+    assert messages[0]["tool_calls"][0]["id"] == "call_1"
+    assert messages[0]["tool_calls"][0]["function"]["name"] == "lookup"
+    assert messages[1] == {"role": "tool", "tool_call_id": "call_1", "content": "72F"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("enforced_service_tier", "expected_service_tier"),
+    [("priority", "priority"), ("auto", None)],
+)
+async def test_responses_openai_compat_uses_enforced_service_tier(
+    async_client,
+    fake_openai_compat,
+    enforced_service_tier,
+    expected_service_tier,
+):
+    await _enable_api_key_auth(async_client)
+    key = await _create_api_key(
+        f"compat-tier-{enforced_service_tier}",
+        allowed_models=[MODEL],
+        enforced_service_tier=enforced_service_tier,
+    )
+
+    response = await async_client.post(
+        "/v1/responses",
+        headers={"Authorization": f"Bearer {key.key}"},
+        json={"model": MODEL, "input": "hi", "service_tier": "flex"},
+    )
+
+    assert response.status_code == 200, response.text
+    assert len(fake_openai_compat.chat_payloads) == 1
+    assert fake_openai_compat.chat_payloads[0].get("service_tier") == expected_service_tier
+
+
+@pytest.mark.asyncio
+async def test_responses_openai_compat_missing_client_does_not_reserve(
+    async_client,
+    fake_openai_compat,
+    monkeypatch,
+):
+    await _enable_api_key_auth(async_client)
+    key = await _create_api_key(
+        "compat-missing-client",
+        allowed_models=[MODEL],
+        limits=[LimitRuleInput(limit_type="total_tokens", limit_window="weekly", max_value=1000)],
+    )
+
+    async def _missing_client(_provider: str) -> None:
+        return None
+
+    monkeypatch.setattr("app.modules.proxy.api._responses_chat_provider_client", _missing_client)
+
+    response = await async_client.post(
+        "/v1/responses",
+        headers={"Authorization": f"Bearer {key.key}"},
+        json={"model": MODEL, "input": "hi"},
+    )
+
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "sidecar_not_configured"
+    assert fake_openai_compat.chat_payloads == []
+    assert fake_openai_compat.stream_payloads == []
+    assert await _reservation_statuses() == []
 
 
 @pytest.mark.asyncio

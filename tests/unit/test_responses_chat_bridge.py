@@ -95,6 +95,75 @@ def test_request_translation_preserves_image_url_object_with_detail():
     }
 
 
+def test_request_translation_keeps_function_call_history():
+    request = _responses_request(
+        instructions="",
+        input=[
+            {"role": "user", "content": [{"type": "input_text", "text": "weather?"}]},
+            {
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "checking"}],
+            },
+            {
+                "type": "function_call",
+                "call_id": "call_1",
+                "name": "lookup",
+                "arguments": '{"city":"Seoul"}',
+            },
+            {
+                "type": "function_call",
+                "call_id": "call_2",
+                "name": "lookup",
+                "arguments": {"city": "Busan"},
+            },
+            {"type": "function_call_output", "call_id": "call_1", "output": "72F"},
+            {"type": "function_call_output", "call_id": "call_2", "output": {"ok": True}},
+        ],
+    )
+
+    chat = responses_to_chat_request(request, "omniroute/test-chat")
+
+    assert chat.messages == [
+        {"role": "user", "content": "weather?"},
+        {
+            "role": "assistant",
+            "content": "checking",
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "lookup", "arguments": '{"city":"Seoul"}'},
+                },
+                {
+                    "id": "call_2",
+                    "type": "function",
+                    "function": {"name": "lookup", "arguments": '{"city":"Busan"}'},
+                },
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call_1", "content": "72F"},
+        {"role": "tool", "tool_call_id": "call_2", "content": '{"ok":true}'},
+    ]
+
+
+def test_request_translation_function_call_without_assistant_text_is_its_own_turn():
+    request = _responses_request(
+        instructions="",
+        input=[
+            {"type": "function_call", "call_id": "call_1", "name": "lookup", "arguments": "{}"},
+            {"type": "function_call_output", "call_id": "call_1", "output": "done"},
+        ],
+    )
+
+    chat = responses_to_chat_request(request, "omniroute/test-chat")
+
+    assert chat.messages[0]["role"] == "assistant"
+    assert chat.messages[0]["tool_calls"][0]["id"] == "call_1"
+    assert chat.messages[1] == {"role": "tool", "tool_call_id": "call_1", "content": "done"}
+    assert all(message.get("content") != "" for message in chat.messages)
+
+
 def test_request_translation_carries_tools_and_stream():
     request = _responses_request(
         stream=True,

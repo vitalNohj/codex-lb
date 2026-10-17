@@ -1352,12 +1352,8 @@ async def _chat_provider_responses_dispatch_or_none(
 
     validate_model_access(api_key, effective_model, routing_entries=routing_entries)
     rate_limit_headers = await context.service.rate_limit_headers()
-    reservation = await _enforce_request_limits(
-        api_key,
-        request_model=effective_model,
-        request_service_tier=responses_payload.service_tier,
-        request_usage_budget=None,
-    )
+    # A resolved route whose config cannot be loaded never starts a turn.
+    # Reserving first would leave that quota pending until the expiry sweep.
     client = await _responses_chat_provider_client(decision.provider)
     if client is None:
         return _logged_error_json_response(
@@ -1370,10 +1366,21 @@ async def _chat_provider_responses_dispatch_or_none(
             ),
             headers=rate_limit_headers,
         )
+    # The handlers apply this policy only after sidecar dispatch returns.
+    # This path returns the response itself, so the key's service tier has to
+    # be on the payload before translation copies it and before quota accounting.
+    await _apply_api_key_enforcement_with_fast_mode_policy(responses_payload, api_key)
+    chat_request = responses_to_chat_request(responses_payload, effective_model)
+    reservation = await _enforce_request_limits(
+        api_key,
+        request_model=effective_model,
+        request_service_tier=responses_payload.service_tier,
+        request_usage_budget=None,
+    )
     settings = get_settings()
     return await dispatch_responses_via_chat_provider(
         request,
-        responses_to_chat_request(responses_payload, effective_model),
+        chat_request,
         provider=decision.provider,
         effective_model=effective_model,
         wire_model=decision.wire_model,

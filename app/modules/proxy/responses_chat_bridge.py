@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import time
 import uuid
 from collections.abc import Mapping
@@ -57,11 +58,102 @@ def _input_items_to_messages(input_value: JsonValue) -> list[JsonValue]:
     if not is_json_list(input_value):
         return []
     messages: list[JsonValue] = []
+    pending_tool_calls: list[JsonValue] = []
     for item in input_value:
+        if _item_type(item) == "function_call":
+            tool_call = _function_call_to_tool_call(item)
+            if tool_call is not None:
+                pending_tool_calls.append(tool_call)
+            continue
+        _flush_pending_tool_calls(messages, pending_tool_calls)
+        if _item_type(item) == "function_call_output":
+            tool_message = _function_call_output_to_message(item)
+            if tool_message is not None:
+                messages.append(tool_message)
+            continue
         message = _input_item_to_message(item)
         if message is not None:
             messages.append(message)
+    _flush_pending_tool_calls(messages, pending_tool_calls)
     return messages
+
+
+def _item_type(item: JsonValue) -> str | None:
+    if not is_json_mapping(item):
+        return None
+    item_type = item.get("type")
+    return item_type if isinstance(item_type, str) else None
+
+
+def _function_call_to_tool_call(item: JsonValue) -> JsonObject | None:
+    """Map one Responses ``function_call`` item onto a chat ``tool_calls`` entry."""
+
+    if not is_json_mapping(item):
+        return None
+    name = item.get("name")
+    call_id = item.get("call_id")
+    if not isinstance(name, str) or not name or not isinstance(call_id, str) or not call_id:
+        return None
+    arguments = item.get("arguments")
+    if isinstance(arguments, str):
+        argument_text = arguments
+    elif arguments is None:
+        argument_text = ""
+    else:
+        argument_text = json.dumps(arguments, ensure_ascii=False, separators=(",", ":"))
+    return {
+        "id": call_id,
+        "type": "function",
+        "function": {"name": name, "arguments": argument_text},
+    }
+
+
+def _function_call_output_to_message(item: JsonValue) -> JsonObject | None:
+    """Map one Responses ``function_call_output`` item onto a chat tool message."""
+
+    if not is_json_mapping(item):
+        return None
+    call_id = item.get("call_id")
+    if not isinstance(call_id, str) or not call_id:
+        return None
+    return {
+        "role": "tool",
+        "tool_call_id": call_id,
+        "content": _tool_output_content(item.get("output")),
+    }
+
+
+def _tool_output_content(output: JsonValue) -> str:
+    if isinstance(output, str):
+        return output
+    if output is None:
+        return ""
+    return json.dumps(output, ensure_ascii=False, separators=(",", ":"))
+
+
+def _flush_pending_tool_calls(messages: list[JsonValue], pending: list[JsonValue]) -> None:
+    """Attach accumulated function calls to the preceding assistant turn.
+
+    Chat completions put every tool call on the assistant message that
+    requested them. Responses lists those calls as sibling items, so a run of
+    ``function_call`` items is folded back onto that message. A call with no
+    preceding assistant message becomes its own assistant turn.
+    """
+
+    if not pending:
+        return
+    tool_calls = list(pending)
+    pending.clear()
+    if messages and is_json_mapping(messages[-1]) and messages[-1].get("role") == "assistant":
+        previous = dict(messages[-1])
+        existing = previous.get("tool_calls")
+        if is_json_list(existing):
+            previous["tool_calls"] = [*existing, *tool_calls]
+        else:
+            previous["tool_calls"] = tool_calls
+        messages[-1] = previous
+        return
+    messages.append({"role": "assistant", "content": None, "tool_calls": tool_calls})
 
 
 def _input_item_to_message(item: JsonValue) -> JsonValue | None:
