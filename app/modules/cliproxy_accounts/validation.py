@@ -35,6 +35,7 @@ class CredentialFieldChange:
     update_weight: bool = False
     update_priority: bool = False
     update_excluded_models: bool = False
+    confirm: bool = False
 
     @property
     def changed_fields(self) -> tuple[str, ...]:
@@ -51,6 +52,34 @@ class CredentialFieldChange:
 
     def is_empty(self) -> bool:
         return not self.changed_fields
+
+
+def normalized_tag(value: str | None) -> str:
+    """Compare tags without surrounding space or case differences."""
+
+    return (value or "").strip().lower()
+
+
+def tag_is_changing(current: str | None, requested: str | None) -> bool:
+    """A tag edit is the risky change that needs a confirmation."""
+
+    return normalized_tag(current) != normalized_tag(requested)
+
+
+def disabling_last_enabled_account(
+    accounts: Sequence[SidecarAuthQuota],
+    *,
+    name: str,
+    disabled: bool,
+) -> bool:
+    """True when this write would leave no enabled CLIProxyAPI account."""
+
+    if not disabled:
+        return False
+    target = next((account for account in accounts if account.name == name), None)
+    if target is None or target.disabled:
+        return False
+    return sum(1 for account in accounts if not account.disabled) <= 1
 
 
 def normalize_credential_prefix(raw: str) -> str:

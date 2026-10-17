@@ -310,25 +310,6 @@ class ClaudeSidecarClient:
             return
         raise ClaudeSidecarError(409, "CLIProxyAPI config changed while updating session affinity")
 
-    async def fetch_config_yaml(self) -> str:
-        self._require_management_key()
-        return await self._fetch_config_yaml()
-
-    async def put_config_yaml(self, body: str) -> None:
-        self._require_management_key()
-        await self._management_text(
-            "PUT",
-            "/v0/management/config.yaml",
-            "update CLIProxyAPI config",
-            accept="application/json",
-            content_type="application/yaml; charset=utf-8",
-            body=body,
-        )
-
-    def _require_management_key(self) -> None:
-        if not (self._config.management_key or "").strip():
-            raise ClaudeSidecarUnavailableError("CLIProxyAPI management key is not configured")
-
     async def _fetch_config_yaml(self) -> str:
         return await self._management_text(
             "GET",

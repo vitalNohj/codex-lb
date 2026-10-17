@@ -2960,38 +2960,6 @@ class HttpBridgeRetryCircuit(Base):
     updated_at_epoch: Mapped[float] = mapped_column(Float, nullable=False)
 
 
-class CliproxyConfigSnapshot(Base):
-    """Encrypted previous CLIProxyAPI config.yaml, kept so a panel replace can roll back.
-
-    The ciphertext is the full file, including secrets. Nothing in this table is
-    returned to the browser; rollback decrypts it only to upload it again.
-    """
-
-    __tablename__ = "cliproxy_config_snapshots"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=func.now(), nullable=False)
-    upstream_key: Mapped[str] = mapped_column(String(64), nullable=False)
-    content_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
-    yaml_ciphertext: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
-    action: Mapped[str] = mapped_column(String(32), nullable=False)
-
-
-class CliproxyConfigWriteClaim(Base):
-    """Lease that serializes CLIProxyAPI config writes for one upstream.
-
-    The snapshot commit happens before the management upload returns, so a
-    transaction-scoped lock would release too early. The holder renews this
-    lease until the upload and its failure recovery finish.
-    """
-
-    __tablename__ = "cliproxy_config_write_claims"
-
-    lock_key: Mapped[str] = mapped_column(String(64), primary_key=True)
-    holder_id: Mapped[str] = mapped_column(String(64), nullable=False)
-    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-
-
 _PRIMARY_WINDOW_INDEX_EXPR = func.coalesce(UsageHistory.window, literal_column("'primary'"))
 
 Index("idx_usage_recorded_at", UsageHistory.recorded_at)

@@ -491,7 +491,13 @@ async def test_patch_fields_ok_persists_prefix_without_changing_routing(async_cl
 
     response = await async_client.patch(
         "/api/cliproxy/accounts/claude-a.json/fields",
-        json={"prefix": " Acct1 ", "weight": 4, "priority": -2, "excludedModels": ["grok-4"]},
+        json={
+            "prefix": " Acct1 ",
+            "weight": 4,
+            "priority": -2,
+            "excludedModels": ["grok-4"],
+            "confirm": True,
+        },
     )
 
     assert response.status_code == 200
@@ -547,7 +553,7 @@ async def test_patch_fields_unknown_credential_is_404(async_client, monkeypatch)
 
     response = await async_client.patch(
         "/api/cliproxy/accounts/missing.json/fields",
-        json={"prefix": "acct4"},
+        json={"prefix": "acct4", "confirm": True},
     )
 
     assert response.status_code == 404
@@ -588,7 +594,7 @@ async def test_patch_fields_rejects_prefix_used_by_another_credential(async_clie
 
     response = await async_client.patch(
         "/api/cliproxy/accounts/claude-a.json/fields",
-        json={"prefix": "acct2"},
+        json={"prefix": "acct2", "confirm": True},
     )
 
     assert response.status_code == 409
@@ -607,7 +613,7 @@ async def test_patch_fields_rejects_prefix_that_clashes_with_sidecar_routing(asy
 
     response = await async_client.patch(
         "/api/cliproxy/accounts/claude-a.json/fields",
-        json={"prefix": "acct1"},
+        json={"prefix": "acct1", "confirm": True},
     )
 
     assert response.status_code == 409
@@ -622,14 +628,14 @@ async def test_patch_fields_keeps_a_stored_prefix_when_the_auth_list_omits_it(as
     await _ready(async_client)
     first = await async_client.patch(
         "/api/cliproxy/accounts/claude-a.json/fields",
-        json={"prefix": "acct1"},
+        json={"prefix": "acct1", "confirm": True},
     )
     assert first.status_code == 200
     _FakeClient.field_calls.clear()
 
     second = await async_client.patch(
         "/api/cliproxy/accounts/grok-a.json/fields",
-        json={"prefix": "acct1"},
+        json={"prefix": "acct1", "confirm": True},
     )
 
     assert second.status_code == 409
@@ -639,9 +645,53 @@ async def test_patch_fields_keeps_a_stored_prefix_when_the_auth_list_omits_it(as
 
 
 @pytest.mark.asyncio
-async def test_patch_status_requires_confirmation_then_disables_and_audits(async_client, monkeypatch):
+async def test_patch_fields_requires_confirmation_before_changing_a_tag(async_client, monkeypatch):
     _install(monkeypatch)
     await _ready(async_client)
+
+    refused = await async_client.patch(
+        "/api/cliproxy/accounts/claude-a.json/fields",
+        json={"prefix": "acct1", "confirm": False},
+    )
+    assert refused.status_code == 400
+    assert refused.json()["error"]["code"] == "bad_request"
+    assert "tag" in refused.json()["error"]["message"]
+    assert _FakeClient.field_calls == []
+    assert await _stored_prefixes() == {}
+
+    unchanged = await async_client.patch(
+        "/api/cliproxy/accounts/grok-a.json/fields",
+        json={"prefix": "acct2"},
+    )
+    assert unchanged.status_code == 200
+    assert _FakeClient.field_calls == [{"name": "grok-a.json", "prefix": "acct2"}]
+
+    accepted = await async_client.patch(
+        "/api/cliproxy/accounts/claude-a.json/fields",
+        json={"prefix": "acct1", "confirm": True},
+    )
+    assert accepted.status_code == 200
+    assert accepted.json()["prefix"] == "acct1"
+    assert await _stored_prefixes() == {"grok-a.json": "acct2", "claude-a.json": "acct1"}
+
+
+@pytest.mark.asyncio
+async def test_patch_status_confirms_only_the_last_enabled_account(async_client, monkeypatch):
+    _install(monkeypatch)
+    await _ready(async_client)
+
+    other_enabled = await async_client.patch(
+        "/api/cliproxy/accounts/claude-a.json/status",
+        json={"disabled": True, "confirm": False},
+    )
+    assert other_enabled.status_code == 200
+    assert other_enabled.json() == {"name": "claude-a.json", "disabled": True}
+    assert _FakeClient.status_calls == [{"name": "claude-a.json", "disabled": True, "auth_index": "c1"}]
+
+    _FakeClient.status_calls.clear()
+    for entry in _FakeClient.files:
+        if entry["name"] != "claude-a.json":
+            entry["disabled"] = True
 
     refused = await async_client.patch(
         "/api/cliproxy/accounts/claude-a.json/status",
@@ -649,6 +699,7 @@ async def test_patch_status_requires_confirmation_then_disables_and_audits(async
     )
     assert refused.status_code == 400
     assert refused.json()["error"]["code"] == "bad_request"
+    assert "last enabled" in refused.json()["error"]["message"]
     assert _FakeClient.status_calls == []
 
     accepted = await async_client.patch(
@@ -666,6 +717,30 @@ async def test_patch_status_requires_confirmation_then_disables_and_audits(async
         "provider": "claude",
         "disabled": True,
     }
+
+    enabled = await async_client.patch(
+        "/api/cliproxy/accounts/claude-a.json/status",
+        json={"disabled": False},
+    )
+    assert enabled.status_code == 200
+    assert enabled.json() == {"name": "claude-a.json", "disabled": False}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("method", "path"),
+    [
+        ("GET", "/api/cliproxy/config"),
+        ("POST", "/api/cliproxy/config/preview"),
+        ("PUT", "/api/cliproxy/config"),
+        ("POST", "/api/cliproxy/config/rollback"),
+        ("PATCH", "/api/cliproxy/config/routing/force-model-prefix"),
+        ("PATCH", "/api/cliproxy/config/routing/session-affinity"),
+    ],
+)
+async def test_config_editor_endpoints_are_gone(async_client, method, path):
+    response = await async_client.request(method, path, json={})
+    assert response.status_code == 404
 
 
 @pytest.mark.asyncio
@@ -728,7 +803,7 @@ async def test_prefix_registry_flush_failure_restores_the_upstream_prefix(async_
 
     response = await async_client.patch(
         "/api/cliproxy/accounts/claude-a.json/fields",
-        json={"prefix": "acct1"},
+        json={"prefix": "acct1", "confirm": True},
     )
 
     assert response.status_code == 409
@@ -757,7 +832,7 @@ async def test_guest_cannot_edit_cliproxy_credential_fields(app_instance, monkey
 
             fields = await remote_client.patch(
                 "/api/cliproxy/accounts/claude-a.json/fields",
-                json={"prefix": "acct1"},
+                json={"prefix": "acct1", "confirm": True},
             )
             status = await remote_client.patch(
                 "/api/cliproxy/accounts/claude-a.json/status",
@@ -910,7 +985,7 @@ async def test_delete_disables_before_delete_and_writes_one_audit(async_client, 
     await _ready(async_client)
     saved = await async_client.patch(
         "/api/cliproxy/accounts/grok-a.json/fields",
-        json={"prefix": "acct9"},
+        json={"prefix": "acct9", "confirm": True},
     )
     assert saved.status_code == 200
     assert await _stored_prefixes() == {"grok-a.json": "acct9"}

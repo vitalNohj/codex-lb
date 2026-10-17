@@ -873,6 +873,7 @@ export const CliproxyCredentialFieldsUpdateSchema = z.object({
   weight: z.number().int().nullable().optional(),
   priority: z.number().int().nullable().optional(),
   excludedModels: z.array(z.string()).optional(),
+  confirm: z.boolean().optional(),
 });
 export const CliproxyCredentialFieldsResponseSchema = z.object({
   name: z.string(),

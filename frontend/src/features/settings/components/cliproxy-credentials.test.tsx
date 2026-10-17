@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { describe, expect, it } from "vitest";
@@ -163,7 +163,7 @@ describe("CliproxyCredentials", () => {
     expect(screen.queryByRole("article")).not.toBeInTheDocument();
   });
 
-  it("saves a prefix and turns a credential off only after confirmation", async () => {
+  it("confirms a tag change and turning off the last enabled account", async () => {
     const user = userEvent.setup();
     const fieldBodies: unknown[] = [];
     const statusBodies: unknown[] = [];
@@ -220,13 +220,129 @@ describe("CliproxyCredentials", () => {
 
     const prefix = await screen.findByRole("textbox", { name: "Prefix for grok@example.com" });
     await user.type(prefix, "acct1");
-    await user.click(screen.getByRole("button", { name: "Save grok@example.com" }));
-    expect(fieldBodies).toEqual([{ prefix: "acct1" }]);
+    await user.click(screen.getByRole("button", { name: "Save tag for grok@example.com" }));
+    expect(fieldBodies).toEqual([]);
+    await user.click(screen.getByRole("button", { name: "Change tag" }));
+    await waitFor(() => {
+      expect(fieldBodies).toEqual([{ prefix: "acct1", confirm: true }]);
+    });
 
-    await user.click(screen.getByRole("button", { name: "Turn off grok@example.com" }));
+    const enabled = screen.getByRole("switch", { name: "Enabled for grok@example.com" });
+    await waitFor(() => expect(enabled).toBeEnabled());
+    await user.click(enabled);
     expect(statusBodies).toEqual([]);
+    expect(screen.getByRole("heading", { name: "Turn off the last enabled account?" })).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Turn off" }));
-    expect(statusBodies).toEqual([{ disabled: true, confirm: true }]);
+    await waitFor(() => {
+      expect(statusBodies).toEqual([{ disabled: true, confirm: true }]);
+    });
+  });
+
+  it("saves weight, priority, and excluded-model chips without confirmation", async () => {
+    const user = userEvent.setup();
+    const fieldBodies: unknown[] = [];
+    const statusBodies: unknown[] = [];
+    server.use(
+      http.get("*/api/cliproxy/accounts", () =>
+        HttpResponse.json({
+          status: "healthy",
+          message: null,
+          providers: [
+            {
+              provider: "xai",
+              credentials: [
+                {
+                  name: "grok-a.json",
+                  authIndex: "x1",
+                  email: "grok@example.com",
+                  provider: "xai",
+                  health: "active",
+                  disabled: false,
+                  unavailable: false,
+                  quotaExceeded: false,
+                  prefix: "acct2",
+                  weight: null,
+                  priority: null,
+                  excludedModels: ["keep-me"],
+                  excludedModelsState: "available",
+                  models: ["grok-4"],
+                  modelsError: null,
+                },
+                {
+                  name: "grok-b.json",
+                  authIndex: "x2",
+                  email: "other@example.com",
+                  provider: "xai",
+                  health: "active",
+                  disabled: false,
+                  unavailable: false,
+                  quotaExceeded: false,
+                  prefix: "acct3",
+                  weight: 1,
+                  priority: 0,
+                  excludedModels: [],
+                  excludedModelsState: "available",
+                  models: [],
+                  modelsError: null,
+                },
+              ],
+            },
+          ],
+        }),
+      ),
+      http.patch("*/api/cliproxy/accounts/:name/fields", async ({ request }) => {
+        fieldBodies.push(await request.json());
+        return HttpResponse.json({
+          name: "grok-a.json",
+          prefix: "acct2",
+          weight: 4,
+          priority: -2,
+          excludedModels: [],
+          excludedModelsState: "available",
+          disabled: false,
+        });
+      }),
+      http.patch("*/api/cliproxy/accounts/:name/status", async ({ request }) => {
+        statusBodies.push(await request.json());
+        return HttpResponse.json({ name: "grok-a.json", disabled: true });
+      }),
+    );
+
+    renderCredentials(true);
+
+    const weight = await screen.findByRole("textbox", { name: "Weight for grok@example.com" });
+    await user.type(weight, "4");
+    weight.blur();
+    await waitFor(() => {
+      expect(fieldBodies).toEqual([{ weight: 4 }]);
+    });
+
+    const priority = screen.getByRole("textbox", { name: "Priority for grok@example.com" });
+    await user.type(priority, "-2");
+    priority.blur();
+    await waitFor(() => {
+      expect(fieldBodies).toEqual([{ weight: 4 }, { priority: -2 }]);
+    });
+
+    await user.click(screen.getByRole("button", { name: "Remove keep-me from grok@example.com" }));
+    await waitFor(() => {
+      expect(fieldBodies).toEqual([{ weight: 4 }, { priority: -2 }, { excludedModels: [] }]);
+    });
+
+    const pattern = screen.getByRole("textbox", { name: "Add excluded model pattern for grok@example.com" });
+    await user.type(pattern, "grok-extra-*");
+    await user.click(screen.getByRole("button", { name: "Add excluded model pattern to grok-a.json" }));
+    await waitFor(() => {
+      expect(fieldBodies.at(-1)).toEqual({ excludedModels: ["keep-me", "grok-extra-*"] });
+    });
+
+    const enabled = screen.getByRole("switch", { name: "Enabled for grok@example.com" });
+    await waitFor(() => expect(enabled).toBeEnabled());
+    await user.click(enabled);
+    expect(screen.queryByRole("heading", { name: "Turn off the last enabled account?" })).not.toBeInTheDocument();
+    await waitFor(() => {
+      expect(statusBodies).toEqual([{ disabled: true, confirm: false }]);
+    });
   });
 
   it("deletes with one confirmation and does not send a separate disable", async () => {

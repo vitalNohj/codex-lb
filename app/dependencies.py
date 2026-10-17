@@ -20,8 +20,6 @@ from app.modules.automations.repository import AutomationsRepository
 from app.modules.automations.service import AutomationsService
 from app.modules.claude_sidecar.service import ClaudeSidecarService
 from app.modules.claude_sidecar.usage_repository import ClaudeSidecarUsageRepository
-from app.modules.cliproxy_accounts.config_repository import CliproxyConfigSnapshotRepository
-from app.modules.cliproxy_accounts.config_service import CliproxyConfigService
 from app.modules.cliproxy_accounts.repository import CliproxyCredentialPrefixRepository
 from app.modules.cliproxy_accounts.service import CliproxyAccountsService
 from app.modules.dashboard.repository import DashboardRepository
@@ -147,12 +145,6 @@ class CliproxyAccountsContext:
     session: AsyncSession
     settings_repository: SettingsRepository
     service: CliproxyAccountsService
-
-
-@dataclass(slots=True)
-class CliproxyConfigContext:
-    session: AsyncSession
-    service: CliproxyConfigService
 
 
 @dataclass(slots=True)
@@ -416,15 +408,6 @@ def get_cliproxy_accounts_context(
     settings_repository = SettingsRepository(session)
     service = CliproxyAccountsService(settings_repository, CliproxyCredentialPrefixRepository(session))
     return CliproxyAccountsContext(session=session, settings_repository=settings_repository, service=service)
-
-
-def get_cliproxy_config_context(
-    session: AsyncSession = Depends(get_session),
-) -> CliproxyConfigContext:
-    settings_repository = SettingsRepository(session)
-    snapshot_repository = CliproxyConfigSnapshotRepository(session)
-    service = CliproxyConfigService(settings_repository, snapshot_repository, session)
-    return CliproxyConfigContext(session=session, service=service)
 
 
 def get_openrouter_sidecar_context(

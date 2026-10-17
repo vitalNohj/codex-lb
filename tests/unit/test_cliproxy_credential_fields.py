@@ -6,10 +6,12 @@ from app.core.exceptions import DashboardBadRequestError
 from app.db.models import DashboardSettings
 from app.modules.claude_sidecar.quota import SidecarAuthQuota
 from app.modules.cliproxy_accounts.validation import (
+    disabling_last_enabled_account,
     effective_prefixes,
     normalize_credential_prefix,
     prefix_conflict_message,
     routing_prefix_owners,
+    tag_is_changing,
     validate_excluded_models,
     validate_priority,
     validate_weight,
@@ -18,7 +20,7 @@ from app.modules.cliproxy_accounts.validation import (
 pytestmark = pytest.mark.unit
 
 
-def _auth(name: str, *, prefix: str | None = None) -> SidecarAuthQuota:
+def _auth(name: str, *, prefix: str | None = None, disabled: bool = False) -> SidecarAuthQuota:
     return SidecarAuthQuota(
         name=name,
         auth_index="1",
@@ -26,7 +28,7 @@ def _auth(name: str, *, prefix: str | None = None) -> SidecarAuthQuota:
         provider="xai",
         status="active",
         status_message=None,
-        disabled=False,
+        disabled=disabled,
         unavailable=False,
         quota_exceeded=False,
         next_recover_at=None,
@@ -116,3 +118,21 @@ def test_prefix_conflict_with_sidecar_routing_prefix_including_hyphen_twin():
         == "Prefix acct8_ clashes with the CLIProxyAPI routing prefix"
     )
     assert prefix_conflict_message("acct4", credential_name="claude.json", effective={}, routing_owners=owners) is None
+
+
+def test_tag_change_confirmation_ignores_case_and_unchanged_values():
+    assert tag_is_changing(None, "acct1") is True
+    assert tag_is_changing("acct1", None) is True
+    assert tag_is_changing("Acct1", "acct1") is False
+    assert tag_is_changing(" acct2 ", "acct2") is False
+
+
+def test_only_disabling_the_last_enabled_account_needs_confirmation():
+    accounts = (_auth("one"), _auth("two", disabled=True))
+
+    assert disabling_last_enabled_account(accounts, name="one", disabled=True) is True
+    assert disabling_last_enabled_account(accounts, name="two", disabled=True) is False
+    assert disabling_last_enabled_account(accounts, name="one", disabled=False) is False
+    assert (
+        disabling_last_enabled_account((_auth("one"), _auth("two")), name="one", disabled=True) is False
+    )
