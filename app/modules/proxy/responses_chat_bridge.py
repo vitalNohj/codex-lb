@@ -535,7 +535,10 @@ class ResponsesStreamSynthesizer:
             if not state.added:
                 out.append(self._function_call_added(state))
                 state.added = True
-            fragment = _new_argument_text(state.arguments, _tool_call_arguments(call))
+            # Chat Completions streams argument fragments. Append them as sent.
+            # A later fragment may start with the same text as the accumulated
+            # arguments; that is still a new fragment, not a cumulative snapshot.
+            fragment = _tool_call_arguments(call)
             if fragment:
                 state.arguments += fragment
                 out.append(
@@ -653,21 +656,6 @@ def _tool_call_arguments(call: Mapping[str, JsonValue]) -> str:
         return ""
     arguments = function.get("arguments")
     return arguments if isinstance(arguments, str) else ""
-
-
-def _new_argument_text(current: str, incoming: str) -> str:
-    """Return only the argument bytes this chunk adds.
-
-    Chat streams usually send an argument fragment. Some providers resend the
-    accumulated string. A prefix of what we already stored is that snapshot,
-    so only the new tail is a Responses delta.
-    """
-
-    if not incoming:
-        return ""
-    if incoming.startswith(current):
-        return incoming[len(current) :]
-    return incoming
 
 
 def _chat_chunk_delta_text(event: JsonObject) -> str:

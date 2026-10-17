@@ -305,9 +305,26 @@ def test_stream_synthesizer_emits_function_call_deltas():
     assert all(item["type"] != "message" for item in completed["output"])
 
 
-def test_stream_synthesizer_collapses_cumulative_argument_snapshots():
+def test_stream_synthesizer_appends_argument_fragments_that_share_a_prefix():
+    """A fragment that starts with the accumulated arguments is still additive.
+
+    Chat Completions ``delta.tool_calls[].function.arguments`` is a fragment.
+    Treating a matching prefix as a cumulative snapshot drops valid JSON.
+    """
+
     synth = ResponsesStreamSynthesizer(model="omniroute/test-chat")
-    synth.feed(
+    fragments = ['{"', '{"', ":1}"]
+    for index, fragment in enumerate(fragments):
+        function = {"name": "lookup", "arguments": fragment} if index == 0 else {"arguments": fragment}
+        call: dict = {"index": 0, "function": function}
+        if index == 0:
+            call["id"] = "call_1"
+        synth.feed({"choices": [{"delta": {"tool_calls": [call]}}]})
+    completed = synth.feed("[DONE]")[-1]["response"]["output"][0]
+    assert completed["arguments"] == '{"{":1}'
+
+    repeated_prefix = ResponsesStreamSynthesizer(model="omniroute/test-chat")
+    repeated_prefix.feed(
         {
             "choices": [
                 {
@@ -316,7 +333,7 @@ def test_stream_synthesizer_collapses_cumulative_argument_snapshots():
                             {
                                 "index": 0,
                                 "id": "call_1",
-                                "function": {"name": "lookup", "arguments": "{"},
+                                "function": {"name": "lookup", "arguments": '{"a":'},
                             }
                         ]
                     }
@@ -324,23 +341,16 @@ def test_stream_synthesizer_collapses_cumulative_argument_snapshots():
             ]
         }
     )
-    events = synth.feed(
+    events = repeated_prefix.feed(
         {
             "choices": [
-                {
-                    "delta": {
-                        "tool_calls": [
-                            {"index": 0, "function": {"arguments": '{"city":"Seoul"}'}},
-                        ]
-                    }
-                }
+                {"delta": {"tool_calls": [{"index": 0, "function": {"arguments": '{"a":1}}'}}]}}
             ]
         }
     )
     deltas = [event["delta"] for event in events if event["type"] == "response.function_call_arguments.delta"]
-    assert deltas == ['"city":"Seoul"}']
-    completed = synth.feed("[DONE]")[-1]["response"]["output"][0]
-    assert completed["arguments"] == '{"city":"Seoul"}'
+    assert deltas == ['{"a":1}}']
+    assert repeated_prefix.feed("[DONE]")[-1]["response"]["output"][0]["arguments"] == '{"a":{"a":1}}'
 
 
 def test_stream_synthesizer_captures_usage():
