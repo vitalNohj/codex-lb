@@ -4,6 +4,7 @@ import json
 import time
 import uuid
 from collections.abc import Mapping
+from dataclasses import dataclass
 
 from app.core.openai.chat_requests import ChatCompletionsRequest
 from app.core.openai.requests import ResponsesRequest
@@ -347,6 +348,16 @@ def _usage_to_responses_usage(usage: JsonValue) -> JsonObject | None:
     return result or None
 
 
+@dataclass
+class _StreamToolCall:
+    output_index: int
+    item_id: str
+    call_id: str
+    name: str
+    arguments: str
+    added: bool = False
+
+
 class ResponsesStreamSynthesizer:
     """Synthesize the minimal Responses event sequence from chat SSE deltas.
 
@@ -354,7 +365,9 @@ class ResponsesStreamSynthesizer:
     sentinels (as produced by the shared SSE decoder) and yields Responses
     event mappings: ``response.created``, ``response.output_item.added``,
     ``response.output_text.delta`` (one per content delta),
-    ``response.output_item.done``, and a terminal ``response.completed``.
+    ``response.function_call_arguments.delta`` (one per tool-call argument
+    fragment), ``response.output_item.done``, and a terminal
+    ``response.completed``.
     """
 
     def __init__(self, *, model: str) -> None:
@@ -366,6 +379,9 @@ class ResponsesStreamSynthesizer:
         self._completed = False
         self._text_parts: list[str] = []
         self._usage: JsonObject | None = None
+        self._message_output_index: int | None = None
+        self._next_output_index = 0
+        self._tool_calls: dict[int, _StreamToolCall] = {}
 
     def feed(self, event: JsonObject | str) -> list[JsonObject]:
         if event == "[DONE]":
@@ -391,11 +407,12 @@ class ResponsesStreamSynthesizer:
                     "type": "response.output_text.delta",
                     "response_id": self._response_id,
                     "item_id": self._item_id,
-                    "output_index": 0,
+                    "output_index": self._message_output_index,
                     "content_index": 0,
                     "delta": delta_text,
                 }
             )
+        out.extend(self._feed_tool_calls(event))
         return out
 
     def finish(self, *, upstream_completed: bool = True) -> list[JsonObject]:
@@ -419,10 +436,23 @@ class ResponsesStreamSynthesizer:
         if not self._created_emitted:
             out.append(self._response_created())
             self._created_emitted = True
-        if not self._item_added:
+        if not self._item_added and not self._tool_calls:
             out.append(self._output_item_added())
             self._item_added = True
-        out.append(self._output_item_done())
+        closers: list[tuple[int, list[JsonObject]]] = []
+        if self._item_added:
+            message_index = 0 if self._message_output_index is None else self._message_output_index
+            closers.append((message_index, [self._output_item_done()]))
+        for call in self._tool_calls.values():
+            call_events: list[JsonObject] = []
+            if not call.added:
+                call_events.append(self._function_call_added(call))
+                call.added = True
+            call_events.append(self._function_call_arguments_done(call))
+            call_events.append(self._function_call_done(call))
+            closers.append((call.output_index, call_events))
+        for _, call_events in sorted(closers, key=lambda item: item[0]):
+            out.extend(call_events)
         # ``response.incomplete`` is the protocol's existing terminal event for
         # a response that stopped short; this repo's own converters already
         # recognize it (app/core/openai/chat_responses.py) and map it to a
@@ -445,7 +475,7 @@ class ResponsesStreamSynthesizer:
             "object": "response",
             "status": status,
             "model": self._model,
-            "output": [self._message_item()] if self._item_added else [],
+            "output": self._completed_output_items(),
         }
         if self._usage is not None:
             response["usage"] = self._usage
@@ -455,9 +485,11 @@ class ResponsesStreamSynthesizer:
         return {"type": "response.created", "response": self._response_object("in_progress")}
 
     def _output_item_added(self) -> JsonObject:
+        output_index = self._allocate_output_index()
+        self._message_output_index = output_index
         return {
             "type": "response.output_item.added",
-            "output_index": 0,
+            "output_index": output_index,
             "item": {
                 "id": self._item_id,
                 "type": "message",
@@ -468,7 +500,103 @@ class ResponsesStreamSynthesizer:
         }
 
     def _output_item_done(self) -> JsonObject:
-        return {"type": "response.output_item.done", "output_index": 0, "item": self._message_item()}
+        output_index = 0 if self._message_output_index is None else self._message_output_index
+        return {"type": "response.output_item.done", "output_index": output_index, "item": self._message_item()}
+
+    def _allocate_output_index(self) -> int:
+        output_index = self._next_output_index
+        self._next_output_index += 1
+        return output_index
+
+    def _feed_tool_calls(self, event: JsonObject) -> list[JsonObject]:
+        out: list[JsonObject] = []
+        for call in _chat_chunk_tool_calls(event):
+            chat_index = call.get("index")
+            index = chat_index if isinstance(chat_index, int) else 0
+            state = self._tool_calls.get(index)
+            name = _tool_call_name(call)
+            call_id = _tool_call_id(call)
+            if state is None:
+                state = _StreamToolCall(
+                    output_index=self._allocate_output_index(),
+                    item_id=f"fc_{uuid.uuid4().hex}",
+                    call_id=call_id or f"call_{uuid.uuid4().hex}",
+                    name=name or "",
+                    arguments="",
+                )
+                self._tool_calls[index] = state
+            elif not state.added:
+                if call_id:
+                    state.call_id = call_id
+                if name:
+                    state.name = name
+            elif name and not state.name:
+                state.name = name
+            if not state.added:
+                out.append(self._function_call_added(state))
+                state.added = True
+            fragment = _new_argument_text(state.arguments, _tool_call_arguments(call))
+            if fragment:
+                state.arguments += fragment
+                out.append(
+                    {
+                        "type": "response.function_call_arguments.delta",
+                        "response_id": self._response_id,
+                        "item_id": state.item_id,
+                        "output_index": state.output_index,
+                        "delta": fragment,
+                    }
+                )
+        return out
+
+    def _function_call_added(self, call: _StreamToolCall) -> JsonObject:
+        return {
+            "type": "response.output_item.added",
+            "output_index": call.output_index,
+            "item": {
+                "id": call.item_id,
+                "type": "function_call",
+                "status": "in_progress",
+                "call_id": call.call_id,
+                "name": call.name,
+                "arguments": "",
+            },
+        }
+
+    def _function_call_arguments_done(self, call: _StreamToolCall) -> JsonObject:
+        return {
+            "type": "response.function_call_arguments.done",
+            "response_id": self._response_id,
+            "item_id": call.item_id,
+            "output_index": call.output_index,
+            "arguments": call.arguments,
+        }
+
+    def _function_call_done(self, call: _StreamToolCall) -> JsonObject:
+        return {
+            "type": "response.output_item.done",
+            "output_index": call.output_index,
+            "item": self._function_call_item(call),
+        }
+
+    def _function_call_item(self, call: _StreamToolCall) -> JsonObject:
+        return {
+            "id": call.item_id,
+            "type": "function_call",
+            "status": "completed",
+            "call_id": call.call_id,
+            "name": call.name,
+            "arguments": call.arguments,
+        }
+
+    def _completed_output_items(self) -> list[JsonValue]:
+        ranked: list[tuple[int, JsonObject]] = []
+        if self._item_added and self._message_output_index is not None:
+            ranked.append((self._message_output_index, self._message_item()))
+        for call in self._tool_calls.values():
+            ranked.append((call.output_index, self._function_call_item(call)))
+        ranked.sort(key=lambda item: item[0])
+        return [item for _, item in ranked]
 
     def _response_completed(self) -> JsonObject:
         return {"type": "response.completed", "response": self._response_object("completed")}
@@ -484,6 +612,62 @@ class ResponsesStreamSynthesizer:
         response = self._response_object("incomplete")
         response["incomplete_details"] = {"reason": "interrupted"}
         return {"type": "response.incomplete", "response": response}
+
+
+def _chat_chunk_tool_calls(event: JsonObject) -> list[Mapping[str, JsonValue]]:
+    choices = event.get("choices")
+    if not is_json_list(choices) or not choices:
+        return []
+    first = choices[0]
+    if not is_json_mapping(first):
+        return []
+    delta = first.get("delta")
+    if not is_json_mapping(delta):
+        return []
+    tool_calls = delta.get("tool_calls")
+    if not is_json_list(tool_calls):
+        return []
+    return [call for call in tool_calls if is_json_mapping(call)]
+
+
+def _tool_call_id(call: Mapping[str, JsonValue]) -> str | None:
+    call_id = call.get("id")
+    if isinstance(call_id, str) and call_id:
+        return call_id
+    return None
+
+
+def _tool_call_name(call: Mapping[str, JsonValue]) -> str | None:
+    function = call.get("function")
+    if not is_json_mapping(function):
+        return None
+    name = function.get("name")
+    if isinstance(name, str) and name:
+        return name
+    return None
+
+
+def _tool_call_arguments(call: Mapping[str, JsonValue]) -> str:
+    function = call.get("function")
+    if not is_json_mapping(function):
+        return ""
+    arguments = function.get("arguments")
+    return arguments if isinstance(arguments, str) else ""
+
+
+def _new_argument_text(current: str, incoming: str) -> str:
+    """Return only the argument bytes this chunk adds.
+
+    Chat streams usually send an argument fragment. Some providers resend the
+    accumulated string. A prefix of what we already stored is that snapshot,
+    so only the new tail is a Responses delta.
+    """
+
+    if not incoming:
+        return ""
+    if incoming.startswith(current):
+        return incoming[len(current) :]
+    return incoming
 
 
 def _chat_chunk_delta_text(event: JsonObject) -> str:

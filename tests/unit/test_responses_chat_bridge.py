@@ -245,6 +245,104 @@ def test_stream_synthesizer_finish_is_idempotent():
     assert second == []
 
 
+def test_stream_synthesizer_emits_function_call_deltas():
+    synth = ResponsesStreamSynthesizer(model="omniroute/test-chat")
+    events: list = []
+    events.extend(
+        synth.feed(
+            {
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "id": "call_1",
+                                    "type": "function",
+                                    "function": {"name": "lookup", "arguments": '{"city":'},
+                                }
+                            ]
+                        }
+                    }
+                ]
+            }
+        )
+    )
+    events.extend(
+        synth.feed(
+            {
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {"index": 0, "function": {"arguments": '"Seoul"}'}},
+                                {
+                                    "index": 1,
+                                    "id": "call_2",
+                                    "type": "function",
+                                    "function": {"name": "lookup", "arguments": "{}"},
+                                },
+                            ]
+                        }
+                    }
+                ]
+            }
+        )
+    )
+    events.extend(synth.feed("[DONE]"))
+
+    types = [event["type"] for event in events]
+    assert types[0] == "response.created"
+    assert types.count("response.function_call_arguments.delta") == 3
+    assert "response.function_call_arguments.done" in types
+    assert "response.output_text.delta" not in types
+    completed = events[-1]["response"]
+    function_calls = [item for item in completed["output"] if item["type"] == "function_call"]
+    assert [item["call_id"] for item in function_calls] == ["call_1", "call_2"]
+    assert function_calls[0]["name"] == "lookup"
+    assert function_calls[0]["arguments"] == '{"city":"Seoul"}'
+    assert function_calls[1]["arguments"] == "{}"
+    assert all(item["type"] != "message" for item in completed["output"])
+
+
+def test_stream_synthesizer_collapses_cumulative_argument_snapshots():
+    synth = ResponsesStreamSynthesizer(model="omniroute/test-chat")
+    synth.feed(
+        {
+            "choices": [
+                {
+                    "delta": {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": "call_1",
+                                "function": {"name": "lookup", "arguments": "{"},
+                            }
+                        ]
+                    }
+                }
+            ]
+        }
+    )
+    events = synth.feed(
+        {
+            "choices": [
+                {
+                    "delta": {
+                        "tool_calls": [
+                            {"index": 0, "function": {"arguments": '{"city":"Seoul"}'}},
+                        ]
+                    }
+                }
+            ]
+        }
+    )
+    deltas = [event["delta"] for event in events if event["type"] == "response.function_call_arguments.delta"]
+    assert deltas == ['"city":"Seoul"}']
+    completed = synth.feed("[DONE]")[-1]["response"]["output"][0]
+    assert completed["arguments"] == '{"city":"Seoul"}'
+
+
 def test_stream_synthesizer_captures_usage():
     synth = ResponsesStreamSynthesizer(model="omniroute/test-chat")
     synth.feed({"choices": [{"delta": {"content": "hi"}}]})

@@ -48,6 +48,7 @@ class _FakeOpenAICompatClient:
         self.stream_include_usage = True
         self.stream_context_error = False
         self.stream_provider_error = False
+        self.stream_tool_calls = False
 
     async def list_models_cached(self):
         return self.models
@@ -71,6 +72,7 @@ class _FakeOpenAICompatClient:
             include_usage=self.stream_include_usage,
             context_error=self.stream_context_error,
             provider_error=self.stream_provider_error,
+            tool_calls=self.stream_tool_calls,
         )
 
 
@@ -82,17 +84,27 @@ class _FakeStreamContext:
         include_usage: bool = True,
         context_error: bool = False,
         provider_error: bool = False,
+        tool_calls: bool = False,
     ) -> None:
         self.error = error
         self.include_usage = include_usage
         self.context_error = context_error
         self.provider_error = provider_error
+        self.tool_calls = tool_calls
 
     async def __aenter__(self):
         if self.error is not None:
             raise self.error
 
         async def chunks():
+            if self.tool_calls:
+                yield (
+                    b'data: {"id":"chunk-1","object":"chat.completion.chunk","choices":[{"delta":'
+                    b'{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":'
+                    b'{"name":"lookup","arguments":"{}"}}]}}]}\n\n'
+                )
+                yield b"data: [DONE]\n\n"
+                return
             yield b'data: {"id":"chunk-1","object":"chat.completion.chunk","choices":[{"delta":{"content":"hi"}}]}\n\n'
             if self.context_error:
                 yield (b'data: {"error":{"code":"context_length_exceeded","message":"Input token limit exceeded"}}\n\n')
@@ -615,6 +627,22 @@ async def test_responses_openai_compat_preserves_function_call_history(async_cli
     assert messages[0]["tool_calls"][0]["id"] == "call_1"
     assert messages[0]["tool_calls"][0]["function"]["name"] == "lookup"
     assert messages[1] == {"role": "tool", "tool_call_id": "call_1", "content": "72F"}
+
+
+@pytest.mark.asyncio
+async def test_responses_openai_compat_streams_function_calls(async_client, fake_openai_compat):
+    fake_openai_compat.stream_tool_calls = True
+    payload = {"model": MODEL, "input": "lookup the weather", "stream": True}
+
+    async with async_client.stream("POST", "/v1/responses", json=payload) as response:
+        body = await response.aread()
+
+    assert response.status_code == 200, body
+    assert b"response.function_call_arguments.done" in body
+    assert b'"call_id": "call_1"' in body or b'"call_id":"call_1"' in body
+    assert b'"name": "lookup"' in body or b'"name":"lookup"' in body
+    assert body.count(b"data: [DONE]") == 1
+    assert b'"type": "message"' not in body and b'"type":"message"' not in body
 
 
 @pytest.mark.asyncio
