@@ -11,6 +11,7 @@ when the list is replaced.
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -356,20 +357,26 @@ def _replace_first_key(raw: JsonValue | None, api_key: str) -> list[JsonValue]:
 
 
 _STALE_ACCOUNT = "This API-key account changed before the edit was saved. Reload and try again."
+_ACCOUNT_ID_KEY = b"codex-lb.cliproxy-api-key-account.v1"
 
 
 def api_key_account_id(kind: ApiKeyKind, item: Mapping[str, JsonValue]) -> str:
-    """Identity of one stored entry, excluding the secret and the list index.
+    """Opaque identity of one stored entry.
 
     Edit and delete send this token back. The write checks the entry currently
     at the requested index and rejects the request when the token does not
     match, so a stale page cannot land on a neighbor after the list shifts.
+    The token mixes the public entry with a keyed digest of the stored API
+    key. Two entries that share a URL, name, and model list still differ when
+    their keys differ, and the key itself is not in the token. The list index
+    is not part of the token: moving an entry must not make it match a neighbor.
     """
 
     disabled = item.get("disabled") if kind.supports_disable and isinstance(item.get("disabled"), bool) else None
     payload = {
         "authIndex": _text(item.get("auth-index")) or "",
         "baseUrl": _text(item.get("base-url")) or "",
+        "credential": _credential_digest(kind, item),
         "disabled": disabled,
         "kind": kind.slug,
         "models": [{"alias": model.alias, "name": model.name} for model in _configured_models(item.get("models"))],
@@ -378,6 +385,26 @@ def api_key_account_id(kind: ApiKeyKind, item: Mapping[str, JsonValue]) -> str:
     }
     encoded = json.dumps(payload, separators=(",", ":"), sort_keys=True)
     return hashlib.sha256(encoded.encode()).hexdigest()
+
+
+def _credential_digest(kind: ApiKeyKind, item: Mapping[str, JsonValue]) -> str:
+    encoded = json.dumps(_credential_secrets(kind, item), separators=(",", ":"), ensure_ascii=False)
+    return hmac.new(_ACCOUNT_ID_KEY, encoded.encode(), hashlib.sha256).hexdigest()
+
+
+def _credential_secrets(kind: ApiKeyKind, item: Mapping[str, JsonValue]) -> list[str]:
+    if kind.named:
+        entries = item.get("api-key-entries")
+        if not isinstance(entries, list):
+            return []
+        secrets: list[str] = []
+        for entry in entries:
+            if is_json_mapping(entry):
+                secrets.append(_text(entry.get("api-key")) or "")
+            elif isinstance(entry, str):
+                secrets.append(entry.strip())
+        return secrets
+    return [_text(item.get("api-key")) or ""]
 
 
 def _require_account(
@@ -426,10 +453,14 @@ def _model_payload(models: Sequence[str]) -> list[JsonValue]:
 
 
 def _merged_model_payload(raw: JsonValue | None, models: Sequence[str]) -> list[JsonValue]:
-    """Keep stored name/alias pairs for ids the form still lists.
+    """Keep stored name/alias pairs for client ids the form still lists.
 
-    A new id becomes an identity mapping. An omitted models field never calls
-    this, so a URL or key change leaves the stored mappings alone.
+    Submitted ids are matched by alias, then by upstream name. A matched
+    upstream name is not treated as another submitted id, so an alias that
+    equals a different mapping's upstream name stays in the list. The same
+    stored mapping is emitted once. A new id becomes an identity mapping.
+    An omitted models field never calls this, so a URL or key change leaves
+    the stored mappings alone.
     """
 
     existing = _configured_models(raw)
@@ -439,19 +470,22 @@ def _merged_model_payload(raw: JsonValue | None, models: Sequence[str]) -> list[
         by_alias.setdefault(model.alias.casefold(), model)
         by_name.setdefault(model.name.casefold(), model)
     merged: list[JsonValue] = []
-    seen: set[str] = set()
+    seen_ids: set[str] = set()
+    selected: set[tuple[str, str]] = set()
     for model_id in models:
         key = model_id.casefold()
-        if key in seen:
+        if key in seen_ids:
             continue
-        seen.add(key)
+        seen_ids.add(key)
         match = by_alias.get(key) or by_name.get(key)
         if match is None:
             merged.append({"name": model_id, "alias": model_id})
             continue
+        identity = (match.name.casefold(), match.alias.casefold())
+        if identity in selected:
+            continue
+        selected.add(identity)
         merged.append({"name": match.name, "alias": match.alias})
-        seen.add(match.alias.casefold())
-        seen.add(match.name.casefold())
     return merged
 
 

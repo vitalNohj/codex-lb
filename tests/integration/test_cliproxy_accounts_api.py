@@ -1290,6 +1290,108 @@ async def test_api_key_saves_keep_mappings_spaced_names_and_reject_stale_ids(asy
 
 
 @pytest.mark.asyncio
+async def test_api_key_ids_distinguish_credentials_and_keep_crossed_aliases(async_client, monkeypatch):
+    _install(monkeypatch)
+    shared = {
+        "base-url": "https://api.anthropic.com",
+        "models": [{"name": "claude-sonnet", "alias": "claude-sonnet"}],
+    }
+    _FakeClient.api_key_lists["claude-api-key"] = [
+        {"api-key": "sk-one", **shared},
+        {"api-key": "sk-two", **shared},
+    ]
+    _FakeClient.api_key_lists["openai-compatibility"] = [
+        {
+            "name": "router",
+            "base-url": "https://openrouter.ai/api/v1",
+            "api-key-entries": [{"api-key": "sk-router-a"}],
+            "models": [
+                {"name": "upstream-a", "alias": "public-a"},
+                {"name": "upstream-b", "alias": "upstream-a"},
+            ],
+        },
+        {
+            "name": "router",
+            "base-url": "https://openrouter.ai/api/v1",
+            "api-key-entries": [{"api-key": "sk-router-b"}],
+            "models": [{"name": "shared", "alias": "shared"}],
+        },
+    ]
+    await _ready(async_client)
+    listed = await async_client.get("/api/cliproxy/accounts")
+    assert listed.status_code == 200
+    assert "sk-one" not in listed.text
+    assert "sk-two" not in listed.text
+    assert "sk-router-a" not in listed.text
+    assert "sk-router-b" not in listed.text
+    claude = [account for account in listed.json()["apiKeys"] if account["kind"] == "claude"]
+    routers = [account for account in listed.json()["apiKeys"] if account["kind"] == "openai-compatibility"]
+    assert claude[0]["id"] != claude[1]["id"]
+    assert routers[0]["id"] != routers[1]["id"]
+
+    removed = await async_client.request(
+        "DELETE",
+        "/api/cliproxy/api-keys/claude/0",
+        json={"confirm": True, "accountId": claude[0]["id"]},
+    )
+    assert removed.status_code == 200
+    stale = await async_client.patch(
+        "/api/cliproxy/api-keys/claude/0",
+        json={
+            "kind": "claude",
+            "baseUrl": "https://hijack.example/v1",
+            "accountId": claude[0]["id"],
+        },
+    )
+    assert stale.status_code == 409
+    survivor = _FakeClient.api_key_lists["claude-api-key"]
+    assert len(survivor) == 1
+    assert survivor[0]["api-key"] == "sk-two"
+    assert survivor[0]["base-url"] == "https://api.anthropic.com"
+
+    rotated = await async_client.patch(
+        "/api/cliproxy/api-keys/openai-compatibility/1",
+        json={
+            "kind": "openai-compatibility",
+            "baseUrl": "https://openrouter.ai/api/v1",
+            "apiKey": "sk-router-next",
+            "accountId": routers[1]["id"],
+        },
+    )
+    assert rotated.status_code == 200
+    assert rotated.json()["id"] != routers[1]["id"]
+    assert "sk-router-next" not in rotated.text
+    stale_router = await async_client.patch(
+        "/api/cliproxy/api-keys/openai-compatibility/1",
+        json={
+            "kind": "openai-compatibility",
+            "baseUrl": "https://hijack.example/v1",
+            "accountId": routers[1]["id"],
+        },
+    )
+    assert stale_router.status_code == 409
+    stored_router = _FakeClient.api_key_lists["openai-compatibility"][1]
+    assert stored_router["api-key-entries"][0]["api-key"] == "sk-router-next"
+    assert stored_router["base-url"] == "https://openrouter.ai/api/v1"
+
+    merged = await async_client.patch(
+        "/api/cliproxy/api-keys/openai-compatibility/0",
+        json={
+            "kind": "openai-compatibility",
+            "baseUrl": "https://openrouter.ai/api/v1",
+            "models": ["public-a", "upstream-a", "added-model"],
+            "accountId": routers[0]["id"],
+        },
+    )
+    assert merged.status_code == 200
+    assert _FakeClient.api_key_lists["openai-compatibility"][0]["models"] == [
+        {"name": "upstream-a", "alias": "public-a"},
+        {"name": "upstream-b", "alias": "upstream-a"},
+        {"name": "added-model", "alias": "added-model"},
+    ]
+
+
+@pytest.mark.asyncio
 async def test_overlapping_api_key_creates_keep_both_accounts(async_client, monkeypatch):
     _install(monkeypatch)
     await _ready(async_client)
