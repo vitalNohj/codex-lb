@@ -357,6 +357,12 @@ from app.modules.proxy.request_policy import (
     validate_model_access,
     validate_top_level_compaction_trigger_input_shape,
 )
+from app.modules.proxy.responses_chat_bridge import responses_to_chat_request
+from app.modules.proxy.responses_provider_dispatch import (
+    codex_serves_model,
+    dispatch_responses_via_chat_provider,
+    non_http_responses_model_rejection,
+)
 from app.modules.proxy.schemas import (
     AccountPoolUsageResponse,
     CodexModelEntry,
@@ -382,6 +388,7 @@ from app.modules.proxy.schemas import (
     WarmupSubmittedAccount,
 )
 from app.modules.proxy.selection_errors import USAGE_LIMIT_REACHED
+from app.modules.proxy.sidecar_model_capabilities import sidecar_supports_vision
 from app.modules.proxy.sidecar_model_profiles import apply_sidecar_model_profile_with_suffix_effort
 from app.modules.proxy.sidecar_routing import (
     SidecarRoutingEntry,
@@ -1285,8 +1292,10 @@ async def _omniroute_responses_dispatch_or_none(
     """Dispatch OmniRoute sidecar-selected models on the Responses endpoints.
 
     Returns the sidecar ``Response`` when the effective model is an OmniRoute
-    selected model and routing is enabled, otherwise ``None`` so the caller
-    proceeds with the existing Codex Responses path.
+    selected model and routing is enabled, otherwise ``None``. Claude,
+    OpenRouter, OrcaRouter, Ollama, and OpenAI-compatible models are claimed
+    by ``_chat_provider_responses_dispatch_or_none``; only a model Codex
+    serves continues to account selection.
     """
     effective_model = _effective_model_for_api_key(api_key, responses_payload.model)
 
@@ -1294,8 +1303,6 @@ async def _omniroute_responses_dispatch_or_none(
     routing_entries = list(await _enabled_sidecar_routing_entries())
 
     decision = resolve_sidecar_route(effective_model, tuple(routing_entries))
-    # Only OmniRoute supports Responses dispatch today; other sidecars fall
-    # through to the existing Codex Responses path.
     if decision is None or decision.provider != "omniroute" or omniroute_config is None:
         return None
     if not omniroute_enabled():
@@ -1320,6 +1327,99 @@ async def _omniroute_responses_dispatch_or_none(
         sse_keepalive_interval_seconds=settings.sse_keepalive_interval_seconds,
         client=OmniRouteSidecarClient(omniroute_config),
         wire_model=decision.wire_model,
+    )
+
+
+async def _chat_provider_responses_dispatch_or_none(
+    request: Request,
+    responses_payload: ResponsesRequest,
+    context: ProxyContext,
+    api_key: ApiKeyData | None,
+) -> Response | None:
+    """Dispatch Responses traffic that chat already serves through a sidecar.
+
+    OmniRoute and OpenCode Go keep their own Responses dispatchers. Every other
+    chat provider is translated with ``responses_to_chat_request`` and sent
+    through that provider's chat dispatcher, which owns logging, quota, and
+    error mapping. ``None`` means this model is not one of those providers.
+    """
+
+    effective_model = _effective_model_for_api_key(api_key, responses_payload.model)
+    routing_entries = await _enabled_sidecar_routing_entries()
+    decision = resolve_sidecar_route(effective_model, routing_entries)
+    if decision is None or decision.provider in {"omniroute", "opencode_go"}:
+        return None
+
+    validate_model_access(api_key, effective_model, routing_entries=routing_entries)
+    rate_limit_headers = await context.service.rate_limit_headers()
+    reservation = await _enforce_request_limits(
+        api_key,
+        request_model=effective_model,
+        request_service_tier=responses_payload.service_tier,
+        request_usage_budget=None,
+    )
+    client = await _responses_chat_provider_client(decision.provider)
+    if client is None:
+        return _logged_error_json_response(
+            request,
+            503,
+            openai_error(
+                "sidecar_not_configured",
+                f"The model '{effective_model}' is routed to '{decision.provider}', which is not configured",
+                error_type="server_error",
+            ),
+            headers=rate_limit_headers,
+        )
+    settings = get_settings()
+    return await dispatch_responses_via_chat_provider(
+        request,
+        responses_to_chat_request(responses_payload, effective_model),
+        provider=decision.provider,
+        effective_model=effective_model,
+        wire_model=decision.wire_model,
+        api_key=api_key,
+        reservation=reservation,
+        rate_limit_headers=rate_limit_headers,
+        sse_keepalive_interval_seconds=settings.sse_keepalive_interval_seconds,
+        cursor_compat=is_cursor_compat_client(request, api_key),
+        client=client,
+    )
+
+
+async def _responses_chat_provider_client(provider: str) -> object | None:
+    """Build the sidecar client in this module so tests patching ``api`` see it."""
+
+    if provider == "claude":
+        config = await load_sidecar_config()
+        return None if config is None else ClaudeSidecarClient(config)
+    if provider == "openrouter":
+        config = await load_openrouter_sidecar_config()
+        return None if config is None else OpenRouterSidecarClient(config)
+    if is_openai_compat_provider(provider):
+        config = openai_compat_config_by_provider(await load_openai_compat_configs(), provider)
+        return None if config is None else OpenAICompatSidecarClient(config)
+    if provider == "orcarouter":
+        config = await load_orcarouter_sidecar_config()
+        return None if config is None else OrcaRouterSidecarClient(config)
+    if provider == "ollama":
+        config = await load_ollama_sidecar_config()
+        return None if config is None else OllamaSidecarClient(config)
+    return None
+
+
+def _unknown_responses_model_response(request: Request, model: str) -> JSONResponse | None:
+    """404 a model no sidecar, source, or authoritative Codex catalog serves."""
+
+    if codex_serves_model(model):
+        return None
+    return _logged_error_json_response(
+        request,
+        404,
+        openai_error(
+            "model_not_found",
+            f"The model '{model}' does not exist",
+            error_type="invalid_request_error",
+        ),
     )
 
 
@@ -1381,6 +1481,12 @@ async def responses(
     if opencode_go_response is not None:
         return opencode_go_response
 
+    chat_provider_response = await _chat_provider_responses_dispatch_or_none(
+        request, responses_payload, context, api_key
+    )
+    if chat_provider_response is not None:
+        return chat_provider_response
+
     raw_source_model = _effective_optional_model_for_api_key(api_key, responses_payload.model)
     (
         prohibit_fast_mode,
@@ -1433,6 +1539,9 @@ async def responses(
         responses_payload,
         service_tier_was_enforced=service_tier_was_enforced,
     )
+    unknown_model = _unknown_responses_model_response(request, responses_payload.model)
+    if unknown_model is not None:
+        return unknown_model
 
     response = await _stream_responses(
         request,
@@ -1559,6 +1668,12 @@ async def v1_responses(
     if opencode_go_response is not None:
         return opencode_go_response
 
+    chat_provider_response = await _chat_provider_responses_dispatch_or_none(
+        request, responses_payload, context, api_key
+    )
+    if chat_provider_response is not None:
+        return chat_provider_response
+
     raw_source_model = _effective_optional_model_for_api_key(api_key, responses_payload.model)
     (
         prohibit_fast_mode,
@@ -1605,6 +1720,9 @@ async def v1_responses(
         responses_payload,
         service_tier_was_enforced=service_tier_was_enforced,
     )
+    unknown_model = _unknown_responses_model_response(request, responses_payload.model)
+    if unknown_model is not None:
+        return unknown_model
     if responses_payload.stream:
         response = await _stream_responses(
             request,
@@ -4260,8 +4378,10 @@ async def _build_models_response_body(
                         "created": created_by_model.get(slug) or created,
                         "owned_by": owner_by_model.get(slug) or "anthropic",
                         "api_types": ["chat_completions"],
-                        **_sidecar_model_list_fields(
-                            _sidecar_context_window(slug, raw=raw_by_model.get(slug), claude_model=slug)
+                        **_advertised_sidecar_fields(
+                            _sidecar_context_window(slug, raw=raw_by_model.get(slug), claude_model=slug),
+                            raw=raw_by_model.get(slug),
+                            claude_model=slug,
                         ),
                     }
                 )
@@ -4293,8 +4413,10 @@ async def _build_models_response_body(
                         "created": created_by_model.get(base) or created,
                         "owned_by": owner_by_model.get(base) or "anthropic",
                         "api_types": ["chat_completions"],
-                        **_sidecar_model_list_fields(
-                            _sidecar_context_window(alias, raw=raw_by_model.get(base), claude_model=base)
+                        **_advertised_sidecar_fields(
+                            _sidecar_context_window(alias, raw=raw_by_model.get(base), claude_model=base),
+                            raw=raw_by_model.get(base),
+                            claude_model=base,
                         ),
                     }
                 )
@@ -4325,7 +4447,10 @@ async def _build_models_response_body(
                         "created": created_by_model.get(slug) or created,
                         "owned_by": owner_by_model.get(slug) or "openrouter",
                         "api_types": ["chat_completions"],
-                        **_sidecar_model_list_fields(_sidecar_context_window(slug, raw=raw_by_model.get(slug))),
+                        **_advertised_sidecar_fields(
+                            _sidecar_context_window(slug, raw=raw_by_model.get(slug)),
+                            raw=raw_by_model.get(slug),
+                        ),
                     }
                 )
             )
@@ -4394,7 +4519,10 @@ async def _build_models_response_body(
                         "created": created_by_model.get(slug) or created,
                         "owned_by": owner_by_model.get(slug) or "openai_compat",
                         "api_types": ["chat_completions"],
-                        **_sidecar_model_list_fields(_sidecar_context_window(slug, raw=raw_by_model.get(slug))),
+                        **_advertised_sidecar_fields(
+                            _sidecar_context_window(slug, raw=raw_by_model.get(slug)),
+                            raw=raw_by_model.get(slug),
+                        ),
                     }
                 )
             )
@@ -4422,7 +4550,10 @@ async def _build_models_response_body(
                         "created": created_by_model.get(slug) or created,
                         "owned_by": owner_by_model.get(slug) or "orcarouter",
                         "api_types": ["chat_completions"],
-                        **_sidecar_model_list_fields(_sidecar_context_window(slug, raw=raw_by_model.get(slug))),
+                        **_advertised_sidecar_fields(
+                            _sidecar_context_window(slug, raw=raw_by_model.get(slug)),
+                            raw=raw_by_model.get(slug),
+                        ),
                     }
                 )
             )
@@ -4461,7 +4592,10 @@ async def _build_models_response_body(
                         "created": created_by_model.get(slug) or created,
                         "owned_by": owner_by_model.get(slug) or "opencode",
                         "api_types": ["chat_completions"],
-                        **_sidecar_model_list_fields(_sidecar_context_window(slug, raw=raw_by_model.get(slug))),
+                        **_advertised_sidecar_fields(
+                            _sidecar_context_window(slug, raw=raw_by_model.get(slug)),
+                            raw=raw_by_model.get(slug),
+                        ),
                     }
                 )
             )
@@ -4485,7 +4619,10 @@ async def _build_models_response_body(
                         "created": created_by_model.get(slug) or created,
                         "owned_by": "omniroute",
                         "api_types": ["chat_completions"],
-                        **_sidecar_model_list_fields(_sidecar_context_window(slug, raw=raw_by_model.get(slug))),
+                        **_advertised_sidecar_fields(
+                            _sidecar_context_window(slug, raw=raw_by_model.get(slug)),
+                            raw=raw_by_model.get(slug),
+                        ),
                     }
                 )
             )
@@ -4510,7 +4647,10 @@ async def _build_models_response_body(
                         "created": created_by_model.get(slug) or created,
                         "owned_by": owner_by_model.get(slug) or "ollama",
                         "api_types": ["chat_completions"],
-                        **_sidecar_model_list_fields(_sidecar_context_window(slug, raw=raw_by_model.get(slug))),
+                        **_advertised_sidecar_fields(
+                            _sidecar_context_window(slug, raw=raw_by_model.get(slug)),
+                            raw=raw_by_model.get(slug),
+                        ),
                     }
                 )
             )
@@ -4910,26 +5050,48 @@ def _with_alias_context_window_overrides(alias_entries: list[dict[str, JsonValue
     return patched
 
 
-def _sidecar_model_list_fields(context_window: int = _SIDECAR_DEFAULT_CONTEXT_WINDOW) -> dict[str, JsonValue]:
+def _advertised_sidecar_fields(
+    context_window: int,
+    *,
+    raw: Mapping[str, JsonValue] | None = None,
+    claude_model: str | None = None,
+) -> dict[str, JsonValue]:
+    """Sidecar ``/v1/models`` fields, with vision taken from that row's catalog."""
+
+    return _sidecar_model_list_fields(
+        context_window,
+        supports_vision=sidecar_supports_vision(raw, claude_model=claude_model),
+    )
+
+
+def _sidecar_model_list_fields(
+    context_window: int = _SIDECAR_DEFAULT_CONTEXT_WINDOW,
+    *,
+    supports_vision: bool = False,
+) -> dict[str, JsonValue]:
     # Mirror the capability/context fields registry models expose so Cursor's
     # local-provider discovery can learn the context window and trigger its own
     # compaction. Sidecar models are not in the upstream registry, so they have
     # no ``UpstreamModel`` to read these from; callers pass the window from
-    # ``_sidecar_context_window``.
+    # ``_sidecar_context_window``. Vision is false unless the row's catalog, or
+    # a known Claude model, says otherwise. A zero-argument call is the alias
+    # fallback for a target that is not already in the catalog.
+    input_modalities: list[JsonValue] = ["text", "image"] if supports_vision else ["text"]
+    capabilities: dict[str, JsonValue] = {
+        "context_length": context_window,
+        "supports_tool_use": True,
+        "supports_streaming": True,
+        "input_modalities": input_modalities,
+        "output_modalities": ["text"],
+    }
     return {
         "context_length": context_window,
         "contextLength": context_window,
-        "capabilities": {
-            "context_length": context_window,
-            "supports_tool_use": True,
-            "supports_streaming": True,
-            "input_modalities": ["text", "image"],
-            "output_modalities": ["text"],
-        },
-        "supports_images": True,
-        "supportsImages": True,
-        "supports_vision": True,
-        "supportsVision": True,
+        "capabilities": capabilities,
+        "supports_images": supports_vision,
+        "supportsImages": supports_vision,
+        "supports_vision": supports_vision,
+        "supportsVision": supports_vision,
     }
 
 
@@ -7565,6 +7727,10 @@ async def _compact_responses(
         service_tier_was_enforced=service_tier_was_enforced,
     )
     validate_model_access(api_key, payload.model)
+    rejection = await non_http_responses_model_rejection(payload.model, source_owned=False)
+    if rejection is not None:
+        status_code, content = rejection
+        return _logged_error_json_response(request, status_code, content)
     try:
         request_usage_budget = estimate_api_key_request_usage(payload)
     except ClientPayloadError as exc:

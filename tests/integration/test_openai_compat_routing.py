@@ -330,6 +330,10 @@ async def test_openai_compat_model_list_merges_and_filters(lifespan_free_client,
     assert sidecar_entry["context_length"] == 200_000
     assert sidecar_entry["capabilities"]["context_length"] == 200_000
     assert sidecar_entry["owned_by"] == "openai_compat"
+    # No catalog modality metadata: do not advertise image input.
+    assert sidecar_entry["supports_vision"] is False
+    assert sidecar_entry["supportsVision"] is False
+    assert sidecar_entry["capabilities"]["input_modalities"] == ["text"]
 
 
 @pytest.mark.asyncio
@@ -528,16 +532,140 @@ async def test_disabled_openai_compat_does_not_dispatch(async_client, fake_opena
     assert response.status_code in {400, 502, 503}
 
 
+_IMAGE = "data:image/png;base64,AAAA"
+
+
+def _image_input() -> dict:
+    return {
+        "model": MODEL,
+        "input": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "input_text", "text": "what is this"},
+                    {"type": "input_image", "image_url": _IMAGE},
+                ],
+            }
+        ],
+    }
+
+
+def _assert_image_survived(payload: dict) -> None:
+    messages = payload["messages"]
+    parts = messages[-1]["content"]
+    assert isinstance(parts, list)
+    assert {"type": "image_url", "image_url": {"url": _IMAGE}} in parts
+
+
 @pytest.mark.asyncio
-async def test_responses_does_not_dispatch_openai_compat(async_client, fake_openai_compat):
-    response = await async_client.post(
-        "/v1/responses",
-        json={"model": MODEL, "input": "hi"},
+@pytest.mark.parametrize("path", ["/v1/responses", "/backend-api/codex/responses"])
+async def test_responses_openai_compat_preserves_image(async_client, fake_openai_compat, path):
+    response = await async_client.post(path, json=_image_input())
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["object"] == "response"
+    assert body["model"] == MODEL
+    assert body["output"][0]["content"][0]["text"] == "hi"
+    assert len(fake_openai_compat.chat_payloads) == 1
+    _assert_image_survived(fake_openai_compat.chat_payloads[0])
+    assert fake_openai_compat.stream_payloads == []
+
+
+@pytest.mark.asyncio
+async def test_responses_openai_compat_streams_image(async_client, fake_openai_compat):
+    payload = _image_input()
+    payload["stream"] = True
+    async with async_client.stream("POST", "/v1/responses", json=payload) as response:
+        body = await response.aread()
+
+    assert response.status_code == 200
+    assert body.rstrip().endswith(b"data: [DONE]")
+    assert b"hi" in body
+    assert body.count(b"data: [DONE]") == 1
+    assert len(fake_openai_compat.stream_payloads) == 1
+    _assert_image_survived(fake_openai_compat.stream_payloads[0])
+
+
+@pytest.mark.asyncio
+async def test_responses_openai_compat_catalog_image_modality(lifespan_free_client, fake_openai_compat):
+    fake_openai_compat.models = [
+        _FakeModel(MODEL, raw={"architecture": {"modality": "text+image->text"}}),
+    ]
+
+    response = await lifespan_free_client.get("/v1/models")
+
+    assert response.status_code == 200
+    entry = next(item for item in response.json()["data"] if item["id"] == MODEL)
+    assert entry["supports_vision"] is True
+    assert entry["supportsVision"] is True
+    assert entry["supports_images"] is True
+    assert entry["capabilities"]["input_modalities"] == ["text", "image"]
+
+
+@pytest.mark.asyncio
+async def test_responses_unknown_authoritative_model_skips_codex(lifespan_free_client, fake_openai_compat):
+    registry = get_model_registry()
+    state = await registry.export_state()
+    try:
+        await registry.clear()
+        served = _make_upstream_model("gpt-5.4")
+        await registry.update(
+            {"plus": [served]},
+            per_account_results={"acct": ("plus", [served])},
+            active_account_plans={"acct": "plus"},
+        )
+        snapshot = registry.get_snapshot()
+        assert snapshot is not None and snapshot.account_catalogs_authoritative
+
+        missing = await lifespan_free_client.post(
+            "/v1/responses",
+            json={"model": "nvidia/nemotron-3-content-safety", "input": "hi"},
+        )
+        assert missing.status_code == 404
+        assert missing.json()["error"]["code"] == "model_not_found"
+        assert fake_openai_compat.chat_payloads == []
+        assert fake_openai_compat.stream_payloads == []
+
+        served_response = await lifespan_free_client.post(
+            "/v1/responses",
+            json={"model": "gpt-5.4", "input": "hi"},
+        )
+        assert served_response.status_code == 503
+        assert served_response.json()["error"]["code"] == "no_accounts"
+    finally:
+        await registry.import_state(state, content_hash="restore-responses-routing")
+
+
+@pytest.mark.asyncio
+async def test_responses_nonauthoritative_unknown_still_reaches_codex(lifespan_free_client, fake_openai_compat):
+    registry = get_model_registry()
+    state = await registry.export_state()
+    try:
+        await registry.clear()
+        response = await lifespan_free_client.post(
+            "/v1/responses",
+            json={"model": "nvidia/not-in-a-catalog", "input": "hi"},
+        )
+        assert response.status_code == 503
+        assert response.json()["error"]["code"] == "no_accounts"
+        assert fake_openai_compat.chat_payloads == []
+        assert fake_openai_compat.stream_payloads == []
+    finally:
+        await registry.import_state(state, content_hash="restore-responses-routing")
+
+
+@pytest.mark.asyncio
+async def test_compact_rejects_openai_compat_model(lifespan_free_client, fake_openai_compat):
+    response = await lifespan_free_client.post(
+        "/v1/responses/compact",
+        json={"model": MODEL, "input": "hello"},
     )
 
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "model_requires_responses_http"
     assert fake_openai_compat.chat_payloads == []
     assert fake_openai_compat.stream_payloads == []
-    assert response.status_code > 0
 
 
 @pytest.mark.asyncio
