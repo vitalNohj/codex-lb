@@ -1,6 +1,5 @@
 import { Bot } from "lucide-react";
 
-import { CliproxyConfigEditor } from "@/features/cliproxy-accounts/components/config-editor";
 import { CliproxyCredentials } from "@/features/settings/components/cliproxy-credentials";
 import * as SidecarIntegrationCard from "@/features/settings/components/sidecar-integration-card";
 import { useClaudeSidecar } from "@/features/settings/hooks/use-settings";
@@ -121,7 +120,7 @@ export function ClaudeSidecarSettings({ settings, busy, onSave, bare = false }: 
           </SidecarIntegrationCard.Panel>
           <SidecarIntegrationCard.Panel
             title="Credentials"
-            description="Sign in, upload, refresh, or delete an account. Edit prefix, weight, priority, excluded models, and on/off state. Request routing is unchanged."
+            description="Sign in, upload, refresh, or delete an account. Each card has an enable switch, a tag, weight, priority, and excluded-model chips. Session stickiness is the Session affinity switch in CLIProxyAPI routing, shared by every account. Request routing is unchanged."
             span="full"
           >
             <CliproxyCredentials enabled={managementKeyConfigured} />
@@ -163,7 +162,6 @@ export function ClaudeSidecarSettings({ settings, busy, onSave, bare = false }: 
           </SidecarIntegrationCard.Panel>
           ) : null}
         </SidecarIntegrationCard.Fields>
-        {managementKeyConfigured ? <CliproxyConfigEditor /> : null}
       </SidecarIntegrationCard.Frame>
     </SidecarIntegrationCard.Provider>
   );

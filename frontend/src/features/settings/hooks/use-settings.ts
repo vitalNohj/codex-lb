@@ -5,7 +5,6 @@ import { toast } from "sonner";
 
 import { ApiError } from "@/lib/api-client";
 import type { AccountSummary, SidecarAuthAccount } from "@/features/accounts/schemas";
-import { CLIPROXY_CONFIG_QUERY_KEY } from "@/features/cliproxy-accounts/api";
 import type { DashboardOverview } from "@/features/dashboard/schemas";
 import {
   addUpstreamProxyPoolMember,
@@ -539,7 +538,6 @@ function useSessionAffinityMutation() {
     },
     onSettled: () => {
       void queryClient.invalidateQueries({ queryKey: routingQueryKey });
-      void queryClient.invalidateQueries({ queryKey: CLIPROXY_CONFIG_QUERY_KEY });
     },
   });
 }
@@ -624,8 +622,8 @@ export function useCliproxyCredentials(enabled: boolean) {
     },
   });
   const statusMutation = useMutation({
-    mutationFn: ({ name, disabled }: { name: string; disabled: boolean }) =>
-      updateCliproxyCredentialStatus(name, { disabled, confirm: true }),
+    mutationFn: ({ name, disabled, confirm }: { name: string; disabled: boolean; confirm: boolean }) =>
+      updateCliproxyCredentialStatus(name, { disabled, confirm }),
     onError: (error: Error) => {
       toast.error(error.message || "Failed to update the credential");
     },

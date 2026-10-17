@@ -64,6 +64,7 @@ class CliproxyCredentialFieldsUpdate(DashboardModel):
     weight: int | None = None
     priority: int | None = None
     excluded_models: list[str] | None = None
+    confirm: bool = False
 
 
 class CliproxyCredentialFieldsResponse(DashboardModel):
@@ -78,7 +79,7 @@ class CliproxyCredentialFieldsResponse(DashboardModel):
 
 class CliproxyCredentialStatusUpdate(DashboardModel):
     disabled: bool
-    confirm: bool
+    confirm: bool = False
 
 
 class CliproxyCredentialStatusResponse(DashboardModel):

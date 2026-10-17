@@ -14,7 +14,9 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
 import { CliproxyAuthorizeDialog } from "@/features/settings/components/cliproxy-authorize-dialog";
+import { ExcludedModelsEditor } from "@/features/settings/components/excluded-models-editor";
 import { useCliproxyOauth } from "@/features/settings/hooks/use-cliproxy-oauth";
 import { useCliproxyCredentials } from "@/features/settings/hooks/use-settings";
 import type { CliproxyCredential, CliproxyCredentialFieldsUpdate, CliproxyRefreshStatus } from "@/features/settings/schemas";
@@ -47,15 +49,11 @@ function credentialLabel(credential: CliproxyCredential): string {
   return credential.email || credential.name;
 }
 
-function fieldSignature(credential: CliproxyCredential): string {
-  return [
-    credential.prefix ?? "",
-    credential.weight ?? "",
-    credential.priority ?? "",
-    credential.excludedModels.join(","),
-    credential.excludedModelsState,
-    String(credential.disabled),
-  ].join("|");
+function adoptServerDraft(server: string, draft: string, baseline: string): { draft: string; baseline: string } {
+  if (server === baseline) {
+    return { draft, baseline };
+  }
+  return { baseline: server, draft: draft === baseline ? server : draft };
 }
 
 function nextAccountPrefix(prefixes: Array<string | null | undefined>): string {
@@ -67,17 +65,6 @@ function nextAccountPrefix(prefixes: Array<string | null | undefined>): string {
     }
   }
   return "acct1";
-}
-
-function patternsFromInput(value: string): string[] {
-  return value
-    .split(",")
-    .map((part) => part.trim())
-    .filter((part) => part.length > 0);
-}
-
-function samePatterns(left: string[], right: string[]): boolean {
-  return left.length === right.length && left.every((pattern, index) => pattern === right[index]);
 }
 
 function integerOrEmpty(value: string): number | null | undefined {
@@ -94,6 +81,7 @@ function integerOrEmpty(value: string): number | null | undefined {
 function CredentialEditor({
   credential,
   suggestedPrefix,
+  lastEnabled,
   busy,
   refreshStatus,
   refreshMessage,
@@ -104,24 +92,45 @@ function CredentialEditor({
 }: {
   credential: CliproxyCredential;
   suggestedPrefix: string;
+  lastEnabled: boolean;
   busy: boolean;
   refreshStatus: CliproxyRefreshStatus | null;
   refreshMessage: string | null;
   onSave: (body: CliproxyCredentialFieldsUpdate) => void;
-  onStatus: (disabled: boolean) => void;
+  onStatus: (disabled: boolean, confirm: boolean) => void;
   onRefresh: () => void;
   onDelete: () => void;
 }) {
   const label = credentialLabel(credential);
-  const excludedEditable = credential.excludedModelsState === "available";
-  const [prefix, setPrefix] = useState(credential.prefix ?? "");
-  const [weight, setWeight] = useState(credential.weight == null ? "" : String(credential.weight));
-  const [priority, setPriority] = useState(credential.priority == null ? "" : String(credential.priority));
-  const [excluded, setExcluded] = useState(credential.excludedModels.join(", "));
+  const serverPrefix = credential.prefix ?? "";
+  const serverWeight = credential.weight == null ? "" : String(credential.weight);
+  const serverPriority = credential.priority == null ? "" : String(credential.priority);
+  const [prefix, setPrefix] = useState(serverPrefix);
+  const [prefixBaseline, setPrefixBaseline] = useState(serverPrefix);
+  const [weight, setWeight] = useState(serverWeight);
+  const [weightBaseline, setWeightBaseline] = useState(serverWeight);
+  const [priority, setPriority] = useState(serverPriority);
+  const [priorityBaseline, setPriorityBaseline] = useState(serverPriority);
+  const nextPrefix = adoptServerDraft(serverPrefix, prefix, prefixBaseline);
+  if (nextPrefix.baseline !== prefixBaseline || nextPrefix.draft !== prefix) {
+    setPrefixBaseline(nextPrefix.baseline);
+    setPrefix(nextPrefix.draft);
+  }
+  const nextWeight = adoptServerDraft(serverWeight, weight, weightBaseline);
+  if (nextWeight.baseline !== weightBaseline || nextWeight.draft !== weight) {
+    setWeightBaseline(nextWeight.baseline);
+    setWeight(nextWeight.draft);
+  }
+  const nextPriority = adoptServerDraft(serverPriority, priority, priorityBaseline);
+  if (nextPriority.baseline !== priorityBaseline || nextPriority.draft !== priority) {
+    setPriorityBaseline(nextPriority.baseline);
+    setPriority(nextPriority.draft);
+  }
   const [formError, setFormError] = useState<string | null>(null);
-  const [pendingDisabled, setPendingDisabled] = useState<boolean | null>(null);
+  const [pendingTag, setPendingTag] = useState<string | null>(null);
+  const [pendingLastDisable, setPendingLastDisable] = useState(false);
   const [pendingDelete, setPendingDelete] = useState(false);
-  const statusLabel = credential.disabled ? "Turn on" : "Turn off";
+  const tagDirty = prefix.trim() !== (credential.prefix ?? "");
   const refreshLabel =
     refreshStatus === "pending"
       ? "Refreshing"
@@ -131,51 +140,70 @@ function CredentialEditor({
           ? refreshMessage || "Refresh failed"
           : null;
 
-  function save() {
-    const parsedWeight = integerOrEmpty(weight);
-    const parsedPriority = integerOrEmpty(priority);
-    if (parsedWeight === undefined || parsedPriority === undefined) {
+  function commitNumber(kind: "weight" | "priority", raw: string, current: number | null | undefined) {
+    const parsed = integerOrEmpty(raw);
+    if (parsed === undefined) {
       setFormError("Weight and priority must be whole numbers.");
       return;
     }
-    const body: CliproxyCredentialFieldsUpdate = {};
-    const nextPrefix = prefix.trim();
-    if (nextPrefix !== (credential.prefix ?? "")) {
-      body.prefix = nextPrefix.length === 0 ? null : nextPrefix;
-    }
-    if (parsedWeight !== (credential.weight ?? null)) {
-      body.weight = parsedWeight;
-    }
-    if (parsedPriority !== (credential.priority ?? null)) {
-      body.priority = parsedPriority;
-    }
-    if (excludedEditable) {
-      const patterns = patternsFromInput(excluded);
-      if (!samePatterns(patterns, credential.excludedModels)) {
-        body.excludedModels = patterns;
-      }
-    }
-    if (Object.keys(body).length === 0) {
-      setFormError(null);
+    setFormError(null);
+    if (parsed === (current ?? null)) {
       return;
     }
-    setFormError(null);
-    onSave(body);
+    onSave(kind === "weight" ? { weight: parsed } : { priority: parsed });
+  }
+
+  function requestTagSave() {
+    const nextPrefix = prefix.trim();
+    if (nextPrefix === (credential.prefix ?? "")) {
+      return;
+    }
+    setPendingTag(nextPrefix);
+  }
+
+  function onEnabledChange(enabled: boolean) {
+    if (!enabled && lastEnabled) {
+      setPendingLastDisable(true);
+      return;
+    }
+    onStatus(!enabled, false);
   }
 
   return (
     <div className="space-y-3">
+      <label className="flex items-center justify-between gap-3 text-sm font-medium" htmlFor={`cliproxy-enabled-${credential.name}`}>
+        Enabled
+        <Switch
+          id={`cliproxy-enabled-${credential.name}`}
+          checked={!credential.disabled}
+          disabled={busy}
+          aria-label={`Enabled for ${label}`}
+          onCheckedChange={onEnabledChange}
+        />
+      </label>
       <div className="grid gap-3 sm:grid-cols-3">
         <div className="space-y-1 sm:col-span-1">
-          <Label htmlFor={`cliproxy-prefix-${credential.name}`}>Prefix</Label>
-          <Input
-            id={`cliproxy-prefix-${credential.name}`}
-            value={prefix}
-            placeholder={suggestedPrefix}
-            aria-label={`Prefix for ${label}`}
-            onChange={(event) => setPrefix(event.target.value)}
-            disabled={busy}
-          />
+          <Label htmlFor={`cliproxy-prefix-${credential.name}`}>Tag</Label>
+          <div className="flex gap-2">
+            <Input
+              id={`cliproxy-prefix-${credential.name}`}
+              value={prefix}
+              placeholder={suggestedPrefix}
+              aria-label={`Prefix for ${label}`}
+              onChange={(event) => setPrefix(event.target.value)}
+              disabled={busy}
+            />
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              disabled={busy || !tagDirty}
+              aria-label={`Save tag for ${label}`}
+              onClick={requestTagSave}
+            >
+              Save tag
+            </Button>
+          </div>
         </div>
         <div className="space-y-1">
           <Label htmlFor={`cliproxy-weight-${credential.name}`}>Weight</Label>
@@ -186,6 +214,7 @@ function CredentialEditor({
             placeholder="1"
             aria-label={`Weight for ${label}`}
             onChange={(event) => setWeight(event.target.value)}
+            onBlur={() => commitNumber("weight", weight, credential.weight)}
             disabled={busy}
           />
         </div>
@@ -198,41 +227,21 @@ function CredentialEditor({
             placeholder="0"
             aria-label={`Priority for ${label}`}
             onChange={(event) => setPriority(event.target.value)}
+            onBlur={() => commitNumber("priority", priority, credential.priority)}
             disabled={busy}
           />
         </div>
       </div>
-      <div className="space-y-1">
-        <Label htmlFor={`cliproxy-excluded-${credential.name}`}>Excluded models</Label>
-        <Input
-          id={`cliproxy-excluded-${credential.name}`}
-          value={excluded}
-          placeholder="model-id, other-*"
-          aria-label={`Excluded models for ${label}`}
-          onChange={(event) => setExcluded(event.target.value)}
-          disabled={busy || !excludedEditable}
-        />
-        <p className="text-[13px] text-muted-foreground">
-          {excludedEditable
-            ? "Comma-separated patterns."
-            : "Excluded models could not be read, so they cannot be replaced."}
-        </p>
-      </div>
+      <ExcludedModelsEditor
+        name={credential.name}
+        emailLabel={label}
+        excludedModels={credential.excludedModels}
+        disabled={busy}
+        state={credential.excludedModelsState}
+        onChange={(excludedModels) => onSave({ excludedModels })}
+      />
       {formError ? <p className="text-sm text-destructive">{formError}</p> : null}
       <div className="flex flex-wrap gap-2">
-        <Button type="button" size="sm" onClick={save} disabled={busy} aria-label={`Save ${label}`}>
-          Save
-        </Button>
-        <Button
-          type="button"
-          size="sm"
-          variant="outline"
-          disabled={busy}
-          aria-label={`${statusLabel} ${label}`}
-          onClick={() => setPendingDisabled(!credential.disabled)}
-        >
-          {statusLabel}
-        </Button>
         <Button
           type="button"
           size="sm"
@@ -259,28 +268,50 @@ function CredentialEditor({
           {refreshLabel}
         </p>
       ) : null}
-      <AlertDialog open={pendingDisabled !== null} onOpenChange={(open) => { if (!open) setPendingDisabled(null); }}>
+      <AlertDialog open={pendingTag !== null} onOpenChange={(open) => { if (!open) setPendingTag(null); }}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>
-              {pendingDisabled ? `Turn off ${label}?` : `Turn on ${label}?`}
-            </AlertDialogTitle>
+            <AlertDialogTitle>Change the tag for {label}?</AlertDialogTitle>
             <AlertDialogDescription>
-              {pendingDisabled
-                ? "This credential stops serving until you turn it back on."
-                : "This credential will serve requests again."}
+              {pendingTag
+                ? `Clients target this account as ${pendingTag}/model. The previous tag stops matching.`
+                : "Clearing the tag stops clients from targeting this account by its current tag."}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction
               onClick={() => {
-                if (pendingDisabled !== null) {
-                  onStatus(pendingDisabled);
+                const next = pendingTag;
+                setPendingTag(null);
+                if (next === null) {
+                  return;
                 }
+                onSave({ prefix: next.length === 0 ? null : next, confirm: true });
               }}
             >
-              {pendingDisabled ? "Turn off" : "Turn on"}
+              Change tag
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+      <AlertDialog open={pendingLastDisable} onOpenChange={setPendingLastDisable}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Turn off the last enabled account?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {label} is the only enabled CLIProxyAPI account. Turning it off leaves none enabled.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                setPendingLastDisable(false);
+                onStatus(true, true);
+              }}
+            >
+              Turn off
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
@@ -306,6 +337,7 @@ function CredentialEditor({
 function CredentialRow({
   credential,
   suggestedPrefix,
+  lastEnabled,
   busy,
   refreshStatus,
   refreshMessage,
@@ -316,11 +348,12 @@ function CredentialRow({
 }: {
   credential: CliproxyCredential;
   suggestedPrefix: string;
+  lastEnabled: boolean;
   busy: boolean;
   refreshStatus: CliproxyRefreshStatus | null;
   refreshMessage: string | null;
   onSave: (body: CliproxyCredentialFieldsUpdate) => void;
-  onStatus: (disabled: boolean) => void;
+  onStatus: (disabled: boolean, confirm: boolean) => void;
   onRefresh: () => void;
   onDelete: () => void;
 }) {
@@ -385,9 +418,9 @@ function CredentialRow({
         </p>
       )}
       <CredentialEditor
-        key={fieldSignature(credential)}
         credential={credential}
         suggestedPrefix={suggestedPrefix}
+        lastEnabled={lastEnabled}
         busy={busy}
         refreshStatus={refreshStatus}
         refreshMessage={refreshMessage}
@@ -426,6 +459,7 @@ export function CliproxyCredentials({ enabled }: { enabled: boolean }) {
   const healthy = payload?.status === "healthy";
   const credentials = payload?.status === "healthy" ? payload.providers.flatMap((group) => group.credentials) : [];
   const suggestedPrefix = nextAccountPrefix(credentials.map((credential) => credential.prefix));
+  const enabledCount = credentials.filter((credential) => !credential.disabled).length;
   const pendingName = fieldsMutation.isPending
     ? fieldsMutation.variables?.name
     : statusMutation.isPending
@@ -487,11 +521,12 @@ export function CliproxyCredentials({ enabled }: { enabled: boolean }) {
               key={`${credential.provider}:${credential.authIndex ?? credential.name}`}
               credential={credential}
               suggestedPrefix={suggestedPrefix}
-              busy={pendingName === credential.name}
+              lastEnabled={enabledCount <= 1 && !credential.disabled}
+              busy={pendingName === credential.name || statusMutation.isPending}
               refreshStatus={refreshObservation?.name === credential.name ? refreshObservation.status : null}
               refreshMessage={refreshObservation?.name === credential.name ? refreshObservation.message ?? null : null}
               onSave={(body) => fieldsMutation.mutate({ name: credential.name, body })}
-              onStatus={(disabled) => statusMutation.mutate({ name: credential.name, disabled })}
+              onStatus={(disabled, confirm) => statusMutation.mutate({ name: credential.name, disabled, confirm })}
               onRefresh={() => refreshMutation.mutate(credential.name)}
               onDelete={() => deleteMutation.mutate(credential.name)}
             />

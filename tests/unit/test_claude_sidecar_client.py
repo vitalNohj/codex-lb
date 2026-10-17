@@ -483,21 +483,6 @@ class _ConfigSession:
 
 
 @pytest.mark.asyncio
-async def test_config_yaml_requires_a_management_key(monkeypatch) -> None:
-    session = _ConfigSession(config_json="{}", config_yaml=_YAML)
-    monkeypatch.setattr("app.core.clients.claude_sidecar.lease_http_session", lambda: _Lease(session))
-    client = ClaudeSidecarClient(_config(management_key="  "))
-
-    with pytest.raises(ClaudeSidecarUnavailableError, match="management key is not configured"):
-        await client.fetch_config_yaml()
-    with pytest.raises(ClaudeSidecarUnavailableError, match="management key is not configured"):
-        await client.put_config_yaml("port: 1\n")
-
-    assert session.gets == []
-    assert session.puts == []
-
-
-@pytest.mark.asyncio
 async def test_get_session_affinity_missing_is_false(monkeypatch) -> None:
     session = _ConfigSession(config_json='{"routing": {"strategy": "round-robin"}}', config_yaml=_YAML)
     monkeypatch.setattr("app.core.clients.claude_sidecar.lease_http_session", lambda: _Lease(session))

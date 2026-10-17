@@ -44,7 +44,12 @@ from app.modules.cliproxy_accounts.oauth_flow import (
     remembered_oauth_provider,
     validate_oauth_state,
 )
-from app.modules.cliproxy_accounts.prefix_lock import PrefixWriteLockTimeout, cliproxy_prefix_write_lock
+from app.modules.cliproxy_accounts.prefix_lock import (
+    PrefixWriteLockTimeout,
+    StatusWriteLockTimeout,
+    cliproxy_prefix_write_lock,
+    cliproxy_status_write_lock,
+)
 from app.modules.cliproxy_accounts.providers import OauthProvider, oauth_provider
 from app.modules.cliproxy_accounts.redaction import public_message
 from app.modules.cliproxy_accounts.refresh_jobs import (
@@ -73,9 +78,11 @@ from app.modules.cliproxy_accounts.schemas import (
 from app.modules.cliproxy_accounts.upload import normalize_credential_name, prepare_upload_document
 from app.modules.cliproxy_accounts.validation import (
     CredentialFieldChange,
+    disabling_last_enabled_account,
     effective_prefixes,
     prefix_conflict_message,
     routing_prefix_owners,
+    tag_is_changing,
 )
 from app.modules.proxy.claude_sidecar_dispatch import sidecar_config_from_settings
 from app.modules.settings.repository import SettingsRepository
@@ -176,6 +183,8 @@ class CliproxyAccountsService:
             if message is not None:
                 raise DashboardConflictError(message)
         previous = stored.get(account.name) or account.prefix or ""
+        if tag_is_changing(previous, change.prefix) and not change.confirm:
+            raise DashboardBadRequestError("Confirm before changing this account's tag")
         # Build the client before the registry flush. A failed flush expires
         # ``settings``, and reading it again raises PendingRollbackError
         # before the previous prefix can be put back upstream.
@@ -192,17 +201,33 @@ class CliproxyAccountsService:
         _audit_fields(account, change)
         return _fields_response(account, raw, change, await self._stored_prefixes())
 
-    async def set_credential_disabled(self, name: str, *, disabled: bool) -> CliproxyCredentialStatusResponse:
+    async def set_credential_disabled(
+        self,
+        name: str,
+        *,
+        disabled: bool,
+        confirm: bool,
+    ) -> CliproxyCredentialStatusResponse:
         """Enable or disable one credential.
 
-        The panel route confirms with the operator before calling this. Delete
+        Only turning off the last enabled account asks for confirmation. The
+        inventory is loaded again inside the status write lock, so two overlapping
+        disables cannot both observe the other account as still enabled. Delete
         uses ``_patch_disabled`` directly so the captain's one delete action
         does not also write the status audit entry.
         """
 
-        settings, account, _raw, _accounts = await self._require_account(name)
-        client = ClaudeSidecarClient(sidecar_config_from_settings(settings))
-        await _patch_disabled(client, account, disabled=disabled)
+        try:
+            async with cliproxy_status_write_lock(self._prefixes.session):
+                settings, account, _raw, accounts = await self._require_account(name)
+                if disabling_last_enabled_account(accounts, name=account.name, disabled=disabled) and not confirm:
+                    raise DashboardBadRequestError(
+                        "Confirm before disabling the last enabled CLIProxyAPI account"
+                    )
+                client = ClaudeSidecarClient(sidecar_config_from_settings(settings))
+                await _patch_disabled(client, account, disabled=disabled)
+        except StatusWriteLockTimeout as exc:
+            raise DashboardConflictError("Another credential status update is in progress") from exc
         AuditService.log_async(
             "cliproxy_credential_status_updated",
             details={

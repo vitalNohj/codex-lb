@@ -62,7 +62,11 @@ async def update_cliproxy_credential_fields(
     _write_access=Depends(require_dashboard_write_access),
     context: CliproxyAccountsContext = Depends(get_cliproxy_accounts_context),
 ) -> CliproxyCredentialFieldsResponse:
-    """Update prefix, weight, priority, or excluded models for one credential."""
+    """Update prefix, weight, priority, or excluded models for one credential.
+
+    Changing the tag requires ``confirm``. Weight, priority, and excluded
+    models do not.
+    """
 
     change = _field_change(body)
     if change.is_empty():
@@ -77,16 +81,17 @@ async def update_cliproxy_credential_status(
     _write_access=Depends(require_dashboard_write_access),
     context: CliproxyAccountsContext = Depends(get_cliproxy_accounts_context),
 ) -> CliproxyCredentialStatusResponse:
-    """Enable or disable one credential after the panel confirms it.
+    """Enable or disable one credential.
 
-    ``CliproxyAccountsService.set_credential_disabled`` is the reusable write.
-    This route refuses the call until ``confirm`` is true so a click cannot
-    change the credential by itself.
+    Disabling the last enabled account requires ``confirm``. Every other
+    status change applies immediately.
     """
 
-    if not body.confirm:
-        raise DashboardBadRequestError("Confirm before enabling or disabling this credential")
-    return await context.service.set_credential_disabled(name, disabled=body.disabled)
+    return await context.service.set_credential_disabled(
+        name,
+        disabled=body.disabled,
+        confirm=body.confirm,
+    )
 
 
 @router.get("/oauth/providers", response_model=CliproxyOauthProvidersResponse)
@@ -207,4 +212,5 @@ def _field_change(body: CliproxyCredentialFieldsUpdate) -> CredentialFieldChange
         update_weight="weight" in provided,
         update_priority="priority" in provided,
         update_excluded_models="excluded_models" in provided,
+        confirm=body.confirm,
     )

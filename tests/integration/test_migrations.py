@@ -4993,6 +4993,24 @@ async def test_cliproxy_routing_attribution_migration_adds_log_columns_and_stick
 
         rerun = await to_thread.run_sync(lambda: run_upgrade(db_url, revision, bootstrap_legacy=False))
         assert rerun.current_revision == revision
+        async with engine.connect() as conn:
+            tables = {
+                row[0]
+                for row in (await conn.execute(text("SELECT name FROM sqlite_master WHERE type = 'table'"))).fetchall()
+            }
+        assert "cliproxy_config_snapshots" in tables
+        assert "cliproxy_config_write_claims" in tables
+
+        drop_revision = "20261017_000000_drop_cliproxy_config_editor"
+        dropped = await to_thread.run_sync(lambda: run_upgrade(db_url, drop_revision, bootstrap_legacy=False))
+        assert dropped.current_revision == drop_revision
+        async with engine.connect() as conn:
+            tables = {
+                row[0]
+                for row in (await conn.execute(text("SELECT name FROM sqlite_master WHERE type = 'table'"))).fetchall()
+            }
+        assert "cliproxy_config_snapshots" not in tables
+        assert "cliproxy_config_write_claims" not in tables
         assert await to_thread.run_sync(lambda: check_schema_drift(db_url)) == ()
     finally:
         await engine.dispose()

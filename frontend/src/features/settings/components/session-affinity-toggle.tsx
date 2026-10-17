@@ -22,7 +22,8 @@ export function SessionAffinityToggle({ checked, disabled, onCheckedChange }: Se
         />
       </label>
       <p className="text-[13px] leading-relaxed text-muted-foreground">
-        Keeps one chat on the same CLIProxyAPI account. New chats still follow the routing strategy.
+        One CLIProxyAPI setting for every account (routing.session-affinity), not a switch on each
+        account. Keeps one chat on the same account. New chats still follow the routing strategy.
       </p>
     </div>
   );

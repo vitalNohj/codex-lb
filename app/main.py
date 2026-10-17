@@ -80,7 +80,6 @@ from app.modules.claude_sidecar import api as claude_sidecar_api
 from app.modules.claude_sidecar.quota_poller import build_claude_sidecar_quota_poller
 from app.modules.claude_sidecar.usage_collector import build_claude_sidecar_usage_collector
 from app.modules.cliproxy_accounts import api as cliproxy_accounts_api
-from app.modules.cliproxy_accounts import config_api as cliproxy_config_api
 from app.modules.conversation_archive import api as conversation_archive_api
 from app.modules.dashboard import api as dashboard_api
 from app.modules.dashboard_auth import api as dashboard_auth_api
@@ -926,7 +925,6 @@ def create_app(*, static_dir: Path | None = None) -> FastAPI:
     app.include_router(dashboard_api.router)
     app.include_router(claude_sidecar_api.router)
     app.include_router(cliproxy_accounts_api.router)
-    app.include_router(cliproxy_config_api.router)
     app.include_router(openrouter_sidecar_api.router)
     app.include_router(openai_compat_api.router)
     app.include_router(orcarouter_sidecar_api.router)
@@ -967,6 +965,22 @@ def create_app(*, static_dir: Path | None = None) -> FastAPI:
     static_root = static_dir.resolve()
     frontend_build_hint = "Frontend assets are missing. Run `cd frontend && bun run build`."
     excluded_prefixes = ("api/", "v1/", "backend-api/", "health")
+
+    # The whole-file CLIProxyAPI config editor is gone. These paths stay
+    # mounted so every method is 404. The SPA fallback below is GET-only, and
+    # Starlette would answer 405 for the other methods once that fallback
+    # matches the path.
+    async def cliproxy_config_editor_removed(rest: str = "") -> None:
+        del rest
+        raise HTTPException(status_code=404, detail="Not Found")
+
+    for removed_path in ("/api/cliproxy/config", "/api/cliproxy/config/{rest:path}"):
+        app.add_api_route(
+            removed_path,
+            cliproxy_config_editor_removed,
+            methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
+            include_in_schema=False,
+        )
 
     def _is_static_asset_path(path: str) -> bool:
         if path.startswith("assets/"):
