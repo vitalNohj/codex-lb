@@ -26,7 +26,6 @@ from app.modules.claude_sidecar.quota import (
     snapshot_from_json,
     snapshot_to_json,
 )
-from app.modules.cliproxy_accounts.summaries import CLIPROXY_ACCOUNT_POOL_ENABLED
 from app.modules.dashboard_auth.service import DASHBOARD_SESSION_COOKIE, get_dashboard_session_store
 from app.modules.proxy.load_balancer import _build_states
 from app.modules.quota_feed.service import routing_state_for_auth
@@ -381,7 +380,7 @@ async def test_quota_feed_scopes_keys_and_matches_router_inputs(async_client) ->
     assert snapshot is not None
     now = datetime.now(timezone.utc)
     for auth in snapshot.accounts:
-        state = routing_state_for_auth(auth, holds=(), prefixes_by_name={}, prefixes_by_index={}, now=now)
+        state = routing_state_for_auth(auth, holds=(), now=now)
         assert state is not None
         row = _row(body_all, state.account_id)
         if auth.provider == "claude":
@@ -404,7 +403,6 @@ async def test_quota_feed_scopes_keys_and_matches_router_inputs(async_client) ->
 
     _assert_no_secrets(body_all, unscoped.text)
     _assert_no_secrets(body_a, scoped_a.text)
-    assert CLIPROXY_ACCOUNT_POOL_ENABLED is False
     assert claude_quota.status_code == 200
     assert claude_quota.json()["status"] == "disabled"
     assert claude_quota.json()["accounts"] == []

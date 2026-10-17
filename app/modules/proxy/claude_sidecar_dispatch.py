@@ -45,12 +45,6 @@ from app.modules.claude_sidecar.capacity_hold import (
     no_claude_auth_enabled,
 )
 from app.modules.claude_sidecar.quota import SidecarQuotaSnapshot
-from app.modules.proxy.cliproxy_account_routing import (
-    apply_cliproxy_account_route,
-    cliproxy_log_attribution,
-    prompt_cache_key_from_body,
-    rebind_cliproxy_account_route,
-)
 from app.modules.proxy.cursor_chat_compat import (
     apply_cursor_usage_fallback_to_response,
     cursor_context_limit_usage_completion,
@@ -541,52 +535,6 @@ async def retry_claude_sidecar_cooldown(operation: Callable[[], Awaitable[_T]]) 
             raise
         await _finish_claude_sidecar_cooldown_attempt(None, deadline=deadline, held=held)
         return result
-
-
-# Statuses that mean the credential just tried cannot serve this request.
-# Client errors stay on the chosen account. CLIProxyAPI's own cooldown loop
-# still runs first; this set only decides whether to rebind once afterwards.
-_CLIPROXY_FAILOVER_STATUS_CODES = frozenset({401, 403, 408, 429, 500, 502, 503, 504})
-
-
-async def prepare_cliproxy_account_route(body: dict[str, JsonValue]) -> None:
-    """Rewrite ``body['model']`` when the account pool is on.
-
-    A disabled pool, or a selection that finds nobody, leaves the model
-    exactly as the sidecar resolver wrote it.
-    """
-
-    await apply_cliproxy_account_route(body, prompt_cache_key=prompt_cache_key_from_body(body))
-
-
-async def _rebind_cliproxy_after_upstream_error(body: dict[str, JsonValue], exc: ClaudeSidecarError) -> bool:
-    """Point the sticky pin at another credential after this one failed."""
-
-    if exc.status_code not in _CLIPROXY_FAILOVER_STATUS_CODES:
-        return False
-    choice = await rebind_cliproxy_account_route(body)
-    if choice is None:
-        return False
-    logger.info(
-        "cliproxy credential failover provider=%s auth_index=%s",
-        choice.provider,
-        choice.auth_index,
-    )
-    return True
-
-
-async def sidecar_operation_with_credential_failover(
-    body: dict[str, JsonValue],
-    operation: Callable[[], Awaitable[_T]],
-) -> _T:
-    """Run the sidecar call, then one rebind retry when the credential failed."""
-
-    try:
-        return await retry_claude_sidecar_cooldown(operation)
-    except ClaudeSidecarError as exc:
-        if not await _rebind_cliproxy_after_upstream_error(body, exc):
-            raise
-        return await retry_claude_sidecar_cooldown(operation)
 
 
 # Per-model output-token bounds applied to a client-supplied ``max_tokens``.
@@ -1366,7 +1314,6 @@ async def proxy_chat_to_sidecar(
     # ``effective_model`` is used for reservations/logging; ``wire_model`` (the
     # resolver's stripped model) shapes the forwarded payload.
     sidecar_payload = build_sidecar_chat_payload(payload, wire_model or effective_model, client.config)
-    await prepare_cliproxy_account_route(sidecar_payload.body)
     deepseek_scope = deepseek_resolve_scope(
         effective_model=effective_model,
         provider="claude",
@@ -1463,8 +1410,7 @@ async def proxy_chat_to_sidecar(
         raise
 
     try:
-        response_body = await sidecar_operation_with_credential_failover(
-            sidecar_payload.body,
+        response_body = await retry_claude_sidecar_cooldown(
             lambda: client.chat_completion(sidecar_payload.body),
         )
     except ClaudeSidecarUnavailableError:
@@ -1592,7 +1538,6 @@ async def _sidecar_stream_iterator(
     settled = False
     deepseek_recorder = None
     yielded = False
-    rebound_credential = False
     wait_seconds = CLAUDE_SIDECAR_COOLDOWN_WAIT_SECONDS
     cooldown_deadline = time.monotonic() + wait_seconds
     last_cooldown_exc: ClaudeSidecarError | None = None
@@ -1651,15 +1596,6 @@ async def _sidecar_stream_iterator(
                     raise
                 last_cooldown_exc = exc
                 if await _finish_claude_sidecar_cooldown_attempt(exc, deadline=cooldown_deadline, held=held) is None:
-                    if (
-                        not yielded
-                        and not rebound_credential
-                        and isinstance(payload, dict)
-                        and await _rebind_cliproxy_after_upstream_error(payload, exc)
-                    ):
-                        rebound_credential = True
-                        last_cooldown_exc = None
-                        continue
                     raise
             except BaseException:
                 if wait_seconds > 0.0:
@@ -2085,7 +2021,6 @@ async def _log_sidecar_request(
     try:
         if cost is None:
             cost = await _sidecar_request_cost(model, usage)
-        sidecar_provider, sidecar_auth_index = cliproxy_log_attribution()
         async with get_background_session() as session:
             repo = RequestLogsRepository(session)
             await repo.add_log(
@@ -2105,8 +2040,8 @@ async def _log_sidecar_request(
                 transport="http",
                 api_key_id=api_key.id if api_key else None,
                 source="claude_sidecar",
-                sidecar_provider=sidecar_provider,
-                sidecar_auth_index=sidecar_auth_index,
+                sidecar_provider=None,
+                sidecar_auth_index=None,
                 failure_phase="sidecar" if status != "success" else None,
                 cost_usd=cost.cost_usd,
                 cost_source=cost.cost_source,

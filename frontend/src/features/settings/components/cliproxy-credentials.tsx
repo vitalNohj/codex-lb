@@ -1,4 +1,5 @@
-import { useRef, useState, type ChangeEvent } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { useRef, useState, type ChangeEvent, type FormEvent } from "react";
 
 import {
   AlertDialog,
@@ -18,8 +19,14 @@ import { Switch } from "@/components/ui/switch";
 import { CliproxyAuthorizeDialog } from "@/features/settings/components/cliproxy-authorize-dialog";
 import { ExcludedModelsEditor } from "@/features/settings/components/excluded-models-editor";
 import { useCliproxyOauth } from "@/features/settings/hooks/use-cliproxy-oauth";
+import { getSettings } from "@/features/settings/api";
 import { useCliproxyCredentials } from "@/features/settings/hooks/use-settings";
-import type { CliproxyCredential, CliproxyCredentialFieldsUpdate, CliproxyRefreshStatus } from "@/features/settings/schemas";
+import type {
+  CliproxyApiKeyAccount,
+  CliproxyCredential,
+  CliproxyCredentialFieldsUpdate,
+  CliproxyRefreshStatus,
+} from "@/features/settings/schemas";
 import { formatPercentNullable, formatQuotaResetLabel } from "@/utils/formatters";
 
 const HEALTH_LABELS: Record<string, string> = {
@@ -56,15 +63,16 @@ function adoptServerDraft(server: string, draft: string, baseline: string): { dr
   return { baseline: server, draft: draft === baseline ? server : draft };
 }
 
-function nextAccountPrefix(prefixes: Array<string | null | undefined>): string {
-  const taken = new Set(prefixes.filter((prefix): prefix is string => Boolean(prefix)).map((prefix) => prefix.toLowerCase()));
-  for (let index = 1; index < 100000; index += 1) {
-    const candidate = `acct${index}`;
-    if (!taken.has(candidate)) {
-      return candidate;
-    }
-  }
-  return "acct1";
+const API_KEY_KINDS = [
+  { slug: "openai-compatibility", label: "OpenAI-compatible", named: true },
+  { slug: "claude", label: "Claude", named: false },
+  { slug: "gemini", label: "Gemini", named: false },
+  { slug: "codex", label: "Codex", named: false },
+  { slug: "xai", label: "xAI", named: false },
+] as const;
+
+function modelKey(model: string): string {
+  return model.trim().toLowerCase();
 }
 
 function integerOrEmpty(value: string): number | null | undefined {
@@ -80,7 +88,6 @@ function integerOrEmpty(value: string): number | null | undefined {
 
 function CredentialEditor({
   credential,
-  suggestedPrefix,
   lastEnabled,
   busy,
   refreshStatus,
@@ -91,7 +98,6 @@ function CredentialEditor({
   onDelete,
 }: {
   credential: CliproxyCredential;
-  suggestedPrefix: string;
   lastEnabled: boolean;
   busy: boolean;
   refreshStatus: CliproxyRefreshStatus | null;
@@ -102,20 +108,12 @@ function CredentialEditor({
   onDelete: () => void;
 }) {
   const label = credentialLabel(credential);
-  const serverPrefix = credential.prefix ?? "";
   const serverWeight = credential.weight == null ? "" : String(credential.weight);
   const serverPriority = credential.priority == null ? "" : String(credential.priority);
-  const [prefix, setPrefix] = useState(serverPrefix);
-  const [prefixBaseline, setPrefixBaseline] = useState(serverPrefix);
   const [weight, setWeight] = useState(serverWeight);
   const [weightBaseline, setWeightBaseline] = useState(serverWeight);
   const [priority, setPriority] = useState(serverPriority);
   const [priorityBaseline, setPriorityBaseline] = useState(serverPriority);
-  const nextPrefix = adoptServerDraft(serverPrefix, prefix, prefixBaseline);
-  if (nextPrefix.baseline !== prefixBaseline || nextPrefix.draft !== prefix) {
-    setPrefixBaseline(nextPrefix.baseline);
-    setPrefix(nextPrefix.draft);
-  }
   const nextWeight = adoptServerDraft(serverWeight, weight, weightBaseline);
   if (nextWeight.baseline !== weightBaseline || nextWeight.draft !== weight) {
     setWeightBaseline(nextWeight.baseline);
@@ -127,10 +125,8 @@ function CredentialEditor({
     setPriority(nextPriority.draft);
   }
   const [formError, setFormError] = useState<string | null>(null);
-  const [pendingTag, setPendingTag] = useState<string | null>(null);
   const [pendingLastDisable, setPendingLastDisable] = useState(false);
   const [pendingDelete, setPendingDelete] = useState(false);
-  const tagDirty = prefix.trim() !== (credential.prefix ?? "");
   const refreshLabel =
     refreshStatus === "pending"
       ? "Refreshing"
@@ -153,14 +149,6 @@ function CredentialEditor({
     onSave(kind === "weight" ? { weight: parsed } : { priority: parsed });
   }
 
-  function requestTagSave() {
-    const nextPrefix = prefix.trim();
-    if (nextPrefix === (credential.prefix ?? "")) {
-      return;
-    }
-    setPendingTag(nextPrefix);
-  }
-
   function onEnabledChange(enabled: boolean) {
     if (!enabled && lastEnabled) {
       setPendingLastDisable(true);
@@ -181,30 +169,7 @@ function CredentialEditor({
           onCheckedChange={onEnabledChange}
         />
       </label>
-      <div className="grid gap-3 sm:grid-cols-3">
-        <div className="space-y-1 sm:col-span-1">
-          <Label htmlFor={`cliproxy-prefix-${credential.name}`}>Tag</Label>
-          <div className="flex gap-2">
-            <Input
-              id={`cliproxy-prefix-${credential.name}`}
-              value={prefix}
-              placeholder={suggestedPrefix}
-              aria-label={`Prefix for ${label}`}
-              onChange={(event) => setPrefix(event.target.value)}
-              disabled={busy}
-            />
-            <Button
-              type="button"
-              size="sm"
-              variant="outline"
-              disabled={busy || !tagDirty}
-              aria-label={`Save tag for ${label}`}
-              onClick={requestTagSave}
-            >
-              Save tag
-            </Button>
-          </div>
-        </div>
+      <div className="grid gap-3 sm:grid-cols-2">
         <div className="space-y-1">
           <Label htmlFor={`cliproxy-weight-${credential.name}`}>Weight</Label>
           <Input
@@ -268,33 +233,6 @@ function CredentialEditor({
           {refreshLabel}
         </p>
       ) : null}
-      <AlertDialog open={pendingTag !== null} onOpenChange={(open) => { if (!open) setPendingTag(null); }}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Change the tag for {label}?</AlertDialogTitle>
-            <AlertDialogDescription>
-              {pendingTag
-                ? `Clients target this account as ${pendingTag}/model. The previous tag stops matching.`
-                : "Clearing the tag stops clients from targeting this account by its current tag."}
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={() => {
-                const next = pendingTag;
-                setPendingTag(null);
-                if (next === null) {
-                  return;
-                }
-                onSave({ prefix: next.length === 0 ? null : next, confirm: true });
-              }}
-            >
-              Change tag
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
       <AlertDialog open={pendingLastDisable} onOpenChange={setPendingLastDisable}>
         <AlertDialogContent>
           <AlertDialogHeader>
@@ -334,28 +272,80 @@ function CredentialEditor({
   );
 }
 
+function ModelChips({
+  models,
+  shared,
+  catalog,
+  busy,
+  onAdd,
+  label,
+}: {
+  models: string[];
+  shared: ReadonlySet<string>;
+  catalog: ReadonlySet<string>;
+  busy: boolean;
+  onAdd: (model: string) => void;
+  label: string;
+}) {
+  if (models.length === 0) {
+    return null;
+  }
+  return (
+    <ul className="flex flex-wrap gap-1.5" aria-label={`Models for ${label}`}>
+      {models.map((model) => {
+        const key = modelKey(model);
+        const listed = catalog.has(key);
+        const isShared = shared.has(key);
+        return (
+          <li key={model} className="flex items-center gap-1">
+            <Badge variant="secondary">
+              {model}
+              {isShared ? " · shared" : ""}
+            </Badge>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              className="h-6 px-2 text-xs"
+              disabled={busy || listed}
+              aria-label={listed ? `${model} is in the model list` : `Add ${model} to the model list`}
+              onClick={() => onAdd(model)}
+            >
+              {listed ? "Listed" : "Add"}
+            </Button>
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
 function CredentialRow({
   credential,
-  suggestedPrefix,
   lastEnabled,
   busy,
   refreshStatus,
   refreshMessage,
+  shared,
+  catalog,
   onSave,
   onStatus,
   onRefresh,
   onDelete,
+  onAddModel,
 }: {
   credential: CliproxyCredential;
-  suggestedPrefix: string;
   lastEnabled: boolean;
   busy: boolean;
   refreshStatus: CliproxyRefreshStatus | null;
   refreshMessage: string | null;
+  shared: ReadonlySet<string>;
+  catalog: ReadonlySet<string>;
   onSave: (body: CliproxyCredentialFieldsUpdate) => void;
   onStatus: (disabled: boolean, confirm: boolean) => void;
   onRefresh: () => void;
   onDelete: () => void;
+  onAddModel: (model: string) => void;
 }) {
   const label = credentialLabel(credential);
   return (
@@ -390,7 +380,9 @@ function CredentialRow({
             </li>
           ))}
         </ul>
-      ) : null}
+      ) : (
+        <p className="text-xs text-muted-foreground">Quota unknown</p>
+      )}
       {credential.prepaidCredits != null ? (
         <p className="text-xs text-muted-foreground">
           Prepaid <span className="font-medium tabular-nums text-foreground">{credential.prepaidCredits}</span>
@@ -405,13 +397,14 @@ function CredentialRow({
         </p>
       ) : null}
       {credential.models.length > 0 ? (
-        <ul className="flex flex-wrap gap-1.5" aria-label={`Models for ${label}`}>
-          {credential.models.map((model) => (
-            <li key={model}>
-              <Badge variant="secondary">{model}</Badge>
-            </li>
-          ))}
-        </ul>
+        <ModelChips
+          models={credential.models}
+          shared={shared}
+          catalog={catalog}
+          busy={busy}
+          onAdd={onAddModel}
+          label={label}
+        />
       ) : (
         <p className="text-[13px] text-muted-foreground">
           {credential.modelsError ?? "No models reported for this credential."}
@@ -419,7 +412,6 @@ function CredentialRow({
       )}
       <CredentialEditor
         credential={credential}
-        suggestedPrefix={suggestedPrefix}
         lastEnabled={lastEnabled}
         busy={busy}
         refreshStatus={refreshStatus}
@@ -433,6 +425,259 @@ function CredentialRow({
   );
 }
 
+function kindLabel(slug: string): string {
+  return API_KEY_KINDS.find((kind) => kind.slug === slug)?.label ?? slug;
+}
+
+function splitModels(value: string): string[] {
+  return value.split(",").map((item) => item.trim()).filter((item) => item.length > 0);
+}
+
+function ApiKeyForm({
+  busy,
+  onCreate,
+}: {
+  busy: boolean;
+  onCreate: (body: {
+    kind: string;
+    name: string | null;
+    baseUrl: string;
+    apiKey: string;
+    models: string[];
+  }) => void;
+}) {
+  const [kind, setKind] = useState<(typeof API_KEY_KINDS)[number]["slug"]>("openai-compatibility");
+  const [name, setName] = useState("");
+  const [baseUrl, setBaseUrl] = useState("");
+  const [apiKey, setApiKey] = useState("");
+  const [models, setModels] = useState("");
+  const selected = API_KEY_KINDS.find((item) => item.slug === kind) ?? API_KEY_KINDS[0];
+
+  function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    onCreate({
+      kind,
+      name: selected.named ? name.trim() : null,
+      baseUrl: baseUrl.trim(),
+      apiKey: apiKey.trim(),
+      models: splitModels(models),
+    });
+    setApiKey("");
+  }
+
+  return (
+    <form className="space-y-3 rounded-md border bg-card px-3 py-2.5" onSubmit={submit} aria-label="Add API-key account">
+      <p className="text-sm font-medium">API-key account</p>
+      <div className="grid gap-3 sm:grid-cols-2">
+        <div className="space-y-1">
+          <Label htmlFor="cliproxy-api-key-kind">Provider</Label>
+          <select
+            id="cliproxy-api-key-kind"
+            className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm"
+            value={kind}
+            disabled={busy}
+            onChange={(event) => setKind(event.target.value as (typeof API_KEY_KINDS)[number]["slug"])}
+          >
+            {API_KEY_KINDS.map((item) => (
+              <option key={item.slug} value={item.slug}>
+                {item.label}
+              </option>
+            ))}
+          </select>
+        </div>
+        {selected.named ? (
+          <div className="space-y-1">
+            <Label htmlFor="cliproxy-api-key-name">Name</Label>
+            <Input id="cliproxy-api-key-name" value={name} disabled={busy} onChange={(event) => setName(event.target.value)} />
+          </div>
+        ) : null}
+        <div className="space-y-1">
+          <Label htmlFor="cliproxy-api-key-base-url">Base URL</Label>
+          <Input
+            id="cliproxy-api-key-base-url"
+            value={baseUrl}
+            disabled={busy}
+            placeholder="https://openrouter.ai/api/v1"
+            onChange={(event) => setBaseUrl(event.target.value)}
+          />
+        </div>
+        <div className="space-y-1">
+          <Label htmlFor="cliproxy-api-key-secret">API key</Label>
+          <Input
+            id="cliproxy-api-key-secret"
+            type="password"
+            autoComplete="off"
+            value={apiKey}
+            disabled={busy}
+            onChange={(event) => setApiKey(event.target.value)}
+          />
+        </div>
+        <div className="space-y-1 sm:col-span-2">
+          <Label htmlFor="cliproxy-api-key-models">Models</Label>
+          <Input
+            id="cliproxy-api-key-models"
+            value={models}
+            disabled={busy}
+            placeholder="openai/gpt-4o, openrouter/auto"
+            onChange={(event) => setModels(event.target.value)}
+          />
+        </div>
+      </div>
+      <Button type="submit" size="sm" disabled={busy}>
+        Add account
+      </Button>
+    </form>
+  );
+}
+
+function ApiKeyAccountCard({
+  account,
+  busy,
+  shared,
+  catalog,
+  onSave,
+  onDelete,
+  onAddModel,
+}: {
+  account: CliproxyApiKeyAccount;
+  busy: boolean;
+  shared: ReadonlySet<string>;
+  catalog: ReadonlySet<string>;
+  onSave: (body: {
+    kind: string;
+    name?: string | null;
+    baseUrl: string;
+    apiKey?: string;
+    models?: string[];
+    disabled?: boolean | null;
+  }) => void;
+  onDelete: () => void;
+  onAddModel: (model: string) => void;
+}) {
+  const named = API_KEY_KINDS.find((kind) => kind.slug === account.kind)?.named ?? false;
+  const [name, setName] = useState(account.name);
+  const [baseUrl, setBaseUrl] = useState(account.baseUrl);
+  const [models, setModels] = useState(account.models.map((model) => model.alias || model.name).join(", "));
+  const [apiKey, setApiKey] = useState("");
+  const [pendingDelete, setPendingDelete] = useState(false);
+  const discovered = account.discoveredModels.length > 0
+    ? account.discoveredModels
+    : account.models.map((model) => model.alias || model.name);
+  const label = account.name || kindLabel(account.kind);
+
+  function save(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const body: {
+      kind: string;
+      name?: string | null;
+      baseUrl: string;
+      apiKey?: string;
+      models: string[];
+    } = {
+      kind: account.kind,
+      baseUrl: baseUrl.trim(),
+      models: splitModels(models),
+    };
+    if (named) {
+      body.name = name.trim();
+    }
+    const secret = apiKey.trim();
+    if (secret) {
+      body.apiKey = secret;
+    }
+    onSave(body);
+    setApiKey("");
+  }
+
+  return (
+    <article className="space-y-3 rounded-md border bg-card px-3 py-2.5" aria-label={`${kindLabel(account.kind)} API-key account ${label}`}>
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div className="min-w-0">
+          <p className="truncate text-sm font-medium">{label}</p>
+          <p className="truncate font-mono text-xs text-muted-foreground">{account.baseUrl || "Base URL unknown"}</p>
+          {account.prefix ? <p className="font-mono text-xs text-muted-foreground">{account.prefix}</p> : null}
+        </div>
+        <div className="flex flex-wrap items-center gap-1.5">
+          <Badge variant="outline">{kindLabel(account.kind)}</Badge>
+          <Badge variant={account.disabled ? "outline" : "secondary"}>{account.disabled ? "Paused" : "Healthy"}</Badge>
+          <Badge variant="outline">{account.hasApiKey ? "Key stored" : "No key"}</Badge>
+        </div>
+      </div>
+      <p className="text-xs text-muted-foreground">Quota unknown</p>
+      {account.supportsDisable ? (
+        <label className="flex items-center justify-between gap-3 text-sm font-medium" htmlFor={`cliproxy-api-key-enabled-${account.kind}-${account.index}`}>
+          Enabled
+          <Switch
+            id={`cliproxy-api-key-enabled-${account.kind}-${account.index}`}
+            checked={account.disabled !== true}
+            disabled={busy}
+            aria-label={`Enabled for ${label}`}
+            onCheckedChange={(enabled) => onSave({ kind: account.kind, name: account.name, baseUrl: account.baseUrl, disabled: !enabled })}
+          />
+        </label>
+      ) : null}
+      {discovered.length > 0 ? (
+        <ModelChips models={discovered} shared={shared} catalog={catalog} busy={busy} onAdd={onAddModel} label={label} />
+      ) : (
+        <p className="text-[13px] text-muted-foreground">{account.modelsError ?? "No models reported for this account."}</p>
+      )}
+      <form className="grid gap-3 sm:grid-cols-2" onSubmit={save}>
+        {named ? (
+          <div className="space-y-1">
+            <Label htmlFor={`cliproxy-api-key-name-${account.kind}-${account.index}`}>Name</Label>
+            <Input id={`cliproxy-api-key-name-${account.kind}-${account.index}`} value={name} disabled={busy} onChange={(event) => setName(event.target.value)} />
+          </div>
+        ) : null}
+        <div className="space-y-1">
+          <Label htmlFor={`cliproxy-api-key-url-${account.kind}-${account.index}`}>Base URL</Label>
+          <Input id={`cliproxy-api-key-url-${account.kind}-${account.index}`} value={baseUrl} disabled={busy} onChange={(event) => setBaseUrl(event.target.value)} />
+        </div>
+        <div className="space-y-1">
+          <Label htmlFor={`cliproxy-api-key-secret-${account.kind}-${account.index}`}>Replace API key</Label>
+          <Input
+            id={`cliproxy-api-key-secret-${account.kind}-${account.index}`}
+            type="password"
+            autoComplete="off"
+            value={apiKey}
+            disabled={busy}
+            placeholder="Leave blank to keep the stored key"
+            onChange={(event) => setApiKey(event.target.value)}
+          />
+        </div>
+        <div className="space-y-1 sm:col-span-2">
+          <Label htmlFor={`cliproxy-api-key-models-${account.kind}-${account.index}`}>Models</Label>
+          <Input
+            id={`cliproxy-api-key-models-${account.kind}-${account.index}`}
+            value={models}
+            disabled={busy}
+            onChange={(event) => setModels(event.target.value)}
+          />
+        </div>
+        <div className="flex flex-wrap gap-2 sm:col-span-2">
+          <Button type="submit" size="sm" variant="outline" disabled={busy}>
+            Save
+          </Button>
+          <Button type="button" size="sm" variant="outline" disabled={busy} aria-label={`Delete ${label}`} onClick={() => setPendingDelete(true)}>
+            Remove
+          </Button>
+        </div>
+      </form>
+      <AlertDialog open={pendingDelete} onOpenChange={setPendingDelete}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Remove {label}?</AlertDialogTitle>
+            <AlertDialogDescription>This deletes the API-key account from CLIProxyAPI. The key is not shown here.</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={onDelete}>Remove</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </article>
+  );
+}
+
 export function CliproxyCredentials({ enabled }: { enabled: boolean }) {
   const {
     credentialsQuery,
@@ -442,7 +687,14 @@ export function CliproxyCredentials({ enabled }: { enabled: boolean }) {
     refreshQuery,
     deleteMutation,
     uploadMutation,
+    apiKeyMutation,
+    catalogMutation,
   } = useCliproxyCredentials(enabled);
+  const catalogQuery = useQuery({
+    queryKey: ["settings", "detail"],
+    queryFn: getSettings,
+    enabled,
+  });
   const [authorizeOpen, setAuthorizeOpen] = useState(false);
   const oauth = useCliproxyOauth(authorizeOpen);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -458,7 +710,9 @@ export function CliproxyCredentials({ enabled }: { enabled: boolean }) {
   const payload = credentialsQuery.data;
   const healthy = payload?.status === "healthy";
   const credentials = payload?.status === "healthy" ? payload.providers.flatMap((group) => group.credentials) : [];
-  const suggestedPrefix = nextAccountPrefix(credentials.map((credential) => credential.prefix));
+  const apiKeys = payload?.status === "healthy" ? payload.apiKeys : [];
+  const shared = new Set((payload?.sharedModelIds ?? []).map((model) => modelKey(model)));
+  const catalog = new Set((catalogQuery.data?.claudeSidecarFullModels ?? []).map((model) => modelKey(model)));
   const enabledCount = credentials.filter((credential) => !credential.disabled).length;
   const pendingName = fieldsMutation.isPending
     ? fieldsMutation.variables?.name
@@ -504,6 +758,11 @@ export function CliproxyCredentials({ enabled }: { enabled: boolean }) {
           onChange={(event) => void uploadFile(event)}
         />
       </div>
+      {healthy && (payload?.sharedModelIds.length ?? 0) > 0 ? (
+        <p className="text-sm text-muted-foreground">
+          CLIProxyAPI load-balances these model ids across every account that serves them: {payload?.sharedModelIds.join(", ")}.
+        </p>
+      ) : null}
       {credentialsQuery.isLoading ? <p className="text-sm text-muted-foreground">Loading credentials...</p> : null}
       {credentialsQuery.isError ? (
         <p className="text-sm text-destructive">Could not load CLIProxyAPI credentials.</p>
@@ -520,15 +779,40 @@ export function CliproxyCredentials({ enabled }: { enabled: boolean }) {
             <CredentialRow
               key={`${credential.provider}:${credential.authIndex ?? credential.name}`}
               credential={credential}
-              suggestedPrefix={suggestedPrefix}
               lastEnabled={enabledCount <= 1 && !credential.disabled}
-              busy={pendingName === credential.name || statusMutation.isPending}
+              busy={pendingName === credential.name || statusMutation.isPending || catalogMutation.isPending}
               refreshStatus={refreshObservation?.name === credential.name ? refreshObservation.status : null}
               refreshMessage={refreshObservation?.name === credential.name ? refreshObservation.message ?? null : null}
+              shared={shared}
+              catalog={catalog}
               onSave={(body) => fieldsMutation.mutate({ name: credential.name, body })}
               onStatus={(disabled, confirm) => statusMutation.mutate({ name: credential.name, disabled, confirm })}
               onRefresh={() => refreshMutation.mutate(credential.name)}
               onDelete={() => deleteMutation.mutate(credential.name)}
+              onAddModel={(model) => catalogMutation.mutate(model)}
+            />
+          ))}
+        </div>
+      ) : null}
+      {healthy && payload?.apiKeysMessage ? (
+        <p className="text-sm text-muted-foreground">{payload.apiKeysMessage}</p>
+      ) : null}
+      {healthy ? (
+        <div className="space-y-2">
+          <ApiKeyForm
+            busy={apiKeyMutation.isPending}
+            onCreate={(body) => apiKeyMutation.mutate({ action: "create", body })}
+          />
+          {apiKeys.map((account) => (
+            <ApiKeyAccountCard
+              key={`${account.kind}:${account.index}`}
+              account={account}
+              busy={apiKeyMutation.isPending || catalogMutation.isPending}
+              shared={shared}
+              catalog={catalog}
+              onSave={(body) => apiKeyMutation.mutate({ action: "update", kind: account.kind, index: account.index, body })}
+              onDelete={() => apiKeyMutation.mutate({ action: "delete", kind: account.kind, index: account.index })}
+              onAddModel={(model) => catalogMutation.mutate(model)}
             />
           ))}
         </div>

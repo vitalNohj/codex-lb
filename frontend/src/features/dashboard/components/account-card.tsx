@@ -16,6 +16,7 @@ import {
 } from "@/features/dashboard/account-credit-display";
 import { cn } from "@/lib/utils";
 import type { AccountSummary } from "@/features/dashboard/schemas";
+import { isCliproxyProviderAccount } from "@/features/dashboard/utils";
 import type { SidecarAuthAccount } from "@/features/accounts/schemas";
 import { formatCompactAccountId } from "@/utils/account-identifiers";
 import {
@@ -395,6 +396,42 @@ export function ClaudeAuthCard({
   );
 }
 
+function CliproxyProviderAuths({ account }: { account: AccountSummary }) {
+  const auths = account.sidecarAuths ?? [];
+  return (
+    <div className="mt-3 space-y-3">
+      {auths.map((auth) => {
+        const title = auth.email ?? auth.name;
+        const windows = auth.quotaWindows ?? [];
+        return (
+          <div key={auth.name} className="space-y-2 rounded-lg border bg-muted/20 p-3">
+            <div className="flex items-center justify-between gap-2">
+              <span className="min-w-0 truncate text-xs font-medium">{title}</span>
+              <Badge variant="outline" className="text-[11px]">{formatSlug(auth.provider ?? account.provider ?? "unknown")}</Badge>
+            </div>
+            <p className="text-[11px] text-muted-foreground">{formatSlug(auth.status ?? account.status)}</p>
+            {windows.length > 0 ? (
+              <ul className="space-y-1 text-xs" aria-label={`Quota for ${title}`}>
+                {windows.map((window) => (
+                  <li key={window.id} className="flex items-center justify-between gap-2">
+                    <span className="text-muted-foreground">{window.label}</span>
+                    <span className="tabular-nums font-medium">
+                      {formatPercentNullable(window.percentRemaining)} left
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="text-xs text-muted-foreground">Quota unknown</p>
+            )}
+            <p className="text-[11px] text-muted-foreground">Models are listed on the CLIProxyAPI settings card.</p>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function SyntheticAccountCard({
   account,
   onAction,
@@ -535,6 +572,8 @@ function SyntheticAccountCard({
             </div>
           </div>
         ) : null
+      ) : isCliproxyProviderAccount(account) ? (
+        <CliproxyProviderAuths account={account} />
       ) : (
         <div className="mt-3 grid gap-2 text-xs text-muted-foreground">
           <div className="flex items-center justify-between gap-2">

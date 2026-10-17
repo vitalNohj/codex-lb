@@ -9,6 +9,7 @@ import {
   buildRemainingItems,
   buildWeeklyCreditPace,
   isClaudeSidecar,
+  isCliproxyProviderAccount,
   sumRemaining,
   weeklyCreditPaceStatus,
   type RemainingItem,
@@ -102,6 +103,34 @@ describe("accountTypeKey", () => {
 
     expect(isClaudeSidecar(claudeSidecar)).toBe(true);
     expect(accountTypeKey(claudeSidecar)).toBe("cliproxy");
+  });
+
+  it("classifies a non-Claude CLIProxyAPI provider card as cliproxy", () => {
+    const xai = account({
+      accountId: "cliproxy-xai",
+      email: "xai@example.com",
+      synthetic: true,
+      provider: "xai",
+      sidecarAuths: [
+        {
+          name: "grok.json",
+          authIndex: "x1",
+          email: "xai@example.com",
+          provider: "xai",
+          paused: false,
+          quotaExceeded: false,
+          modelsExceeded: [],
+          excludedModels: [],
+          excludedModelsState: "unsupported",
+          success: 0,
+          failed: 0,
+        },
+      ],
+    });
+
+    expect(isCliproxyProviderAccount(xai)).toBe(true);
+    expect(isClaudeSidecar(xai)).toBe(false);
+    expect(accountTypeKey(xai)).toBe("cliproxy");
   });
 });
 

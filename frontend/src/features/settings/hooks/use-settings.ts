@@ -13,10 +13,14 @@ import {
   getClaudeSidecarQuota,
   getClaudeSidecarRouting,
   getClaudeSidecarStatus,
+  addCliproxyCatalogModel,
+  createCliproxyApiKey,
+  deleteCliproxyApiKey,
   deleteCliproxyCredential,
   getCliproxyAccounts,
   getCliproxyCredentialRefresh,
   startCliproxyCredentialRefresh,
+  updateCliproxyApiKey,
   updateCliproxyCredentialFields,
   updateCliproxyCredentialStatus,
   uploadCliproxyCredential,
@@ -672,6 +676,39 @@ export function useCliproxyCredentials(enabled: boolean) {
       void queryClient.invalidateQueries({ queryKey: CLIPROXY_ACCOUNTS_QUERY_KEY });
     },
   });
+  const apiKeyMutation = useMutation({
+    mutationFn: async (
+      input:
+        | { action: "create"; body: unknown }
+        | { action: "update"; kind: string; index: number; body: unknown }
+        | { action: "delete"; kind: string; index: number },
+    ) => {
+      if (input.action === "create") {
+        await createCliproxyApiKey(input.body);
+        return;
+      }
+      if (input.action === "update") {
+        await updateCliproxyApiKey(input.kind, input.index, input.body);
+        return;
+      }
+      await deleteCliproxyApiKey(input.kind, input.index);
+    },
+    onError: (error: Error) => {
+      toast.error(error.message || "Failed to update the API-key account");
+    },
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: CLIPROXY_ACCOUNTS_QUERY_KEY });
+    },
+  });
+  const catalogMutation = useMutation({
+    mutationFn: (model: string) => addCliproxyCatalogModel(model),
+    onError: (error: Error) => {
+      toast.error(error.message || "Failed to add the model");
+    },
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: SETTINGS_DETAIL_QUERY_KEY });
+    },
+  });
   return {
     credentialsQuery,
     fieldsMutation,
@@ -680,6 +717,8 @@ export function useCliproxyCredentials(enabled: boolean) {
     refreshQuery,
     deleteMutation,
     uploadMutation,
+    apiKeyMutation,
+    catalogMutation,
   };
 }
 

@@ -52,6 +52,15 @@ class CliproxyManagement:
         # Discard it. The panel polls our own status record instead.
         await self._request("POST", "/v0/management/auth-files/refresh", json_body=body)
 
+    async def get_json(self, path: str) -> Mapping[str, JsonValue]:
+        return await self._request("GET", path)
+
+    async def put_json(self, path: str, body: Mapping[str, JsonValue]) -> Mapping[str, JsonValue]:
+        return await self._request("PUT", path, json_body=body)
+
+    async def delete_path(self, path: str) -> None:
+        await self._request("DELETE", path)
+
     async def upload_auth_file(self, name: str, data: bytes) -> None:
         await self._request(
             "POST",
@@ -120,6 +129,10 @@ def _open(
         return session.get(url, headers=dict(headers), timeout=timeout)
     if method == "DELETE":
         return session.delete(url, headers=dict(headers), timeout=timeout)
+    if method in {"PUT", "PATCH"}:
+        payload = None if json_body is None else dict(json_body)
+        opener = session.put if method == "PUT" else session.patch
+        return opener(url, headers=dict(headers), json=payload, timeout=timeout)
     if raw_body is not None:
         return session.post(url, headers=dict(headers), data=raw_body, timeout=timeout)
     payload = None if json_body is None else dict(json_body)

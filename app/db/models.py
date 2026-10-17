@@ -1074,46 +1074,12 @@ class AuditLog(Base):
     request_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
 
 
-class CliproxyCredentialPrefix(Base):
-    """Prefix codex-lb assigned to one CLIProxyAPI auth file.
-
-    CLIProxyAPI v8.0.30 omits ``prefix`` from GET /v0/management/auth-files.
-    This row is the panel's read source. ``credential_name`` is the auth-file
-    name the management API patches.
-    """
-
-    __tablename__ = "cliproxy_credential_prefixes"
-    __table_args__ = (UniqueConstraint("prefix", name="uq_cliproxy_credential_prefixes_prefix"),)
-
-    credential_name: Mapped[str] = mapped_column(String, primary_key=True)
-    auth_index: Mapped[str | None] = mapped_column(String, nullable=True)
-    prefix: Mapped[str] = mapped_column(String(32), nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-
-
-class CliproxyStickySession(Base):
-    """Bounded-TTL sticky owner for one CLIProxyAPI credential.
-
-    ``sticky_sessions.account_id`` references ``accounts.id``. CLIProxyAPI
-    credential ids are not account rows, so prompt-cache and thread pins live
-    here. Hard ``codex_session`` rows are never written.
-    """
-
-    __tablename__ = "cliproxy_sticky_sessions"
-
-    key: Mapped[str] = mapped_column(String, primary_key=True)
-    kind: Mapped[str] = mapped_column(String, primary_key=True)
-    account_id: Mapped[str] = mapped_column(String, nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-
-
 class CliproxyPrefixWriteClaim(Base):
-    """Cross-process lock for CLIProxyAPI credential writes on SQLite.
+    """Cross-process lock for CLIProxyAPI credential status writes on SQLite.
 
-    One row per ``lock_name`` (``prefixes`` or ``status``) is taken with a
-    conditional upsert so two workers sharing the database file cannot
-    interleave a management PATCH with the check that depends on it.
-    PostgreSQL uses ``pg_advisory_xact_lock`` for the same sections instead
+    One ``status`` row is taken with a conditional upsert so two workers
+    sharing the database file cannot both decide they are not disabling the
+    last enabled account. PostgreSQL uses ``pg_advisory_xact_lock`` instead
     of this table.
     """
 

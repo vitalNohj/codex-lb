@@ -1,7 +1,7 @@
 """Validate an operator-supplied CLIProxyAPI credential file before upload.
 
-Q-E3 is unverified: ``POST /auth-files`` may not keep ``prefix``. The prefix
-is removed from the file and stored in codex-lb's registry instead.
+A prefix already in the file is forwarded unchanged. The panel does not
+assign one and does not strip one the file already has.
 """
 
 from __future__ import annotations
@@ -16,7 +16,6 @@ from app.core.types import JsonValue
 from app.core.utils.json_guards import is_json_mapping
 from app.modules.cliproxy_accounts.providers import UPLOAD_TYPES
 from app.modules.cliproxy_accounts.validation import (
-    normalize_credential_prefix,
     validate_excluded_models,
     validate_priority,
     validate_weight,
@@ -106,6 +105,8 @@ def _prepare_object(parsed: Mapping[str, JsonValue]) -> PreparedUpload:
         payload["excluded_models"] = list(_excluded(parsed["excluded_models"]))
     if "note" in parsed:
         payload["note"] = _note(parsed["note"])
+    if prefix is not None:
+        payload["prefix"] = prefix
     body = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
     return PreparedUpload(provider=provider, body=body, prefix=prefix)
 
@@ -122,7 +123,10 @@ def _provider(value: JsonValue | None) -> str:
 def _prefix(value: JsonValue | None) -> str:
     if not isinstance(value, str):
         raise DashboardBadRequestError("Prefix must be a string")
-    return normalize_credential_prefix(value)
+    text = value.strip()
+    if not text or len(text) > 128 or "/" in text or "\\" in text or any(char.isspace() for char in text):
+        raise DashboardBadRequestError("Prefix must be a single segment")
+    return text
 
 
 def _string_field(key: str, value: JsonValue | None) -> str:
