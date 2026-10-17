@@ -1,41 +1,16 @@
-"""What happens to a Go-prefixed model sent to ``POST /v1/responses``.
+"""What happens to an OrcaRouter model sent to ``POST /v1/responses``.
 
-Firstmate flagged a conflict worth measuring rather than arguing about.
-``contract.md`` section 4.1 says a Go model on ``/v1/responses`` "falls through
-to the existing Codex Responses path exactly as today", and presents that as
-preserving inbound compatibility. Those are two different claims, and only the
-first one is about the code.
-
-The concrete question an end user asks: *I configured OpenCode Go, I pointed a
-Responses-protocol client at codex-lb, I asked for a Go model. What happened to
-my request, and did any of my content leave for an upstream I did not choose?*
-
-The contract's answer is that nothing special happens, which means the request
-is handled by the Codex Responses path - a path whose upstream is an OpenAI
-account, not OpenCode Go. So the safety-critical property is not "it works", it
-is **"it must not silently succeed against the wrong provider"**. That is what
-these tests pin, using the same fall-through the contract describes.
-
-The OmniRoute precedent is directly relevant and is tested here too: OmniRoute
-*is* dispatched on ``/v1/responses`` via ``_omniroute_responses_dispatch_or_none``,
-and that function returns ``None`` for every other provider. So a Go provider
-gets fall-through by default, and the guard that keeps it from being dispatched
-to OmniRoute's upstream is a provider equality check. If a future change relaxes
-that check, a Go model would be sent to OmniRoute - which is exactly the "no
-automatic fallback to another paid provider" rule the captain set.
+Chat already routes this provider. Responses uses that same route: the request
+is translated into a chat completion and sent to the OrcaRouter upstream, not
+to a ChatGPT Codex account and not to a different sidecar. OmniRoute and native
+OpenCode Go keep their own Responses dispatchers; this file does not cover them.
 
 No authenticated call is made to any real provider by any test here.
 
-SCOPE (corrected): these tests drive the **OrcaRouter** sidecar, not the native
-OpenCode Go provider. They were written before the native provider existed, and
-OrcaRouter is the integration pattern it was built from, so they remain valuable
-as baseline regressions for the shipped providers.
-
-Their results are evidence about OrcaRouter and **must not be cited as native Go
-evidence**. The native equivalents - auth, session identity, tool calls,
-streaming settlement, cancellation and no-fallback - live in
-``test_opencode_go_native_chain.py``, which drives the real ``opencode_go``
-dispatch path.
+SCOPE: these tests drive the **OrcaRouter** sidecar, not the native OpenCode Go
+provider. They were written before the native provider existed. Their results
+are evidence about OrcaRouter and **must not be cited as native Go evidence**.
+The native equivalents live in ``test_opencode_go_native_chain.py``.
 """
 
 from __future__ import annotations
@@ -102,14 +77,14 @@ async def _create_key(name: str) -> str:
 
 
 @pytest.mark.asyncio
-async def test_a_sidecar_model_on_v1_responses_does_not_reach_the_sidecar_upstream(
+async def test_a_sidecar_model_on_v1_responses_reaches_that_providers_chat_upstream(
     async_client, sidecar_capability_enabled, go_upstream
 ):
-    """The end-user-visible fact: the request does not go to the Go upstream.
+    """Responses for an OrcaRouter model is that provider's chat completion.
 
-    This is the reproducer for the contract's "not dispatched" claim, measured
-    at the socket rather than read from source. Whatever else happens to the
-    request, the configured provider's upstream sees nothing.
+    The client speaks Responses. The upstream speaks chat. The translated
+    request must arrive on this provider's chat endpoint, and the client must
+    get a Responses result back.
     """
     await _configure(async_client, go_upstream)
     client_key = await _create_key("responses-boundary-key")
@@ -120,30 +95,21 @@ async def test_a_sidecar_model_on_v1_responses_does_not_reach_the_sidecar_upstre
         headers={"Authorization": f"Bearer {client_key}"},
     )
 
-    # It must not succeed, because no path can actually serve this model here.
-    assert response.status_code != 200, (
-        "a Responses request for a chat-only sidecar model returned success; "
-        "either it was dispatched somewhere it should not have been, or an "
-        "unsupported combination is being advertised as working"
-    )
-    # And the sidecar upstream was never contacted on any endpoint.
-    assert go_upstream.requests == [], (
-        f"the sidecar upstream received {[r.path for r in go_upstream.requests]} "
-        "for a /v1/responses request the contract says is not dispatched to it"
-    )
+    assert response.status_code == 200, response.text
+    assert response.json()["object"] == "response"
+    assert [record.path for record in go_upstream.requests] == ["/v1/chat/completions"]
+    assert go_upstream.requests[0].body["model"] == GO_MODEL
 
 
 @pytest.mark.asyncio
 async def test_a_sidecar_model_on_v1_responses_is_not_diverted_to_another_provider(
     async_client, sidecar_capability_enabled, go_upstream, monkeypatch
 ):
-    """No automatic fallback to a different paid provider.
+    """An OrcaRouter Responses request stays on OrcaRouter.
 
-    ``_omniroute_responses_dispatch_or_none`` is the one sidecar branch on the
-    Responses path. It is guarded by ``decision.provider != "omniroute"``. This
-    test refuses the OmniRoute transport outright, so if that guard ever stops
-    excluding other providers the test fails loudly instead of a Go model
-    quietly billing OmniRoute.
+    OmniRoute has its own Responses dispatcher. This refuses that transport, so
+    a routing mistake that hands the model to OmniRoute fails here instead of
+    billing the wrong provider.
     """
     import app.modules.proxy.api as proxy_api
 
@@ -167,20 +133,15 @@ async def test_a_sidecar_model_on_v1_responses_is_not_diverted_to_another_provid
     )
 
     assert diverted == []
-    assert response.status_code != 200
-    assert go_upstream.requests == []
+    assert response.status_code == 200, response.text
+    assert [record.path for record in go_upstream.requests] == ["/v1/chat/completions"]
 
 
 @pytest.mark.asyncio
-async def test_the_failure_is_a_clean_client_error_not_a_crash(async_client, sidecar_capability_enabled, go_upstream):
-    """An unsupported combination must fail legibly.
-
-    A 500 or a hang here is a worse end-user experience than a refusal, and it
-    is what a silent fall-through into a path with no usable upstream tends to
-    produce. The assertion is deliberately broad on the exact code, because the
-    contract has not settled whether this becomes an explicit 400 - but it is
-    strict that the response is a structured error the client can act on.
-    """
+async def test_the_responses_result_does_not_leak_the_upstream_credential(
+    async_client, sidecar_capability_enabled, go_upstream
+):
+    """A successful translation must not echo the provider credential."""
     await _configure(async_client, go_upstream)
     client_key = await _create_key("responses-clean-error-key")
 
@@ -190,11 +151,8 @@ async def test_the_failure_is_a_clean_client_error_not_a_crash(async_client, sid
         headers={"Authorization": f"Bearer {client_key}"},
     )
 
-    assert 400 <= response.status_code < 600
-    body = response.json()
-    assert "error" in body, f"unstructured error body: {body}"
-    assert body["error"].get("message"), "an error with no message is not actionable"
-    # The upstream credential must not leak through an error path either.
+    assert response.status_code == 200, response.text
+    assert response.json()["object"] == "response"
     assert UPSTREAM_KEY not in response.text
 
 
@@ -204,12 +162,10 @@ async def test_the_existing_responses_path_still_works_for_a_non_sidecar_model(
 ):
     """Inbound Responses compatibility is preserved for everything else.
 
-    The contract's compatibility claim rests on *not* registering a new branch.
-    This pins the other half: enabling a sidecar integration must not change how
-    an ordinary Responses request is handled. It fails for want of a configured
-    OpenAI upstream, which is the pre-existing behavior in this test
-    environment - the point is that it fails the same way, and not inside the
-    sidecar.
+    Enabling OrcaRouter must not change how an ordinary Codex Responses request
+    is handled. It fails for want of a configured OpenAI upstream, which is the
+    pre-existing behavior in this test environment - the point is that it fails
+    the same way, and not inside the sidecar.
     """
     await _configure(async_client, go_upstream)
     client_key = await _create_key("responses-passthrough-key")
@@ -228,13 +184,10 @@ async def test_the_existing_responses_path_still_works_for_a_non_sidecar_model(
 async def test_v1_models_does_not_advertise_responses_support_for_a_chat_only_model(
     async_client, sidecar_capability_enabled, go_upstream
 ):
-    """Do not advertise a protocol the integration cannot serve.
+    """Keep the catalog's api_types shape.
 
-    The contract is explicit that ``/v1/models`` should carry
-    ``api_types: ["chat_completions"]`` for Go models. The binding rule, tested
-    here against the current baseline, is the negative one: a chat-only sidecar
-    model must never be listed as Responses-capable, or a client will choose the
-    endpoint the tests above prove does not work.
+    Responses traffic for this model is translated onto chat. The catalog still
+    names ``chat_completions`` and does not add a native ``responses`` type.
     """
     await _configure(async_client, go_upstream, advertise=True)
     client_key = await _create_key("models-advertisement-key")

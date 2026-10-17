@@ -3058,6 +3058,27 @@ class _WebSocketMixin:
                 }
             )
         validate_model_access(refreshed_api_key, responses_payload.model)
+        # Compact and this socket cannot speak chat-provider Responses. A model
+        # those providers own must not select a Codex account. Source-owned
+        # models keep the existing non-terminal HTTP fallback.
+        source_owned = not source_route_excluded and await responses_model_is_source_owned(
+            responses_payload.model,
+            refreshed_api_key,
+            raw_model=raw_source_model,
+        )
+        # Lazy: this mixin is imported while ``api`` is still loading, and the
+        # rejection helper imports ``api`` only when a turn is prepared.
+        from app.modules.proxy.responses_provider_dispatch import (
+            non_http_responses_model_rejection,
+            raise_for_non_http_responses_rejection,
+        )
+
+        rejection = await non_http_responses_model_rejection(
+            responses_payload.model,
+            source_owned=source_owned,
+        )
+        if rejection is not None:
+            raise_for_non_http_responses_rejection(rejection)
         proxy._raise_for_unsupported_input_image_references(responses_payload)
         rewritten_file_account_id = await proxy._resolve_file_account_for_responses(responses_payload, headers)
         original_full_resend_payload: ResponsesRequest | None = None

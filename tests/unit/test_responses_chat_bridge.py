@@ -95,6 +95,75 @@ def test_request_translation_preserves_image_url_object_with_detail():
     }
 
 
+def test_request_translation_keeps_function_call_history():
+    request = _responses_request(
+        instructions="",
+        input=[
+            {"role": "user", "content": [{"type": "input_text", "text": "weather?"}]},
+            {
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "checking"}],
+            },
+            {
+                "type": "function_call",
+                "call_id": "call_1",
+                "name": "lookup",
+                "arguments": '{"city":"Seoul"}',
+            },
+            {
+                "type": "function_call",
+                "call_id": "call_2",
+                "name": "lookup",
+                "arguments": {"city": "Busan"},
+            },
+            {"type": "function_call_output", "call_id": "call_1", "output": "72F"},
+            {"type": "function_call_output", "call_id": "call_2", "output": {"ok": True}},
+        ],
+    )
+
+    chat = responses_to_chat_request(request, "omniroute/test-chat")
+
+    assert chat.messages == [
+        {"role": "user", "content": "weather?"},
+        {
+            "role": "assistant",
+            "content": "checking",
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "lookup", "arguments": '{"city":"Seoul"}'},
+                },
+                {
+                    "id": "call_2",
+                    "type": "function",
+                    "function": {"name": "lookup", "arguments": '{"city":"Busan"}'},
+                },
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call_1", "content": "72F"},
+        {"role": "tool", "tool_call_id": "call_2", "content": '{"ok":true}'},
+    ]
+
+
+def test_request_translation_function_call_without_assistant_text_is_its_own_turn():
+    request = _responses_request(
+        instructions="",
+        input=[
+            {"type": "function_call", "call_id": "call_1", "name": "lookup", "arguments": "{}"},
+            {"type": "function_call_output", "call_id": "call_1", "output": "done"},
+        ],
+    )
+
+    chat = responses_to_chat_request(request, "omniroute/test-chat")
+
+    assert chat.messages[0]["role"] == "assistant"
+    assert chat.messages[0]["tool_calls"][0]["id"] == "call_1"
+    assert chat.messages[1] == {"role": "tool", "tool_call_id": "call_1", "content": "done"}
+    assert all(message.get("content") != "" for message in chat.messages)
+
+
 def test_request_translation_carries_tools_and_stream():
     request = _responses_request(
         stream=True,
@@ -174,6 +243,114 @@ def test_stream_synthesizer_finish_is_idempotent():
 
     assert first and first[-1]["type"] == "response.completed"
     assert second == []
+
+
+def test_stream_synthesizer_emits_function_call_deltas():
+    synth = ResponsesStreamSynthesizer(model="omniroute/test-chat")
+    events: list = []
+    events.extend(
+        synth.feed(
+            {
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "id": "call_1",
+                                    "type": "function",
+                                    "function": {"name": "lookup", "arguments": '{"city":'},
+                                }
+                            ]
+                        }
+                    }
+                ]
+            }
+        )
+    )
+    events.extend(
+        synth.feed(
+            {
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {"index": 0, "function": {"arguments": '"Seoul"}'}},
+                                {
+                                    "index": 1,
+                                    "id": "call_2",
+                                    "type": "function",
+                                    "function": {"name": "lookup", "arguments": "{}"},
+                                },
+                            ]
+                        }
+                    }
+                ]
+            }
+        )
+    )
+    events.extend(synth.feed("[DONE]"))
+
+    types = [event["type"] for event in events]
+    assert types[0] == "response.created"
+    assert types.count("response.function_call_arguments.delta") == 3
+    assert "response.function_call_arguments.done" in types
+    assert "response.output_text.delta" not in types
+    completed = events[-1]["response"]
+    function_calls = [item for item in completed["output"] if item["type"] == "function_call"]
+    assert [item["call_id"] for item in function_calls] == ["call_1", "call_2"]
+    assert function_calls[0]["name"] == "lookup"
+    assert function_calls[0]["arguments"] == '{"city":"Seoul"}'
+    assert function_calls[1]["arguments"] == "{}"
+    assert all(item["type"] != "message" for item in completed["output"])
+
+
+def test_stream_synthesizer_appends_argument_fragments_that_share_a_prefix():
+    """A fragment that starts with the accumulated arguments is still additive.
+
+    Chat Completions ``delta.tool_calls[].function.arguments`` is a fragment.
+    Treating a matching prefix as a cumulative snapshot drops valid JSON.
+    """
+
+    synth = ResponsesStreamSynthesizer(model="omniroute/test-chat")
+    fragments = ['{"', '{"', ":1}"]
+    for index, fragment in enumerate(fragments):
+        function = {"name": "lookup", "arguments": fragment} if index == 0 else {"arguments": fragment}
+        call: dict = {"index": 0, "function": function}
+        if index == 0:
+            call["id"] = "call_1"
+        synth.feed({"choices": [{"delta": {"tool_calls": [call]}}]})
+    completed = synth.feed("[DONE]")[-1]["response"]["output"][0]
+    assert completed["arguments"] == '{"{":1}'
+
+    repeated_prefix = ResponsesStreamSynthesizer(model="omniroute/test-chat")
+    repeated_prefix.feed(
+        {
+            "choices": [
+                {
+                    "delta": {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": "call_1",
+                                "function": {"name": "lookup", "arguments": '{"a":'},
+                            }
+                        ]
+                    }
+                }
+            ]
+        }
+    )
+    events = repeated_prefix.feed(
+        {
+            "choices": [
+                {"delta": {"tool_calls": [{"index": 0, "function": {"arguments": '{"a":1}}'}}]}}
+            ]
+        }
+    )
+    deltas = [event["delta"] for event in events if event["type"] == "response.function_call_arguments.delta"]
+    assert deltas == ['{"a":1}}']
+    assert repeated_prefix.feed("[DONE]")[-1]["response"]["output"][0]["arguments"] == '{"a":{"a":1}}'
 
 
 def test_stream_synthesizer_captures_usage():

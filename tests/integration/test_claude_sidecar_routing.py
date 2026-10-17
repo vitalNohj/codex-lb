@@ -1231,6 +1231,69 @@ async def test_sidecar_models_advertise_their_real_context_window(
         assert entry["context_length"] == window, model_id
         assert entry["contextLength"] == window, model_id
         assert entry["capabilities"]["context_length"] == window, model_id
+    # Dated and unknown Claude ids do not borrow a table model's vision support.
+    for model_id in ("claude-opus-5-5", "cc/claude-opus-5-5", "claude-sonnet-5-5"):
+        assert entries[model_id]["supports_vision"] is True
+        assert entries[model_id]["capabilities"]["input_modalities"] == ["text", "image"]
+    for model_id in ("claude-sonnet-4-5-20250929", "claude-unreleased-9"):
+        assert entries[model_id]["supports_vision"] is False
+        assert entries[model_id]["capabilities"]["input_modalities"] == ["text"]
+
+
+_CLAUDE_IMAGE = "data:image/png;base64,BBBB"
+
+
+def _claude_image_input(*, stream: bool | None = None) -> dict:
+    payload: dict = {
+        "model": "claude-sonnet-4-5-20250929",
+        "input": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "input_text", "text": "what is this"},
+                    {"type": "input_image", "image_url": _CLAUDE_IMAGE},
+                ],
+            }
+        ],
+    }
+    if stream is not None:
+        payload["stream"] = stream
+    return payload
+
+
+def _assert_claude_image(payload: dict) -> None:
+    parts = payload["messages"][-1]["content"]
+    assert isinstance(parts, list)
+    assert {"type": "image_url", "image_url": {"url": _CLAUDE_IMAGE}} in parts
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["/v1/responses", "/backend-api/codex/responses"])
+async def test_responses_claude_preserves_image(async_client, sidecar_enabled, fake_sidecar, path):
+    response = await async_client.post(path, json=_claude_image_input())
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["object"] == "response"
+    assert body["output"][0]["content"][0]["text"] == "hi"
+    assert len(fake_sidecar.chat_payloads) == 1
+    _assert_claude_image(fake_sidecar.chat_payloads[0])
+
+
+@pytest.mark.asyncio
+async def test_responses_claude_streams_image(async_client, sidecar_enabled, fake_sidecar):
+    async with async_client.stream(
+        "POST",
+        "/v1/responses",
+        json=_claude_image_input(stream=True),
+    ) as response:
+        body = await response.aread()
+
+    assert response.status_code == 200
+    assert b"hi" in body
+    assert body.count(b"data: [DONE]") == 1
+    assert len(fake_sidecar.stream_payloads) == 1
+    _assert_claude_image(fake_sidecar.stream_payloads[0])
 
 
 @pytest.mark.asyncio

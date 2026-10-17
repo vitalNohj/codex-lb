@@ -287,16 +287,15 @@ async def _post_expecting_dispatch(client, path: str, key, model: str) -> _Synth
 # model. Naming the exact boundary per path proves the selected route rather
 # than accepting any exception from the boundary list.
 #
-# Only the chat handler dispatches Claude models through the sidecar client.
-# The Responses handlers have no Claude sidecar dispatch, so a permitted
-# Claude-owned model there continues down the default Codex path and stops at
-# account selection (503 no_accounts) before reaching a dispatch boundary.
-# Seeding upstream accounts is outside this module's scope, so those paths
-# assert admission past the permission check instead - see
-# ``_assert_admitted_past_permission``.
+# Chat and both Responses handlers construct ``ClaudeSidecarClient`` before
+# any Codex account selection. Paths that are not in this map stop at account
+# selection (503 no_accounts); seeding upstream accounts is outside this
+# module's scope, so those paths assert admission past the permission check
+# instead - see ``_assert_admitted_past_permission``.
 CLAUDE_DISPATCH_BOUNDARY = {
     "/v1/chat/completions": "ClaudeSidecarClient",
-    CODEX_RESPONSES: "_stream_responses",
+    "/v1/responses": "ClaudeSidecarClient",
+    CODEX_RESPONSES: "ClaudeSidecarClient",
 }
 
 # Native (non-sidecar) models: the chat path probes stream startup, and the
@@ -493,18 +492,12 @@ async def test_explicit_openrouter_grant_authorizes_its_own_request(
     await _enable_api_key_auth(lifespan_free_client)
     key = await _create_api_key(f"or-grant-{path.replace('/', '-')}", allowed_models=["or/gpt-5"])
 
-    if path == "/v1/responses":
-        # This handler has no OpenRouter dispatch; admission is proven by
-        # reaching account selection instead.
-        await _assert_admitted_past_permission(lifespan_free_client, path, key, "or/gpt-5", dispatch_calls)
-        return
-
     dispatched = await _post_expecting_dispatch(lifespan_free_client, path, key, "or/gpt-5")
 
     _assert_dispatch(
         dispatched,
         dispatch_calls,
-        expected_boundary="OpenRouterSidecarClient" if path.endswith("chat/completions") else "_stream_responses",
+        expected_boundary="OpenRouterSidecarClient",
         expected_provider=None,
         expected_model=None,
     )

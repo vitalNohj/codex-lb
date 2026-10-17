@@ -225,6 +225,7 @@ async def _create_model_source(
     model: str,
     supports_responses: bool = False,
     supports_streaming: bool = True,
+    supports_vision: bool = False,
     context_window: int | None = 8192,
     raw_metadata_json: str | None = None,
 ) -> str:
@@ -234,7 +235,7 @@ async def _create_model_source(
         "maxOutputTokens": 1024,
         "supportsStreaming": supports_streaming,
         "supportsTools": True,
-        "supportsVision": False,
+        "supportsVision": supports_vision,
     }
     if context_window is not None:
         model_payload["contextWindow"] = context_window
@@ -515,6 +516,26 @@ async def test_v1_models_includes_supported_model_and_excludes_unsupported_spark
     ids = {item["id"] for item in resp.json()["data"]}
     assert "gpt-5.3-codex" not in ids
     assert "gpt-5.3-codex-spark" in ids
+
+
+@pytest.mark.asyncio
+async def test_v1_models_source_vision_follows_declared_support(async_client):
+    await _create_model_source(async_client, name="text-source", model="text-only-source")
+    await _create_model_source(
+        async_client,
+        name="vision-source",
+        model="vision-source-model",
+        supports_vision=True,
+    )
+
+    response = await async_client.get("/v1/models")
+
+    assert response.status_code == 200
+    by_id = {item["id"]: item for item in response.json()["data"]}
+    assert by_id["text-only-source"]["supports_vision"] is False
+    assert by_id["text-only-source"]["capabilities"]["input_modalities"] == ["text"]
+    assert by_id["vision-source-model"]["supports_vision"] is True
+    assert by_id["vision-source-model"]["capabilities"]["input_modalities"] == ["text", "image"]
 
 
 @pytest.mark.asyncio
