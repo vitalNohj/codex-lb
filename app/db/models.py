@@ -1108,12 +1108,13 @@ class CliproxyStickySession(Base):
 
 
 class CliproxyPrefixWriteClaim(Base):
-    """Cross-process lock for CLIProxyAPI prefix writes on SQLite.
+    """Cross-process lock for CLIProxyAPI credential writes on SQLite.
 
-    One row (``lock_name`` ``prefixes``) is taken with a conditional upsert
-    so two workers sharing the database file cannot interleave a management
-    PATCH and the registry commit. PostgreSQL uses ``pg_advisory_xact_lock``
-    for the same section instead of this table.
+    One row per ``lock_name`` (``prefixes`` or ``status``) is taken with a
+    conditional upsert so two workers sharing the database file cannot
+    interleave a management PATCH with the check that depends on it.
+    PostgreSQL uses ``pg_advisory_xact_lock`` for the same sections instead
+    of this table.
     """
 
     __tablename__ = "cliproxy_prefix_write_claims"

@@ -238,6 +238,69 @@ describe("CliproxyCredentials", () => {
     });
   });
 
+  it("keeps an unsaved tag when weight autosave refreshes the card", async () => {
+    const user = userEvent.setup();
+    let weight: number | null = null;
+    let reads = 0;
+    server.use(
+      http.get("*/api/cliproxy/accounts", () => {
+        reads += 1;
+        return HttpResponse.json({
+          status: "healthy",
+          message: null,
+          providers: [
+            {
+              provider: "xai",
+              credentials: [
+                {
+                  name: "grok-a.json",
+                  authIndex: "x1",
+                  email: "grok@example.com",
+                  provider: "xai",
+                  health: "active",
+                  disabled: false,
+                  unavailable: false,
+                  quotaExceeded: false,
+                  prefix: "acct2",
+                  weight,
+                  priority: null,
+                  excludedModels: [],
+                  excludedModelsState: "available",
+                  models: ["grok-4"],
+                  modelsError: null,
+                },
+              ],
+            },
+          ],
+        });
+      }),
+      http.patch("*/api/cliproxy/accounts/grok-a.json/fields", async ({ request }) => {
+        const body = (await request.json()) as { weight?: number };
+        weight = body.weight ?? weight;
+        return HttpResponse.json({
+          name: "grok-a.json",
+          prefix: "acct2",
+          weight,
+          priority: null,
+          excludedModels: [],
+          excludedModelsState: "available",
+          disabled: false,
+        });
+      }),
+    );
+
+    renderCredentials(true);
+    const prefix = await screen.findByRole("textbox", { name: "Prefix for grok@example.com" });
+    await user.type(prefix, "acct9");
+    const weightInput = screen.getByRole("textbox", { name: "Weight for grok@example.com" });
+    await user.type(weightInput, "4");
+    weightInput.blur();
+    await waitFor(() => expect(reads).toBeGreaterThan(1));
+    expect(screen.getByRole("textbox", { name: "Prefix for grok@example.com" })).toHaveValue("acct2acct9");
+    expect(screen.getByRole("textbox", { name: "Weight for grok@example.com" })).toHaveValue("4");
+    expect(screen.getByRole("button", { name: "Save tag for grok@example.com" })).toBeEnabled();
+  });
+
   it("saves weight, priority, and excluded-model chips without confirmation", async () => {
     const user = userEvent.setup();
     const fieldBodies: unknown[] = [];

@@ -43,11 +43,14 @@ class _FakeClient:
     field_calls: list[dict[str, JsonValue]] = []
     status_calls: list[dict[str, JsonValue]] = []
     status_error: Exception | None = None
+    list_delay_seconds: float = 0.0
 
     def __init__(self, _config) -> None:
         pass
 
     async def list_auth_files(self) -> list[dict[str, JsonValue]]:
+        if self.list_delay_seconds:
+            await asyncio.sleep(self.list_delay_seconds)
         if self.error is not None:
             raise self.error
         return list(self.files)
@@ -67,6 +70,9 @@ class _FakeClient:
         if auth_index:
             payload["auth_index"] = auth_index
         self.status_calls.append(payload)
+        for entry in self.files:
+            if entry.get("name") == name:
+                entry["disabled"] = disabled
         if self.status_error is not None:
             raise self.status_error
 
@@ -78,6 +84,7 @@ def _reset_fake() -> None:
     _FakeClient.field_calls = []
     _FakeClient.status_calls = []
     _FakeClient.status_error = None
+    _FakeClient.list_delay_seconds = 0.0
     _FakeClient.files = [
         {
             "name": "claude-a.json",
@@ -690,8 +697,7 @@ async def test_patch_status_confirms_only_the_last_enabled_account(async_client,
 
     _FakeClient.status_calls.clear()
     for entry in _FakeClient.files:
-        if entry["name"] != "claude-a.json":
-            entry["disabled"] = True
+        entry["disabled"] = entry["name"] != "claude-a.json"
 
     refused = await async_client.patch(
         "/api/cliproxy/accounts/claude-a.json/status",
@@ -724,6 +730,37 @@ async def test_patch_status_confirms_only_the_last_enabled_account(async_client,
     )
     assert enabled.status_code == 200
     assert enabled.json() == {"name": "claude-a.json", "disabled": False}
+
+
+@pytest.mark.asyncio
+async def test_overlapping_unconfirmed_disables_leave_one_account_enabled(async_client, monkeypatch):
+    _install(monkeypatch)
+    await _ready(async_client)
+    for entry in _FakeClient.files:
+        if entry["name"] not in {"claude-a.json", "grok-a.json"}:
+            entry["disabled"] = True
+    _FakeClient.list_delay_seconds = 0.05
+
+    async def disable(name: str):
+        return await async_client.patch(
+            f"/api/cliproxy/accounts/{name}/status",
+            json={"disabled": True, "confirm": False},
+        )
+
+    first, second = await asyncio.gather(disable("claude-a.json"), disable("grok-a.json"))
+    refused = first if first.status_code == 400 else second
+    accepted = second if refused is first else first
+    accepted_name = accepted.json()["name"]
+    assert accepted.status_code == 200
+    assert refused.status_code == 400
+    assert "last enabled" in refused.json()["error"]["message"]
+    assert _FakeClient.status_calls == [
+        {
+            "name": accepted_name,
+            "disabled": True,
+            "auth_index": "c1" if accepted_name == "claude-a.json" else "x1",
+        }
+    ]
 
 
 @pytest.mark.asyncio

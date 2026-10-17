@@ -49,15 +49,11 @@ function credentialLabel(credential: CliproxyCredential): string {
   return credential.email || credential.name;
 }
 
-function fieldSignature(credential: CliproxyCredential): string {
-  return [
-    credential.prefix ?? "",
-    credential.weight ?? "",
-    credential.priority ?? "",
-    credential.excludedModels.join(","),
-    credential.excludedModelsState,
-    String(credential.disabled),
-  ].join("|");
+function adoptServerDraft(server: string, draft: string, baseline: string): { draft: string; baseline: string } {
+  if (server === baseline) {
+    return { draft, baseline };
+  }
+  return { baseline: server, draft: draft === baseline ? server : draft };
 }
 
 function nextAccountPrefix(prefixes: Array<string | null | undefined>): string {
@@ -106,9 +102,30 @@ function CredentialEditor({
   onDelete: () => void;
 }) {
   const label = credentialLabel(credential);
-  const [prefix, setPrefix] = useState(credential.prefix ?? "");
-  const [weight, setWeight] = useState(credential.weight == null ? "" : String(credential.weight));
-  const [priority, setPriority] = useState(credential.priority == null ? "" : String(credential.priority));
+  const serverPrefix = credential.prefix ?? "";
+  const serverWeight = credential.weight == null ? "" : String(credential.weight);
+  const serverPriority = credential.priority == null ? "" : String(credential.priority);
+  const [prefix, setPrefix] = useState(serverPrefix);
+  const [prefixBaseline, setPrefixBaseline] = useState(serverPrefix);
+  const [weight, setWeight] = useState(serverWeight);
+  const [weightBaseline, setWeightBaseline] = useState(serverWeight);
+  const [priority, setPriority] = useState(serverPriority);
+  const [priorityBaseline, setPriorityBaseline] = useState(serverPriority);
+  const nextPrefix = adoptServerDraft(serverPrefix, prefix, prefixBaseline);
+  if (nextPrefix.baseline !== prefixBaseline || nextPrefix.draft !== prefix) {
+    setPrefixBaseline(nextPrefix.baseline);
+    setPrefix(nextPrefix.draft);
+  }
+  const nextWeight = adoptServerDraft(serverWeight, weight, weightBaseline);
+  if (nextWeight.baseline !== weightBaseline || nextWeight.draft !== weight) {
+    setWeightBaseline(nextWeight.baseline);
+    setWeight(nextWeight.draft);
+  }
+  const nextPriority = adoptServerDraft(serverPriority, priority, priorityBaseline);
+  if (nextPriority.baseline !== priorityBaseline || nextPriority.draft !== priority) {
+    setPriorityBaseline(nextPriority.baseline);
+    setPriority(nextPriority.draft);
+  }
   const [formError, setFormError] = useState<string | null>(null);
   const [pendingTag, setPendingTag] = useState<string | null>(null);
   const [pendingLastDisable, setPendingLastDisable] = useState(false);
@@ -401,7 +418,6 @@ function CredentialRow({
         </p>
       )}
       <CredentialEditor
-        key={fieldSignature(credential)}
         credential={credential}
         suggestedPrefix={suggestedPrefix}
         lastEnabled={lastEnabled}
@@ -506,7 +522,7 @@ export function CliproxyCredentials({ enabled }: { enabled: boolean }) {
               credential={credential}
               suggestedPrefix={suggestedPrefix}
               lastEnabled={enabledCount <= 1 && !credential.disabled}
-              busy={pendingName === credential.name}
+              busy={pendingName === credential.name || statusMutation.isPending}
               refreshStatus={refreshObservation?.name === credential.name ? refreshObservation.status : null}
               refreshMessage={refreshObservation?.name === credential.name ? refreshObservation.message ?? null : null}
               onSave={(body) => fieldsMutation.mutate({ name: credential.name, body })}
