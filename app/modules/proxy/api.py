@@ -1382,6 +1382,7 @@ async def _chat_provider_responses_dispatch_or_none(
     # This path returns the response itself, so the key's service tier has to
     # be on the payload before translation copies it and before quota accounting.
     await _apply_api_key_enforcement_with_fast_mode_policy(responses_payload, api_key)
+    prompt_cache_key_derived = _derive_chat_provider_prompt_cache_key(responses_payload, api_key)
     translation = _responses_chat_translation_or_error(request, responses_payload, effective_model, rate_limit_headers)
     if isinstance(translation, Response):
         return translation
@@ -1405,6 +1406,7 @@ async def _chat_provider_responses_dispatch_or_none(
         sse_keepalive_interval_seconds=settings.sse_keepalive_interval_seconds,
         cursor_compat=is_cursor_compat_client(request, api_key),
         client=client,
+        prompt_cache_key_derived=prompt_cache_key_derived,
     )
 
 
@@ -1430,6 +1432,33 @@ def _responses_chat_translation_or_error(
             openai_client_payload_error(exc),
             headers=rate_limit_headers,
         )
+
+
+def _derive_chat_provider_prompt_cache_key(payload: ResponsesRequest, api_key: ApiKeyData | None) -> bool:
+    """Give a keyless Responses request the Codex path's derived prompt cache key.
+
+    The key comes from ``_derive_prompt_cache_key``'s recipe (API key, model
+    class, instructions, first user input), so every turn of one
+    conversation carries the same key into the chat translation. A request
+    with nothing stable to hash keeps no key rather than a random one.
+    Returns whether the key was derived here.
+    """
+
+    if isinstance(payload.prompt_cache_key, str) and payload.prompt_cache_key.strip():
+        payload.prompt_cache_key = payload.prompt_cache_key.strip()
+        return False
+    if not get_settings().openai_prompt_cache_key_derivation_enabled:
+        return False
+    derived = proxy_affinity_module.derive_content_prompt_cache_key(
+        model=payload.model,
+        instructions=payload.instructions,
+        input_value=payload.input,
+        api_key_id=api_key.id if api_key is not None else None,
+    )
+    if derived is None:
+        return False
+    payload.prompt_cache_key = derived
+    return True
 
 
 async def _responses_chat_provider_client(provider: str) -> object | None:

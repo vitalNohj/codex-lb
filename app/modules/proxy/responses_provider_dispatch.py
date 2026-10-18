@@ -138,6 +138,7 @@ async def dispatch_responses_via_chat_provider(
     cursor_compat: bool,
     client: object,
     translation: ResponsesChatTranslation | None = None,
+    prompt_cache_key_derived: bool = False,
 ) -> Response:
     """Dispatch one Responses request through the chat provider that owns it.
 
@@ -162,6 +163,7 @@ async def dispatch_responses_via_chat_provider(
         sse_keepalive_interval_seconds=sse_keepalive_interval_seconds,
         cursor_compat=cursor_compat,
         client=client,
+        prompt_cache_key_derived=prompt_cache_key_derived,
     )
     return translate_chat_response_to_responses(chat_response, model=effective_model, translation=translation)
 
@@ -219,6 +221,7 @@ async def _proxy_chat(
     sse_keepalive_interval_seconds: float,
     cursor_compat: bool,
     client: object,
+    prompt_cache_key_derived: bool = False,
 ) -> Response:
     if provider == "claude":
         return await proxy_chat_to_sidecar(
@@ -232,6 +235,7 @@ async def _proxy_chat(
             client=cast(ClaudeSidecarClient, client),
             cursor_compat=cursor_compat,
             wire_model=wire_model,
+            prompt_cache_key_derived=prompt_cache_key_derived,
         )
     if provider == "openrouter":
         return await proxy_chat_to_openrouter(

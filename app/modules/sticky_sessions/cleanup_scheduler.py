@@ -21,7 +21,7 @@ from app.modules.proxy.durable_bridge_repository import (
     missing_durable_bridge_tables,
 )
 from app.modules.proxy.ring_membership import RING_MEMBER_RETENTION_SECONDS, RingMembershipService
-from app.modules.proxy.sticky_repository import StickySessionsRepository
+from app.modules.proxy.sticky_repository import StickySessionsRepository, cliproxy_sticky_max_age_seconds
 from app.modules.settings.repository import SettingsRepository
 
 logger = logging.getLogger(__name__)
@@ -128,6 +128,12 @@ class StickySessionCleanupScheduler:
                         deleted_count = await sticky_repo.purge_prompt_cache_before(cutoff)
                         if deleted_count > 0:
                             logger.info("Purged stale prompt-cache sticky sessions deleted_count=%s", deleted_count)
+                        cliproxy_cutoff = utcnow() - timedelta(seconds=cliproxy_sticky_max_age_seconds(settings))
+                        cliproxy_deleted_count = await sticky_repo.purge_cliproxy_before(cliproxy_cutoff)
+                        if cliproxy_deleted_count > 0:
+                            logger.info(
+                                "Purged expired CLIProxyAPI sticky pins deleted_count=%s", cliproxy_deleted_count
+                            )
                         cleanup_now = utcnow()
                         stale_hard_codex_session_cutoff = cleanup_now - timedelta(
                             seconds=_STALE_HARD_CODEX_SESSION_UNAVAILABLE_SECONDS

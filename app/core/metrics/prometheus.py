@@ -336,6 +336,12 @@ if PROMETHEUS_AVAILABLE:
         "Total cache invalidation poll cycles that failed",
         registry=REGISTRY,
     )
+    cliproxy_route_outcome_total = Counter(
+        "codex_lb_cliproxy_route_outcome_total",
+        "CLIProxyAPI credential routing outcomes by sticky key source",
+        ["outcome", "key_source"],
+        registry=REGISTRY,
+    )
 
     def make_scrape_registry() -> CollectorRegistryLike:
         if MULTIPROCESS_MODE:
@@ -402,6 +408,7 @@ else:
     stream_idle_timeout_total: CounterLike | None = None
     cache_invalidation_bump_failures_total: CounterLike | None = None
     cache_invalidation_poll_failures_total: CounterLike | None = None
+    cliproxy_route_outcome_total: CounterLike | None = None
 
     def make_scrape_registry() -> None:
         return None
@@ -441,6 +448,7 @@ __all__ = [
     "cache_invalidation_poll_failures_total",
     "cap_partition_replicas",
     "circuit_breaker_state",
+    "cliproxy_route_outcome_total",
     "continuity_fail_closed_total",
     "event_loop_lag_seconds",
     "event_loop_lag_warnings_total",

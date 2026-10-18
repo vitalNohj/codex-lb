@@ -12,7 +12,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql import Insert
 
 from app.core.utils.time import naive_utc_to_epoch, to_utc_naive, utcnow
-from app.db.models import Account, AccountStatus, StickySession, StickySessionKind
+from app.db.models import (
+    Account,
+    AccountStatus,
+    CliproxyStickySession,
+    DashboardSettings,
+    StickySession,
+    StickySessionKind,
+)
 from app.db.session import sqlite_writer_section
 from app.modules.sticky_sessions.schemas import StickySessionSortBy, StickySessionSortDir
 
@@ -44,6 +51,23 @@ _REFRESH_SKIP_MAX_SECONDS = 15.0
 # (e.g. the pre-existing "\ncodex-lb-affinity-v1" selection affinities) remain
 # ordinary operator-manageable sessions.
 RESERVED_STICKY_SESSION_KEY_PREFIX = "\ncodex_live_call:"
+
+
+_CLIPROXY_STICKY_DEFAULT_MAX_AGE_SECONDS = 3600
+
+
+def cliproxy_sticky_max_age_seconds(settings: DashboardSettings) -> int:
+    """Idle lifetime of a CLIProxyAPI credential pin.
+
+    Lookup ignores an older pin and the cleanup scheduler deletes it, so the
+    two always agree. The value follows the prompt-cache idle TTL because a
+    pin is worth keeping only while the provider still holds the cache.
+    """
+
+    raw = settings.http_responses_session_bridge_prompt_cache_idle_ttl_seconds
+    if raw > 0:
+        return int(raw)
+    return _CLIPROXY_STICKY_DEFAULT_MAX_AGE_SECONDS
 
 
 def is_reserved_sticky_session_key(key: str) -> bool:
@@ -613,6 +637,20 @@ class StickySessionsRepository:
             stmt = stmt.where(StickySession.kind == kind)
         async with sqlite_writer_section():
             result = await self._session.execute(stmt.returning(StickySession.key))
+            deleted = len(result.scalars().all())
+            await self._session.commit()
+        return deleted
+
+    async def purge_cliproxy_before(self, cutoff: datetime) -> int:
+        """Delete expired CLIProxyAPI credential pins.
+
+        A pin older than ``cliproxy_sticky_max_age_seconds`` is already ignored
+        by lookup, so removing it changes no routing decision.
+        """
+
+        stmt = delete(CliproxyStickySession).where(CliproxyStickySession.updated_at < to_utc_naive(cutoff))
+        async with sqlite_writer_section():
+            result = await self._session.execute(stmt.returning(CliproxyStickySession.key))
             deleted = len(result.scalars().all())
             await self._session.commit()
         return deleted

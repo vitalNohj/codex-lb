@@ -21,10 +21,10 @@ whose quota is already exhausted. When that catalog cannot be read, a
 credential serves its provider family. API-key entries serve their
 configured model list, or that same family when the list is empty.
 
-Unknown capacity: an account with no measured quota window is scored as
-fully used (100/100) so every measured account with remaining headroom
-ranks ahead of it. It still serves when it is the sticky pin or when no
-measured account is eligible. Missing weight counts as 1. A non-positive
+Unknown capacity: an account with no measured quota window is scored at a
+neutral 50/50. A measured account with more headroom ranks ahead of it, a
+nearly spent one ranks behind it, and a new or API-key credential is not
+starved just because no quota snapshot names it. Missing weight counts as 1. A non-positive
 weight is excluded. Under ``capacity_weighted`` the weight is the capacity
 credit total, so remaining headroom scales with it. ``round_robin`` uses the
 same least-recently-selected order as Codex accounts; those timestamps stay
@@ -36,6 +36,29 @@ uses only the highest priority tier that still has an active account.
 Higher integers win, matching ``authPriority`` in
 ``sdk/cliproxy/auth/selector.go``. A sticky pin stays on a lower tier
 while that credential can still serve.
+
+Sticky identity follows CLIProxyAPI's ``ExtractSessionID``
+(``sdk/cliproxy/auth/selector.go``) and LiteLLM's ``session_affinity``: the
+client's ``prompt_cache_key``, then the Codex turn-state and session headers,
+then ``X-Claude-Code-Session-Id``, ``X-Session-Id``, ``X-Session-Affinity`` and
+any other ``x-<vendor>-session-id``, then a body ``session_id`` or
+``metadata.session_id``. Without any of those the key is derived from the
+conversation content with the Codex recipe (``_derive_prompt_cache_key``):
+API key, model class, system text and first user message. OpenRouter's
+default sticky key is the same kind of first-messages hash.
+
+A transient 401, 403 or 429 on a pinned credential keeps the pin. The
+failed credential cools down in this process, and the conversation is served
+by a second pin stored under ``<key>#fallback`` so it stays on one spare
+account. Once the cooldown ends the conversation returns to its warm pin.
+LiteLLM >= 1.97 keeps the session pin the same way while the deployment is in
+cooldown, and OpenRouter does not update the sticky provider on an error.
+A pin created by the failing request itself has no warm cache and moves.
+
+Pin writes are compare-and-set: a write applies only while the row still
+names the account this request read, or the row has expired. A request that
+loses the race re-reads the winner and routes there, so concurrent first
+turns of one conversation land on one credential.
 """
 
 from __future__ import annotations
@@ -43,6 +66,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import re
 import time
 from collections import OrderedDict
 from collections.abc import Mapping, Sequence
@@ -51,17 +75,21 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from typing import Literal, cast
 
+from sqlalchemy import delete, or_, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.balancer.logic import AccountState, RoutingStrategy
 from app.core.clients.claude_sidecar import ClaudeSidecarClient
+from app.core.config.settings import get_settings
 from app.core.config.settings_cache import get_settings_cache
+from app.core.metrics.prometheus import cliproxy_route_outcome_total
+from app.core.openai.chat_requests import ChatCompletionsRequest
 from app.core.types import JsonValue
 from app.core.utils.time import to_utc_naive, utcnow
 from app.db.models import AccountStatus, CliproxyStickySession, DashboardSettings, StickySessionKind
-from app.db.session import get_background_session
+from app.db.session import get_background_session, sqlite_writer_section
 from app.modules.claude_sidecar.capacity_hold import StoredSnapshotReader
 from app.modules.claude_sidecar.quota import SidecarAuthQuota, SidecarQuotaSnapshot, credential_provider
 from app.modules.cliproxy_accounts.api_keys import (
@@ -76,18 +104,52 @@ from app.modules.proxy._load_balancer.sticky_selection import (
     _sticky_refresh_write_skippable,
     _StickyMutation,
 )
-from app.modules.proxy.affinity import _sticky_key_from_session_header, _sticky_key_from_turn_state_header
+from app.modules.proxy.affinity import (
+    _sticky_key_from_session_header,
+    _sticky_key_from_turn_state_header,
+    derive_content_prompt_cache_key,
+)
 from app.modules.proxy.cliproxy_quota_state import account_state_for_auth
 from app.modules.proxy.sticky_repository import (
     _REFRESH_SKIP_MAX_SECONDS,
     _REFRESH_SKIP_TTL_FRACTION,
     StickySessionsRepository,
+    cliproxy_sticky_max_age_seconds,
 )
 
 logger = logging.getLogger(__name__)
 
 CliproxyRouteKind = Literal["sticky", "rebind", "selected"]
-_UNKNOWN_USED_PERCENT = 100.0
+CliproxyRouteOutcome = Literal["selected", "sticky", "rebind", "unpinned_no_key", "fail_open", "no_candidate"]
+CliproxyKeySource = Literal[
+    "prompt_cache_key",
+    "turn_state",
+    "session_header",
+    "body_session_id",
+    "derived",
+    "none",
+    "disabled",
+    "unknown",
+]
+_UNKNOWN_USED_PERCENT = 50.0
+# A credential that just answered 401/403/429 is skipped for this long. The
+# conversation pin stays on it, so the next turn after the cooldown returns
+# to the warm cache. Matches LiteLLM's router cooldown (keep the pin, fall
+# through while the deployment cools down).
+_COOLDOWN_SECONDS = 60.0
+_COOLING: dict[str, float] = {}
+_FALLBACK_KEY_SUFFIX = "#fallback"
+# One compare-and-set write plus up to two retries after losing a race.
+_CLAIM_ATTEMPTS = 3
+_IDENTITY_MAX_CHARS = 256
+_NO_CANDIDATE_WARN_SECONDS = 60.0
+_NO_CANDIDATE_WARNED: OrderedDict[str, float] = OrderedDict()
+_NO_CANDIDATE_WARN_LIMIT = 256
+# Session headers in the order CLIProxyAPI's ``ExtractSessionID`` reads them,
+# after the Codex headers this router already honoured. Any other
+# ``x-<vendor>-session-id`` follows, as in LiteLLM's ``session_affinity``.
+_CLIENT_SESSION_HEADERS = ("x-claude-code-session-id", "x-session-id", "x-session-affinity")
+_VENDOR_SESSION_HEADER = re.compile(r"^x-[a-z0-9]+(?:-[a-z0-9]+)*-session-id$")
 _SNAPSHOTS = StoredSnapshotReader()
 _API_KEY_CACHE: tuple[float, tuple[ApiKeyRouteRow, ...]] | None = None
 _API_KEY_CACHE_SECONDS = 15.0
@@ -130,6 +192,41 @@ class CliproxyDispatchChoice:
     route: CliproxyRouteKind
     sticky_key: str | None
     sticky_kind: StickySessionKind | None
+    key_source: CliproxyKeySource = "none"
+    # True when this request is served by the conversation's ``#fallback``
+    # pin while its own pin cools down.
+    fallback: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class CliproxyStickyHints:
+    """Conversation identity read from the client request before it is reshaped.
+
+    The sidecar body drops ``metadata`` before routing, and a key the API
+    layer derived must rank below the client's session headers, so the
+    dispatcher reads these from the original request.
+    """
+
+    prompt_cache_key: str | None = None
+    body_session_id: str | None = None
+    derived_key: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _StickyIdentity:
+    key: str | None
+    kind: StickySessionKind | None
+    source: CliproxyKeySource
+
+
+@dataclass(frozen=True, slots=True)
+class _RouteParams:
+    strategy: RoutingStrategy
+    prefer_reset: bool
+    reset_window: Literal["primary", "secondary"]
+    max_age: int | None
+    primary_budget: float
+    secondary_budget: float
 
 
 _CURRENT_CHOICE: ContextVar[CliproxyDispatchChoice | None] = ContextVar(
@@ -320,42 +417,42 @@ async def apply_cliproxy_account_route(
     *,
     headers: Mapping[str, str] | None = None,
     client: ClaudeSidecarClient | None = None,
+    hints: CliproxyStickyHints | None = None,
 ) -> CliproxyDispatchChoice | None:
     """Rewrite ``body['model']`` when capacity routing can name a credential.
 
     A disabled switch, an unconfigured sidecar, or any selection failure
-    leaves the model unchanged.
+    leaves the model unchanged. Every routed request records one
+    ``codex_lb_cliproxy_route_outcome_total`` sample and one
+    ``cliproxy_route_outcome`` log line, so a fail-open is visible.
     """
 
     _CURRENT_CHOICE.set(None)
     model = body.get("model")
     if not isinstance(model, str) or not model.strip():
         return None
+    source: CliproxyKeySource = "unknown"
     try:
         settings = await get_settings_cache().get()
         if not _routing_active(settings):
             return None
-        choice = await _select_dispatch(
-            settings,
-            model,
-            headers=headers or {},
-            client=client,
-            prompt_cache_key=prompt_cache_key_from_body(body),
+        identity = _resolve_sticky_identity(
+            hints if hints is not None else cliproxy_sticky_hints_from_body(body),
+            headers or {},
+            sticky_enabled=bool(settings.sticky_threads_enabled),
         )
+        source = identity.source
+        choice = await _select_dispatch(settings, model, client=client, identity=identity)
     except Exception:
         logger.warning("cliproxy capacity route failed; leaving model unchanged", exc_info=True)
+        _record_route_outcome("fail_open", source, model=model)
         return None
     if choice is None:
+        _record_route_outcome("no_candidate", source, model=model)
         return None
     body["model"] = choice.wire_model
     _CURRENT_CHOICE.set(choice)
-    logger.info(
-        "cliproxy capacity route=%s provider=%s auth_index=%s model=%s",
-        choice.route,
-        choice.provider,
-        choice.auth_index,
-        choice.wire_model,
-    )
+    _record_route_outcome(_route_outcome(choice), choice.key_source, model=choice.wire_model, choice=choice)
     return choice
 
 
@@ -364,39 +461,120 @@ async def rebind_cliproxy_account_route(
     *,
     client: ClaudeSidecarClient | None = None,
 ) -> CliproxyDispatchChoice | None:
-    """Move the pin off the credential that just failed and rewrite the model once."""
+    """Serve this request from another credential after a 401, 403 or 429.
+
+    The failed credential cools down for ``_COOLDOWN_SECONDS``. When the
+    conversation pin named it before this request, the pin stays and the
+    request moves to the conversation's fallback pin, so later turns return
+    to the warm account. A pin this request created has no warm cache and
+    moves to the new credential.
+    """
 
     current = _CURRENT_CHOICE.get()
     if current is None:
         return None
+    _start_cooldown(current.account_id)
     try:
         settings = await get_settings_cache().get()
         if not _routing_active(settings):
             return None
-        choice = await _select_dispatch(
-            settings,
-            current.requested_model,
-            headers={},
-            client=client,
-            exclude_account_ids=frozenset({current.account_id}),
-            sticky_key=current.sticky_key,
-            sticky_kind=current.sticky_kind,
-        )
+        choice = await _select_rebind(settings, current, client=client)
     except Exception:
         logger.warning("cliproxy capacity rebind failed", exc_info=True)
+        _record_route_outcome("fail_open", current.key_source, model=current.requested_model)
         return None
     if choice is None or choice.account_id == current.account_id:
         return None
     rebound = replace(choice, route="rebind")
     body["model"] = rebound.wire_model
     _CURRENT_CHOICE.set(rebound)
-    logger.info(
-        "cliproxy capacity route=rebind provider=%s auth_index=%s model=%s",
-        rebound.provider,
-        rebound.auth_index,
-        rebound.wire_model,
-    )
+    _record_route_outcome("rebind", rebound.key_source, model=rebound.wire_model, choice=rebound)
     return rebound
+
+
+def cliproxy_sticky_hints(
+    payload: ChatCompletionsRequest,
+    *,
+    api_key_id: str | None,
+    prompt_cache_key_derived: bool = False,
+) -> CliproxyStickyHints:
+    """Read the conversation identity from the client's chat request.
+
+    ``prompt_cache_key_derived`` marks a key the Responses bridge derived
+    itself. It still pins the conversation, but below the client's session
+    headers, the way a derived key ranks below explicit ids in CLIProxyAPI.
+    """
+
+    extra: Mapping[str, object] = payload.model_extra or {}
+    cache_key = _text_or_none(extra.get("prompt_cache_key")) or _text_or_none(extra.get("promptCacheKey"))
+    body_session_id = _body_session_id(extra)
+    if prompt_cache_key_derived:
+        return CliproxyStickyHints(body_session_id=body_session_id, derived_key=cache_key)
+    return CliproxyStickyHints(
+        prompt_cache_key=cache_key,
+        body_session_id=body_session_id,
+        derived_key=_derived_chat_key(
+            model=payload.model,
+            instructions=payload.instructions,
+            messages=payload.messages,
+            api_key_id=api_key_id,
+        ),
+    )
+
+
+def cliproxy_sticky_hints_from_body(body: Mapping[str, JsonValue]) -> CliproxyStickyHints:
+    """Hints for a caller that only has the forwarded chat body."""
+
+    model = body.get("model")
+    return CliproxyStickyHints(
+        prompt_cache_key=prompt_cache_key_from_body(body),
+        body_session_id=_body_session_id(body),
+        derived_key=_derived_chat_key(
+            model=model if isinstance(model, str) else None,
+            instructions=body.get("instructions"),
+            messages=body.get("messages"),
+            api_key_id=None,
+        ),
+    )
+
+
+def _derived_chat_key(
+    *,
+    model: str | None,
+    instructions: object,
+    messages: object,
+    api_key_id: str | None,
+) -> str | None:
+    if not get_settings().openai_prompt_cache_key_derivation_enabled:
+        return None
+    return derive_content_prompt_cache_key(
+        model=model,
+        instructions=instructions,
+        input_value=messages,
+        api_key_id=api_key_id,
+    )
+
+
+def _body_session_id(body: Mapping[str, object]) -> str | None:
+    for name in ("session_id", "sessionId"):
+        value = _text_or_none(body.get(name))
+        if value:
+            return value
+    metadata = body.get("metadata")
+    if isinstance(metadata, Mapping):
+        metadata_map = cast(Mapping[str, object], metadata)
+        for name in ("session_id", "sessionId"):
+            value = _text_or_none(metadata_map.get(name))
+            if value:
+                return value
+    return None
+
+
+def _text_or_none(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    return text or None
 
 
 def candidates_from_snapshot(
@@ -454,17 +632,13 @@ def candidates_from_api_keys(rows: Sequence[ApiKeyRouteRow]) -> list[CliproxyCan
     return built
 
 
-async def _select_dispatch(
+async def _load_candidates(
     settings: DashboardSettings,
     model: str,
-    *,
-    headers: Mapping[str, str],
     client: ClaudeSidecarClient | None,
-    prompt_cache_key: str | None = None,
+    *,
     exclude_account_ids: frozenset[str] = frozenset(),
-    sticky_key: str | None = None,
-    sticky_kind: StickySessionKind | None = None,
-) -> CliproxyDispatchChoice | None:
+) -> list[CliproxyCandidate]:
     now = datetime.now(timezone.utc)
     snapshot = _SNAPSHOTS.read(settings.claude_sidecar_quota_state_json)
     candidates = candidates_from_snapshot(snapshot, now=now)
@@ -476,53 +650,285 @@ async def _select_dispatch(
         candidates = await _attach_discovered_models(candidates, client)
     if exclude_account_ids:
         candidates = [item for item in candidates if item.account_id not in exclude_account_ids]
-    candidates = await _fill_empty_prefixes(candidates, model, client)
-    sticky_enabled = bool(settings.sticky_threads_enabled)
-    if sticky_key is None and sticky_kind is None:
-        sticky_key, sticky_kind = _sticky_identity(
-            prompt_cache_key,
-            headers,
-            sticky_enabled=sticky_enabled,
-        )
-    strategy = _routing_strategy(settings)
-    prefer_reset = bool(settings.prefer_earlier_reset_accounts)
-    reset_window = _reset_window(settings)
-    if sticky_enabled and sticky_key and sticky_kind is not None:
-        max_age = _sticky_max_age(settings, sticky_kind)
-        async with get_background_session() as session:
-            repo = _CliproxyStickyRepository(session)
-            existing_id, refresh_deadline = await repo.lookup(sticky_key, kind=sticky_kind, max_age_seconds=max_age)
-            choice, mutation = await choose_cliproxy_route(
-                candidates,
-                model=model,
-                sticky_key=sticky_key,
-                sticky_kind=sticky_kind,
-                sticky_repo=cast(StickySessionsRepository, repo),
-                sticky_enabled=True,
-                existing_account_id=existing_id,
-                refresh_skip_deadline=refresh_deadline,
-                routing_strategy=strategy,
-                prefer_earlier_reset=prefer_reset,
-                prefer_earlier_reset_window=reset_window,
-                sticky_max_age_seconds=max_age,
-                budget_threshold_pct=_primary_budget(settings),
-                secondary_budget_threshold_pct=_secondary_budget(settings),
-            )
-            await _apply_sticky_mutation(repo, sticky_key, sticky_kind, mutation)
-            await session.commit()
-        return choice
-    choice, _mutation = await choose_cliproxy_route(
-        candidates,
-        model=model,
-        sticky_key=None,
-        sticky_kind=None,
-        sticky_repo=None,
-        sticky_enabled=False,
-        routing_strategy=strategy,
-        prefer_earlier_reset=prefer_reset,
-        prefer_earlier_reset_window=reset_window,
+    return await _fill_empty_prefixes(candidates, model, client)
+
+
+def _route_params(settings: DashboardSettings) -> _RouteParams:
+    return _RouteParams(
+        strategy=_routing_strategy(settings),
+        prefer_reset=bool(settings.prefer_earlier_reset_accounts),
+        reset_window=_reset_window(settings),
+        max_age=cliproxy_sticky_max_age_seconds(settings),
+        primary_budget=_primary_budget(settings),
+        secondary_budget=_secondary_budget(settings),
     )
+
+
+async def _select_dispatch(
+    settings: DashboardSettings,
+    model: str,
+    *,
+    client: ClaudeSidecarClient | None,
+    identity: _StickyIdentity,
+) -> CliproxyDispatchChoice | None:
+    candidates = await _load_candidates(settings, model, client)
+    params = _route_params(settings)
+    usable = _without_cooling(candidates, model)
+    if identity.key is None or identity.kind is None:
+        choice, _mutation = await choose_cliproxy_route(
+            usable,
+            model=model,
+            sticky_key=None,
+            sticky_kind=None,
+            sticky_repo=None,
+            sticky_enabled=False,
+            routing_strategy=params.strategy,
+            prefer_earlier_reset=params.prefer_reset,
+            prefer_earlier_reset_window=params.reset_window,
+        )
+        if choice is None:
+            _warn_no_candidate(candidates, model)
+            return None
+        return replace(choice, key_source=identity.source)
+    async with get_background_session() as session:
+        repo = _CliproxyStickyRepository(session)
+        choice = await _route_pinned(repo, candidates, usable, model=model, identity=identity, params=params)
+    if choice is None:
+        _warn_no_candidate(candidates, model)
     return choice
+
+
+async def _route_pinned(
+    repo: _CliproxyStickyRepository,
+    candidates: list[CliproxyCandidate],
+    usable: list[CliproxyCandidate],
+    *,
+    model: str,
+    identity: _StickyIdentity,
+    params: _RouteParams,
+) -> CliproxyDispatchChoice | None:
+    """Route one request of a conversation that has a sticky key.
+
+    A pin on a credential that is cooling down after a 401/403/429, or that
+    the shared selection skips without moving the pin, is kept. The request
+    is served from the conversation's fallback pin instead, so the detour
+    also stays on one credential.
+    """
+
+    assert identity.key is not None and identity.kind is not None
+    key, kind = identity.key, identity.kind
+    existing_id, _deadline = await repo.lookup(key, kind=kind, max_age_seconds=params.max_age)
+    if existing_id is not None and existing_id in _cooling_ids():
+        fallback = await _route_fallback(
+            repo, usable, model=model, identity=identity, params=params, pinned=existing_id
+        )
+        if fallback is not None:
+            return fallback
+        # Nothing else can serve: the cooling pin still beats failing.
+        pool = candidates
+    elif existing_id is not None:
+        pool = _without_cooling(candidates, model, keep=existing_id)
+    else:
+        pool = usable
+    claim = await _claim_route(repo, pool, model=model, key=key, kind=kind, params=params)
+    if claim.choice is None:
+        return None
+    choice = replace(claim.choice, key_source=identity.source)
+    pinned = claim.observed_account_id
+    if pinned is not None and pinned != choice.account_id and claim.mutation is None:
+        # The shared selection served another credential and kept the pin
+        # (a rate-limited pin waiting for its reset).
+        fallback = await _route_fallback(repo, usable, model=model, identity=identity, params=params, pinned=pinned)
+        if fallback is not None:
+            return fallback
+    return choice
+
+
+async def _route_fallback(
+    repo: _CliproxyStickyRepository,
+    candidates: Sequence[CliproxyCandidate],
+    *,
+    model: str,
+    identity: _StickyIdentity,
+    params: _RouteParams,
+    pinned: str,
+    exclude: frozenset[str] = frozenset(),
+) -> CliproxyDispatchChoice | None:
+    assert identity.key is not None and identity.kind is not None
+    pool = [item for item in candidates if item.account_id != pinned and item.account_id not in exclude]
+    claim = await _claim_route(
+        repo,
+        pool,
+        model=model,
+        key=_fallback_key(identity.key),
+        kind=identity.kind,
+        params=params,
+    )
+    if claim.choice is None:
+        return None
+    return replace(
+        claim.choice,
+        route="rebind",
+        sticky_key=identity.key,
+        sticky_kind=identity.kind,
+        key_source=identity.source,
+        fallback=True,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class _Claim:
+    choice: CliproxyDispatchChoice | None
+    mutation: _StickyMutation | None
+    # The pin the final selection started from.
+    observed_account_id: str | None
+
+
+async def _claim_route(
+    repo: _CliproxyStickyRepository,
+    candidates: Sequence[CliproxyCandidate],
+    *,
+    model: str,
+    key: str,
+    kind: StickySessionKind,
+    params: _RouteParams,
+) -> _Claim:
+    """Choose a credential for ``key`` and write the pin with compare-and-set.
+
+    A write applies only while the row still names the account this request
+    read, names the account it chose, or has expired. When a concurrent
+    request wrote first, this request re-reads that pin and routes there.
+    CLIProxyAPI gets the same insert-if-absent result from its in-process
+    session cache; the conditional upsert makes it hold across workers.
+    """
+
+    claim = _Claim(None, None, None)
+    for _attempt in range(_CLAIM_ATTEMPTS):
+        existing_id, deadline = await repo.lookup(key, kind=kind, max_age_seconds=params.max_age)
+        choice, mutation = await choose_cliproxy_route(
+            candidates,
+            model=model,
+            sticky_key=key,
+            sticky_kind=kind,
+            sticky_repo=cast(StickySessionsRepository, repo),
+            sticky_enabled=True,
+            existing_account_id=existing_id,
+            refresh_skip_deadline=deadline,
+            routing_strategy=params.strategy,
+            prefer_earlier_reset=params.prefer_reset,
+            prefer_earlier_reset_window=params.reset_window,
+            sticky_max_age_seconds=params.max_age,
+            budget_threshold_pct=params.primary_budget,
+            secondary_budget_threshold_pct=params.secondary_budget,
+        )
+        claim = _Claim(choice, mutation, existing_id)
+        if await _apply_sticky_mutation(
+            repo,
+            key,
+            kind,
+            mutation,
+            expected_account_id=existing_id,
+            max_age_seconds=params.max_age,
+        ):
+            return claim
+        logger.info("cliproxy sticky pin changed concurrently; following the winner key_kind=%s", kind.value)
+    logger.warning("cliproxy sticky pin kept changing; serving without a pin write key_kind=%s", kind.value)
+    return _Claim(claim.choice, None, None)
+
+
+async def _select_rebind(
+    settings: DashboardSettings,
+    current: CliproxyDispatchChoice,
+    *,
+    client: ClaudeSidecarClient | None,
+) -> CliproxyDispatchChoice | None:
+    model = current.requested_model
+    failed = frozenset({current.account_id})
+    candidates = await _load_candidates(settings, model, client, exclude_account_ids=failed)
+    usable = _without_cooling(candidates, model)
+    params = _route_params(settings)
+    identity = _StickyIdentity(current.sticky_key, current.sticky_kind, current.key_source)
+    if identity.key is None or identity.kind is None:
+        choice, _mutation = await choose_cliproxy_route(
+            usable,
+            model=model,
+            sticky_key=None,
+            sticky_kind=None,
+            sticky_repo=None,
+            sticky_enabled=False,
+            routing_strategy=params.strategy,
+            prefer_earlier_reset=params.prefer_reset,
+            prefer_earlier_reset_window=params.reset_window,
+        )
+        return replace(choice, key_source=identity.source) if choice is not None else None
+    async with get_background_session() as session:
+        repo = _CliproxyStickyRepository(session)
+        if current.fallback or current.route == "sticky":
+            # The pin named a credential that served this conversation before.
+            # Keep it; the fallback pin carries the conversation meanwhile.
+            pinned = await repo.get_account_id(identity.key, kind=identity.kind, max_age_seconds=params.max_age)
+            return await _route_fallback(
+                repo,
+                usable,
+                model=model,
+                identity=identity,
+                params=params,
+                pinned=pinned or current.account_id,
+                exclude=failed,
+            )
+        # This request created the pin, so no warm cache is lost by moving it.
+        claim = await _claim_route(
+            repo,
+            usable,
+            model=model,
+            key=identity.key,
+            kind=identity.kind,
+            params=params,
+        )
+    return replace(claim.choice, key_source=identity.source) if claim.choice is not None else None
+
+
+def _resolve_sticky_identity(
+    hints: CliproxyStickyHints,
+    headers: Mapping[str, str],
+    *,
+    sticky_enabled: bool,
+) -> _StickyIdentity:
+    """Pick the conversation identity, strongest client signal first.
+
+    The client's ``prompt_cache_key`` and the Codex headers keep their place.
+    Then come the session headers and body fields CLIProxyAPI's
+    ``ExtractSessionID`` and LiteLLM's ``session_affinity`` read, and last a
+    key derived from the conversation content.
+    """
+
+    if not sticky_enabled:
+        return _StickyIdentity(None, None, "disabled")
+    if hints.prompt_cache_key:
+        return _StickyIdentity(
+            f"cliproxy:prompt_cache:{hints.prompt_cache_key}",
+            StickySessionKind.PROMPT_CACHE,
+            "prompt_cache_key",
+        )
+    turn_state = _sticky_key_from_turn_state_header(headers)
+    if turn_state and not turn_state.startswith(("turn_", "http_turn_")):
+        return _StickyIdentity(f"cliproxy:turn:{turn_state}", StickySessionKind.STICKY_THREAD, "turn_state")
+    session_key = _sticky_key_from_session_header(headers) or _client_session_header(headers)
+    if session_key:
+        return _StickyIdentity(f"cliproxy:session:{session_key}", StickySessionKind.STICKY_THREAD, "session_header")
+    if hints.body_session_id:
+        return _StickyIdentity(
+            f"cliproxy:session:{_bounded_identity(hints.body_session_id)}",
+            StickySessionKind.STICKY_THREAD,
+            "body_session_id",
+        )
+    if hints.derived_key:
+        return _StickyIdentity(
+            f"cliproxy:derived:{hints.derived_key}",
+            StickySessionKind.PROMPT_CACHE,
+            "derived",
+        )
+    return _StickyIdentity(None, None, "none")
 
 
 def _sticky_identity_from_request(
@@ -531,30 +937,133 @@ def _sticky_identity_from_request(
     headers: Mapping[str, str],
     sticky_enabled: bool,
 ) -> tuple[str | None, StickySessionKind | None]:
-    if not sticky_enabled:
-        return None, None
-    cache_key = model_body_key.strip() if isinstance(model_body_key, str) and model_body_key.strip() else ""
-    if cache_key:
-        return f"cliproxy:prompt_cache:{cache_key}", StickySessionKind.PROMPT_CACHE
-    turn_state = _sticky_key_from_turn_state_header(headers)
-    if turn_state and not turn_state.startswith(("turn_", "http_turn_")):
-        return f"cliproxy:turn:{turn_state}", StickySessionKind.STICKY_THREAD
-    session_key = _sticky_key_from_session_header(headers)
-    if session_key:
-        return f"cliproxy:session:{session_key}", StickySessionKind.STICKY_THREAD
-    return None, None
-
-
-def _sticky_identity(
-    prompt_cache_key: str | None,
-    headers: Mapping[str, str],
-    *,
-    sticky_enabled: bool,
-) -> tuple[str | None, StickySessionKind | None]:
-    return _sticky_identity_from_request(
-        model_body_key=prompt_cache_key,
-        headers=headers,
+    identity = _resolve_sticky_identity(
+        CliproxyStickyHints(prompt_cache_key=_text_or_none(model_body_key)),
+        headers,
         sticky_enabled=sticky_enabled,
+    )
+    return identity.key, identity.kind
+
+
+def _client_session_header(headers: Mapping[str, str]) -> str | None:
+    normalized = {key.lower(): value for key, value in headers.items()}
+    for name in _CLIENT_SESSION_HEADERS:
+        value = _text_or_none(normalized.get(name))
+        if value:
+            return _bounded_identity(value)
+    for name in sorted(normalized):
+        if not _VENDOR_SESSION_HEADER.match(name):
+            continue
+        value = _text_or_none(normalized.get(name))
+        if value:
+            return _bounded_identity(value)
+    return None
+
+
+def _bounded_identity(value: str) -> str:
+    """Keep a client id as the key unless it is too long for one."""
+
+    if len(value) <= _IDENTITY_MAX_CHARS:
+        return value
+    return "sha256:" + hashlib.sha256(value.encode()).hexdigest()
+
+
+def _fallback_key(key: str) -> str:
+    return f"{key}{_FALLBACK_KEY_SUFFIX}"
+
+
+def _start_cooldown(account_id: str) -> None:
+    _COOLING[account_id] = time.monotonic() + _COOLDOWN_SECONDS
+
+
+def _cooling_ids() -> frozenset[str]:
+    now = time.monotonic()
+    for account_id in [item for item, until in _COOLING.items() if until <= now]:
+        _COOLING.pop(account_id, None)
+    return frozenset(_COOLING)
+
+
+def forget_cooldowns() -> None:
+    _COOLING.clear()
+
+
+def _without_cooling(
+    candidates: list[CliproxyCandidate],
+    model: str,
+    *,
+    keep: str | None = None,
+) -> list[CliproxyCandidate]:
+    """Skip cooling credentials unless no other credential serves ``model``.
+
+    ``keep`` names the conversation's pin, which stays eligible.
+    """
+
+    cooling = _cooling_ids() - {keep}
+    if not cooling:
+        return candidates
+    remaining = [item for item in candidates if item.account_id not in cooling]
+    return remaining if _serving_candidates(remaining, model) else candidates
+
+
+def _serving_candidates(candidates: Sequence[CliproxyCandidate], model: str) -> list[CliproxyCandidate]:
+    known_prefixes = _known_credential_prefixes(candidates)
+    return [
+        item
+        for item in candidates
+        if prefix_or_none(item.prefix)
+        and item.weight > 0
+        and candidate_serves_model(item, model, known_prefixes=known_prefixes)
+    ]
+
+
+def _route_outcome(choice: CliproxyDispatchChoice) -> CliproxyRouteOutcome:
+    if choice.sticky_key is None:
+        return "unpinned_no_key"
+    return choice.route
+
+
+def _record_route_outcome(
+    outcome: CliproxyRouteOutcome,
+    key_source: CliproxyKeySource,
+    *,
+    model: str,
+    choice: CliproxyDispatchChoice | None = None,
+) -> None:
+    if cliproxy_route_outcome_total is not None:
+        cliproxy_route_outcome_total.labels(outcome=outcome, key_source=key_source).inc()
+    if choice is None:
+        logger.warning("cliproxy_route_outcome outcome=%s key_source=%s model=%s", outcome, key_source, model)
+        return
+    logger.info(
+        "cliproxy_route_outcome outcome=%s key_source=%s route=%s provider=%s auth_index=%s model=%s",
+        outcome,
+        key_source,
+        choice.route,
+        choice.provider,
+        choice.auth_index,
+        model,
+    )
+
+
+def _warn_no_candidate(candidates: Sequence[CliproxyCandidate], model: str) -> None:
+    """Warn, at most once a minute per model, that no prefixed credential serves it."""
+
+    now = time.monotonic()
+    folded = model.strip().casefold()
+    last = _NO_CANDIDATE_WARNED.get(folded)
+    if last is not None and now - last < _NO_CANDIDATE_WARN_SECONDS:
+        return
+    _NO_CANDIDATE_WARNED[folded] = now
+    _NO_CANDIDATE_WARNED.move_to_end(folded)
+    while len(_NO_CANDIDATE_WARNED) > _NO_CANDIDATE_WARN_LIMIT:
+        _NO_CANDIDATE_WARNED.popitem(last=False)
+    prefixed = [item for item in candidates if prefix_or_none(item.prefix)]
+    logger.warning(
+        "cliproxy capacity routing found no prefixed credential for model=%s credentials=%s prefixed=%s; "
+        "CLIProxyAPI selects the credential itself",
+        model,
+        len(candidates),
+        len(prefixed),
     )
 
 
@@ -649,15 +1158,6 @@ def _primary_budget(settings: DashboardSettings) -> float:
 
 def _secondary_budget(settings: DashboardSettings) -> float:
     return float(settings.sticky_reallocation_secondary_budget_threshold_pct)
-
-
-def _sticky_max_age(settings: DashboardSettings, kind: StickySessionKind | None) -> int | None:
-    if kind not in {StickySessionKind.PROMPT_CACHE, StickySessionKind.STICKY_THREAD}:
-        return None
-    raw = settings.http_responses_session_bridge_prompt_cache_idle_ttl_seconds
-    if raw > 0:
-        return raw
-    return 3600
 
 
 def _model_family(model: str) -> str | None:
@@ -950,7 +1450,7 @@ async def _store_prefix_if_empty(
 
 
 class _CliproxyStickyRepository:
-    """Sticky lookup for credential ids that are not ``accounts`` rows."""
+    """Sticky pins for credential ids that are not ``accounts`` rows."""
 
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
@@ -972,9 +1472,19 @@ class _CliproxyStickyRepository:
         kind: StickySessionKind,
         max_age_seconds: int | None = None,
     ) -> tuple[str | None, datetime | None]:
+        """Read the live pin, bypassing the session cache.
+
+        A compare-and-set retry must see the row another worker just wrote.
+        """
+
         if kind == StickySessionKind.CODEX_SESSION:
             return None, None
-        row = await self._session.get(CliproxyStickySession, (key, kind.value))
+        statement = (
+            select(CliproxyStickySession)
+            .where(CliproxyStickySession.key == key, CliproxyStickySession.kind == kind.value)
+            .execution_options(populate_existing=True)
+        )
+        row = (await self._session.execute(statement)).scalar_one_or_none()
         if row is None:
             return None, None
         updated = to_utc_naive(row.updated_at)
@@ -986,14 +1496,34 @@ class _CliproxyStickyRepository:
             deadline = _refresh_skip_deadline(updated, now=now, max_age_seconds=max_age_seconds)
         return row.account_id, deadline
 
-    async def upsert(self, key: str, account_id: str, kind: StickySessionKind) -> None:
+    async def claim(
+        self,
+        key: str,
+        account_id: str,
+        kind: StickySessionKind,
+        *,
+        expected_account_id: str | None,
+        max_age_seconds: int | None,
+    ) -> bool:
+        """Write the pin unless another request changed it since this one read it.
+
+        The write applies when the row is absent, still names
+        ``expected_account_id``, already names ``account_id``, or has expired.
+        Returns whether the row now names ``account_id``.
+        """
+
         if kind == StickySessionKind.CODEX_SESSION:
-            return
-        now = datetime.now(timezone.utc)
+            return True
         dialect = self._session.get_bind().dialect.name
-        insert_fn = pg_insert if dialect == "postgresql" else sqlite_insert
         if dialect not in {"postgresql", "sqlite"}:
             raise RuntimeError(f"CLIProxy sticky upsert unsupported for dialect={dialect!r}")
+        insert_fn = pg_insert if dialect == "postgresql" else sqlite_insert
+        now = datetime.now(timezone.utc)
+        owners = [account_id] if expected_account_id is None else [expected_account_id, account_id]
+        conditions = [CliproxyStickySession.account_id.in_(owners)]
+        if max_age_seconds is not None:
+            stale_before = to_utc_naive(now - timedelta(seconds=max_age_seconds))
+            conditions.append(CliproxyStickySession.updated_at < stale_before)
         statement = insert_fn(CliproxyStickySession).values(
             key=key,
             kind=kind.value,
@@ -1003,13 +1533,26 @@ class _CliproxyStickyRepository:
         statement = statement.on_conflict_do_update(
             index_elements=[CliproxyStickySession.key, CliproxyStickySession.kind],
             set_={"account_id": account_id, "updated_at": now},
-        )
-        await self._session.execute(statement)
+            where=or_(*conditions),
+        ).returning(CliproxyStickySession.account_id)
+        async with sqlite_writer_section():
+            written = (await self._session.execute(statement)).scalar_one_or_none()
+            await self._session.commit()
+        return written == account_id
 
-    async def delete(self, key: str, kind: StickySessionKind) -> None:
-        row = await self._session.get(CliproxyStickySession, (key, kind.value))
-        if row is not None:
-            await self._session.delete(row)
+    async def release(self, key: str, kind: StickySessionKind, *, expected_account_id: str | None) -> None:
+        """Delete the pin only while it still names the account this request read."""
+
+        if expected_account_id is None:
+            return
+        statement = delete(CliproxyStickySession).where(
+            CliproxyStickySession.key == key,
+            CliproxyStickySession.kind == kind.value,
+            CliproxyStickySession.account_id == expected_account_id,
+        )
+        async with sqlite_writer_section():
+            await self._session.execute(statement)
+            await self._session.commit()
 
 
 async def _apply_sticky_mutation(
@@ -1017,15 +1560,26 @@ async def _apply_sticky_mutation(
     key: str | None,
     kind: StickySessionKind | None,
     mutation: _StickyMutation | None,
-) -> None:
+    *,
+    expected_account_id: str | None,
+    max_age_seconds: int | None,
+) -> bool:
+    """Persist the selection's pin change; ``False`` when a concurrent write won."""
+
     if key is None or kind is None or mutation is None:
-        return
+        return True
     if mutation.account_id is None:
-        await repo.delete(key, kind)
-        return
+        await repo.release(key, kind, expected_account_id=expected_account_id)
+        return True
     if _sticky_refresh_write_skippable(mutation, initialize_seed_key=None):
-        return
-    await repo.upsert(key, mutation.account_id, kind)
+        return True
+    return await repo.claim(
+        key,
+        mutation.account_id,
+        kind,
+        expected_account_id=expected_account_id,
+        max_age_seconds=max_age_seconds,
+    )
 
 
 def _refresh_skip_deadline(updated_at: datetime, *, now: datetime, max_age_seconds: int) -> datetime | None:
