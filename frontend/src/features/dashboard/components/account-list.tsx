@@ -532,26 +532,53 @@ function CliproxyAuthListRow({
   auth: SidecarAuthAccount;
   index: number;
 }) {
+  const { t } = useTranslation();
   const title = auth.email ?? auth.name;
   const windows = auth.quotaWindows ?? [];
+  const status = auth.paused
+    ? normalizeStatus("paused")
+    : auth.quotaExceeded
+      ? normalizeStatus("quota_exceeded")
+      : normalizeStatus(auth.status ?? account.status);
   return (
     <div
       data-testid="account-list-row"
-      className="grid min-h-[4.5rem] items-center gap-3 px-3 py-2 text-sm"
+      className={cn("grid min-h-[4.5rem] items-center gap-3 px-3 py-2 text-sm", auth.paused && "opacity-60")}
       style={{ animationDelay: `${index * 50}ms`, gridTemplateColumns: ACCOUNT_LIST_COLUMNS }}
     >
       <div className="min-w-0">
         <p className="truncate font-medium leading-tight">{title}</p>
-        <p className="mt-1 truncate text-xs text-muted-foreground">{formatSlug(auth.provider ?? account.provider ?? "unknown")}</p>
+        <p className="mt-1 truncate text-xs text-muted-foreground">
+          {formatSlug(auth.provider ?? account.provider ?? "unknown")} · CLIProxyAPI
+        </p>
       </div>
-      <StatusBadge status={normalizeStatus(auth.status ?? account.status)} />
+      <StatusBadge status={status} />
       <span className="text-xs text-muted-foreground">{formatSlug(account.provider ?? "unknown")}</span>
-      <div className="text-xs text-muted-foreground">
-        {windows.length > 0
-          ? windows.map((window) => `${window.label} ${formatPercentNullable(window.percentRemaining)}`).join(" · ")
-          : "Quota unknown"}
-      </div>
-      <span className="text-xs text-muted-foreground">Models unknown</span>
+      {windows.length > 0 ? (
+        <div className="grid gap-1.5 text-xs">
+          {windows.map((window) => (
+            <div
+              key={window.id}
+              className="grid grid-cols-[2.75rem_minmax(3rem,auto)_minmax(2.75rem,0.45fr)_minmax(0,1fr)] items-center gap-2"
+            >
+              <span className="truncate text-muted-foreground">{window.label}</span>
+              <span className="font-medium tabular-nums text-foreground">
+                {formatPercentNullable(window.percentRemaining)}
+              </span>
+              <QuotaMeter percent={window.percentRemaining} />
+              <span className="inline-flex min-w-0 items-center gap-1 text-[11px] text-muted-foreground">
+                <Clock className="h-3 w-3 shrink-0" aria-hidden="true" />
+                <span className="truncate">{formatQuotaResetLabel(window.resetsAt ?? null)}</span>
+              </span>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <span className="text-xs text-muted-foreground">{t("dashboard.cliproxyAuth.quotaUnknown")}</span>
+      )}
+      <span className="text-xs text-muted-foreground" title={t("dashboard.cliproxyAuth.modelsHint")}>
+        {t("dashboard.cliproxyAuth.modelsInSettings")}
+      </span>
       <span className="text-muted-foreground">-</span>
       <span className="text-muted-foreground">-</span>
       <span className="text-muted-foreground">-</span>
