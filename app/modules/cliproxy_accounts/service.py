@@ -95,6 +95,7 @@ from app.modules.cliproxy_accounts.validation import (
     reject_duplicate_prefix,
 )
 from app.modules.proxy.claude_sidecar_dispatch import sidecar_config_from_settings
+from app.modules.proxy.cliproxy_account_routing import forget_remembered_prefixes
 from app.modules.proxy.sidecar_routing import parse_sidecar_full_models
 from app.modules.settings.repository import SettingsRepository
 
@@ -348,6 +349,8 @@ class CliproxyAccountsService:
             raise DashboardServiceUnavailableError(public_message(exc.message)) from exc
         except ClaudeSidecarError as exc:
             _raise_management_error(exc)
+        if write.update_prefix and write.prefix:
+            forget_remembered_prefixes()
         _audit_api_key("cliproxy_api_key_updated", account)
         return account
 
@@ -462,6 +465,7 @@ class CliproxyAccountsService:
                     await _send_auth_file_fields(client, name, payload)
             except PrefixWriteLockTimeout as exc:
                 raise DashboardConflictError("Another CLIProxyAPI prefix update is in progress") from exc
+            forget_remembered_prefixes()
             return
         await _send_auth_file_fields(client, name, payload)
 

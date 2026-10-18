@@ -14,6 +14,7 @@ from app.db.models import AccountStatus, StickySessionKind
 from app.modules.claude_sidecar.quota import SidecarAuthQuota, SidecarModelQuota, SidecarQuotaSnapshot
 from app.modules.cliproxy_accounts.api_keys import (
     API_KEY_KINDS,
+    ApiKeyRouteRow,
     api_key_account_id,
     api_key_route_identity,
     set_api_key_prefix_if_empty,
@@ -25,6 +26,7 @@ from app.modules.proxy.cliproxy_account_routing import (
     CliproxyCandidate,
     apply_cliproxy_account_route,
     candidate_serves_model,
+    candidates_from_api_keys,
     candidates_from_snapshot,
     choose_cliproxy_route,
     cliproxy_log_attribution,
@@ -520,3 +522,36 @@ async def test_prefix_fill_does_not_write_a_deleted_identity_onto_the_neighbor()
 
     assert stored is None
     assert written == []
+
+
+def _api_key_row(index: int, route_identity: str, *, models: tuple[str, ...] = ("model-a",)) -> ApiKeyRouteRow:
+    return ApiKeyRouteRow(
+        kind="claude",
+        index=index,
+        name=f"key-{index}",
+        prefix=None,
+        disabled=False,
+        models=models,
+        auth_index=None,
+        weight=None,
+        priority=None,
+        route_identity=route_identity,
+    )
+
+
+def test_remembered_prefix_does_not_follow_a_shifted_api_key_index() -> None:
+    deleted = candidates_from_api_keys([_api_key_row(0, "identity-a", models=("model-a",))])[0]
+    shifted = candidates_from_api_keys([_api_key_row(0, "identity-b", models=("model-b",))])[0]
+    routing._remember_prefix(deleted.account_id, "from-a")
+
+    filled = routing._with_remembered_prefixes([shifted])
+
+    assert deleted.account_id != shifted.account_id
+    assert filled[0].prefix is None
+
+
+def test_operator_prefix_edit_drops_remembered_prefixes() -> None:
+    routing._remember_prefix("cliproxy:xai:acct", "old")
+    routing.forget_remembered_prefixes()
+
+    assert routing._PREFIX_OVERLAY == {}

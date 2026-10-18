@@ -95,8 +95,9 @@ _MODEL_CACHE: tuple[float, dict[str, tuple[str, ...] | None]] | None = None
 _MODEL_CACHE_SECONDS = 15.0
 _LAST_SELECTED: OrderedDict[str, float] = OrderedDict()
 _LAST_SELECTED_LIMIT = 1024
-_PREFIX_OVERLAY: OrderedDict[str, str] = OrderedDict()
+_PREFIX_OVERLAY: OrderedDict[str, tuple[float, str]] = OrderedDict()
 _PREFIX_OVERLAY_LIMIT = 256
+_PREFIX_OVERLAY_SECONDS = 60.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -421,7 +422,7 @@ def candidates_from_api_keys(rows: Sequence[ApiKeyRouteRow]) -> list[CliproxyCan
     built: list[CliproxyCandidate] = []
     for row in rows:
         provider = "openai-compatibility" if row.kind == "openai-compatibility" else row.kind
-        identity = row.auth_index or f"{row.kind}:{row.index}"
+        identity = row.auth_index or row.route_identity
         status = AccountStatus.PAUSED if row.disabled else AccountStatus.ACTIVE
         state = AccountState(
             account_id=f"cliproxy:{provider}:key:{identity}",
@@ -783,29 +784,55 @@ def _remember_selection(account_id: str) -> None:
         _LAST_SELECTED.popitem(last=False)
 
 
+def forget_remembered_prefixes() -> None:
+    """Drop prefixes this process stored after an operator changes one.
+
+    The quota snapshot can still show an empty prefix. Forgetting the overlay
+    sends the next request through the locked management read, which sees the
+    prefix just written.
+    """
+
+    _PREFIX_OVERLAY.clear()
+
+
 def _remember_prefix(account_id: str, prefix: str) -> None:
     cleaned = prefix_or_none(prefix)
     if cleaned is None:
         return
-    _PREFIX_OVERLAY[account_id] = cleaned
+    _PREFIX_OVERLAY[account_id] = (time.monotonic(), cleaned)
     _PREFIX_OVERLAY.move_to_end(account_id)
     while len(_PREFIX_OVERLAY) > _PREFIX_OVERLAY_LIMIT:
         _PREFIX_OVERLAY.popitem(last=False)
 
 
+def _remembered_prefix(account_id: str) -> str | None:
+    remembered = _PREFIX_OVERLAY.get(account_id)
+    if remembered is None:
+        return None
+    stored_at, prefix = remembered
+    if time.monotonic() - stored_at > _PREFIX_OVERLAY_SECONDS:
+        _PREFIX_OVERLAY.pop(account_id, None)
+        return None
+    _PREFIX_OVERLAY.move_to_end(account_id)
+    return prefix
+
+
 def _with_remembered_prefixes(candidates: list[CliproxyCandidate]) -> list[CliproxyCandidate]:
-    """Fill empty snapshot prefixes from assignments this process already stored."""
+    """Fill empty snapshot prefixes from assignments this process already stored.
+
+    API-key account ids use ``route_identity`` when CLIProxyAPI did not assign
+    an auth index, so a list deletion cannot reuse a neighbor's remembered prefix.
+    """
 
     updated: list[CliproxyCandidate] = []
     for item in candidates:
         if prefix_or_none(item.prefix) is not None:
             updated.append(item)
             continue
-        remembered = _PREFIX_OVERLAY.get(item.account_id)
+        remembered = _remembered_prefix(item.account_id)
         if remembered is None:
             updated.append(item)
             continue
-        _PREFIX_OVERLAY.move_to_end(item.account_id)
         updated.append(replace(item, prefix=remembered))
     return updated
 
