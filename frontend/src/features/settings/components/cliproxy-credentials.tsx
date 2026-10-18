@@ -605,6 +605,7 @@ function ApiKeyAccountCard({
     models?: string[];
     disabled?: boolean | null;
     prefix?: string;
+    supportPromptCacheKey?: boolean;
   }) => void;
   onDelete: () => void;
   onAddModel: (model: string) => void;
@@ -672,6 +673,7 @@ function ApiKeyAccountCard({
         <div className="min-w-0">
           <p className="truncate text-sm font-medium">{label}</p>
           <p className="truncate font-mono text-xs text-muted-foreground">{account.baseUrl || "Base URL unknown"}</p>
+          {account.group ? <p className="truncate text-xs text-muted-foreground">Group {account.group}</p> : null}
           {account.prefix ? <p className="font-mono text-xs text-muted-foreground">{account.prefix}</p> : null}
         </div>
         <div className="flex flex-wrap items-center gap-1.5">
@@ -699,6 +701,33 @@ function ApiKeyAccountCard({
             }
           />
         </label>
+      ) : null}
+      {account.supportPromptCacheKey != null ? (
+        <div className="space-y-1">
+          <label className="flex items-center justify-between gap-3 text-sm font-medium" htmlFor={`cliproxy-api-key-cache-key-${account.id}`}>
+            Send prompt cache key
+            <Switch
+              id={`cliproxy-api-key-cache-key-${account.id}`}
+              checked={account.supportPromptCacheKey}
+              disabled={busy}
+              aria-label={`Send prompt cache key for ${label}`}
+              onCheckedChange={(checked) =>
+                onSave({
+                  kind: account.kind,
+                  accountId: account.id,
+                  baseUrl: account.baseUrl,
+                  supportPromptCacheKey: checked,
+                })
+              }
+            />
+          </label>
+          <p className="text-xs text-muted-foreground">
+            {(account.keyCount ?? 1) > 1
+              ? `Routing pins this group, not one of its ${account.keyCount} keys. `
+              : ""}
+            Adds a stable prompt_cache_key upstream so the provider can reuse its cache. Turn on only if the upstream accepts the field.
+          </p>
+        </div>
       ) : null}
       {discovered.length > 0 ? (
         <ModelChips models={discovered} shared={shared} catalog={catalog} busy={busy} onAdd={onAddModel} label={label} />

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import copy
+import hashlib
 import json
 from collections.abc import Awaitable, Callable, Mapping
 from datetime import datetime, timedelta, timezone
@@ -22,6 +24,7 @@ from app.modules.claude_sidecar.quota import (
     SidecarRateLimitHold,
     snapshot_to_json,
 )
+from app.modules.cliproxy_accounts.management import ManagementResponse
 from app.modules.cliproxy_accounts.oauth_flow import reset_oauth_completion
 from app.modules.cliproxy_accounts.refresh_jobs import reset_refresh_jobs
 from app.modules.settings.repository import SettingsRepository
@@ -44,8 +47,11 @@ class _FakeClient:
     status_error: Exception | None = None
     list_delay_seconds: float = 0.0
     api_key_lists: dict[str, list[dict[str, JsonValue]]] = {}
-    management_calls: list[tuple[str, str, Mapping[str, JsonValue] | None]] = []
+    management_calls: list[tuple[str, str, JsonValue | None]] = []
     management_get_hook: Callable[[], Awaitable[None]] | None = None
+    if_match_seen: list[str | None] = []
+    config_version: int = 0
+    conflicts: int = 0
 
     def __init__(self, _config) -> None:
         pass
@@ -78,33 +84,79 @@ class _FakeClient:
         if self.status_error is not None:
             raise self.status_error
 
-    async def management_request(
+    async def config_v8_request(
         self,
         method: str,
         path: str,
-        body: Mapping[str, JsonValue] | None,
-    ) -> dict[str, JsonValue]:
-        self.management_calls.append((method, path, None if body is None else dict(body)))
-        hook = type(self).management_get_hook
+        body: JsonValue | None,
+        if_match: str | None,
+    ) -> ManagementResponse:
+        """Serve CLIProxyAPI's v8 ``api-keys`` config API from ``api_key_lists``.
+
+        Like CLIProxyAPI, GET injects each live key's ``auth_index`` and returns
+        an ETag, and a write whose ``If-Match`` names an older version gets 412.
+        """
+
+        cls = type(self)
+        cls.management_calls.append((method, path, copy.deepcopy(body)))
+        hook = cls.management_get_hook
         if method == "GET" and hook is not None:
             await hook()
-        route, _, query = path.partition("?")
-        key = route.rsplit("/", 1)[-1]
+        etag = f'"v{cls.config_version}"'
         if method == "GET":
-            return {key: [dict(item) for item in self.api_key_lists.get(key, [])]}
+            assert path == "/v8/management/config/api-keys"
+            tree = {
+                family: [_inject_auth_index(family, group) for group in groups]
+                for family, groups in cls.api_key_lists.items()
+            }
+            return ManagementResponse(status=200, etag=etag, body=tree)
         if method == "PUT":
-            raw_items = [] if body is None else body.get("items")
-            items = [dict(item) for item in raw_items if isinstance(item, dict)] if isinstance(raw_items, list) else []
-            self.api_key_lists[key] = items
-            return {"status": "ok"}
-        if method == "DELETE":
-            index = int(query.removeprefix("index="))
-            current = list(self.api_key_lists.get(key, []))
-            if 0 <= index < len(current):
-                del current[index]
-            self.api_key_lists[key] = current
-            return {}
+            cls.if_match_seen.append(if_match)
+            family = path.rsplit("/", 1)[-1]
+            if cls.conflicts > 0:
+                cls.conflicts -= 1
+                cls.config_version += 1
+                return ManagementResponse(
+                    status=412, etag=f'"v{cls.config_version}"', body={"error": "precondition_failed"}
+                )
+            if if_match is not None and if_match != etag:
+                return ManagementResponse(status=412, etag=etag, body={"error": "precondition_failed"})
+            assert isinstance(body, list)
+            for group in body:
+                assert isinstance(group, dict)
+                assert "auth_index" not in group
+                for key in group.get("keys") or []:
+                    assert "auth_index" not in key
+            cls.api_key_lists[family] = copy.deepcopy(body)
+            cls.config_version += 1
+            return ManagementResponse(status=200, etag=None, body={"status": "ok"})
         raise AssertionError(method)
+
+
+_SEED_KINDS = {
+    "openai-compatibility": "openai-compatibility",
+    "claude": "claude-api-key",
+    "gemini": "gemini-api-key",
+    "codex": "codex-api-key",
+    "xai": "xai-api-key",
+}
+
+
+def _auth_index(family: str, base_url: str, api_key: str) -> str:
+    """CLIProxyAPI's ``stableAuthIndex`` for an API-key credential."""
+
+    return hashlib.sha256(f"{_SEED_KINDS[family]}:{base_url}+{api_key}".encode()).hexdigest()[:16]
+
+
+def _inject_auth_index(family: str, group: dict[str, JsonValue]) -> dict[str, JsonValue]:
+    copied = copy.deepcopy(group)
+    if family == "openai-compatibility" and copied.get("disabled") is True:
+        return copied
+    base_url = str(copied.get("base-url") or "")
+    for key in copied.get("keys") or []:
+        if isinstance(key, dict) and key.get("api-key"):
+            key["auth_index"] = _auth_index(family, base_url, str(key["api-key"]))
+    return copied
 
 
 def _reset_fake() -> None:
@@ -118,6 +170,9 @@ def _reset_fake() -> None:
     _FakeClient.api_key_lists = {}
     _FakeClient.management_calls = []
     _FakeClient.management_get_hook = None
+    _FakeClient.config_version = 0
+    _FakeClient.conflicts = 0
+    _FakeClient.if_match_seen = []
     _FakeClient.files = [
         {
             "name": "claude-a.json",
@@ -1079,11 +1134,12 @@ async def test_guest_cannot_sign_in_refresh_upload_or_delete(app_instance, monke
 @pytest.mark.asyncio
 async def test_api_key_accounts_are_edited_without_returning_the_key(async_client, monkeypatch):
     _install(monkeypatch)
+    router_index = _auth_index("openai-compatibility", "https://openrouter.ai/api/v1", "sk-old")
     _FakeClient.files.append(
         {
             "id": "runtime-openrouter.json",
             "name": "runtime-openrouter.json",
-            "auth_index": "k1",
+            "auth_index": router_index,
             "provider": "openai-compatibility",
             "runtime_only": True,
             "status": "active",
@@ -1094,11 +1150,10 @@ async def test_api_key_accounts_are_edited_without_returning_the_key(async_clien
         {
             "name": "openrouter",
             "base-url": "https://openrouter.ai/api/v1",
-            "api-key-entries": [{"api-key": "sk-old"}],
+            "keys": [{"api-key": "sk-old"}],
             "models": [{"name": "openai/gpt-4o", "alias": "grok-4"}],
             "prefix": "keep-me",
             "disabled": False,
-            "auth-index": "k1",
         }
     ]
     await _ready(async_client)
@@ -1115,8 +1170,10 @@ async def test_api_key_accounts_are_edited_without_returning_the_key(async_clien
     assert account["name"] == "openrouter"
     assert account["hasApiKey"] is True
     assert account["prefix"] == "keep-me"
+    assert account["authIndex"] == router_index
     assert account["discoveredModels"] == ["openrouter/auto"]
     assert account["supportsDisable"] is True
+    assert account["supportPromptCacheKey"] is False
     assert account["id"]
 
     updated = await async_client.patch(
@@ -1132,9 +1189,10 @@ async def test_api_key_accounts_are_edited_without_returning_the_key(async_clien
     assert updated.status_code == 200
     assert "sk-old" not in updated.text
     put = next(call for call in _FakeClient.management_calls if call[0] == "PUT")
-    stored = put[2]["items"][0]
+    assert put[1] == "/v8/management/config/api-keys/openai-compatibility"
+    stored = _FakeClient.api_key_lists["openai-compatibility"][0]
     assert stored["prefix"] == "keep-me"
-    assert stored["api-key-entries"][0]["api-key"] == "sk-old"
+    assert stored["keys"] == [{"api-key": "sk-old"}]
     assert stored["models"] == [{"name": "other-model", "alias": "other-model"}]
 
     created = await async_client.post(
@@ -1172,7 +1230,7 @@ async def test_api_key_accounts_are_edited_without_returning_the_key(async_clien
     )
     assert removed.status_code == 200
     assert removed.json()["deleted"] is True
-    assert _FakeClient.api_key_lists["openai-compatibility"][0]["name"] == "second"
+    assert [group["name"] for group in _FakeClient.api_key_lists["openai-compatibility"]] == ["second"]
 
 
 @pytest.mark.asyncio
@@ -1182,7 +1240,7 @@ async def test_api_key_saves_keep_mappings_spaced_names_and_reject_stale_ids(asy
         {
             "name": "My OpenRouter",
             "base-url": "https://openrouter.ai/api/v1",
-            "api-key-entries": [{"api-key": "sk-old"}],
+            "keys": [{"api-key": "sk-old"}],
             "models": [{"name": "upstream-model", "alias": "friendly-model"}],
             "prefix": "keep-me",
             "disabled": False,
@@ -1190,20 +1248,20 @@ async def test_api_key_saves_keep_mappings_spaced_names_and_reject_stale_ids(asy
         {
             "name": "second",
             "base-url": "https://b.example/v1",
-            "api-key-entries": [{"api-key": "sk-b"}],
+            "keys": [{"api-key": "sk-b"}],
             "models": [{"name": "other", "alias": "other"}],
         },
         {
             "name": "third",
             "base-url": "https://c.example/v1",
-            "api-key-entries": [{"api-key": "sk-c"}],
+            "keys": [{"api-key": "sk-c"}],
             "models": [{"name": "third-model", "alias": "third-model"}],
         },
     ]
     await _ready(async_client)
     listed = await async_client.get("/api/cliproxy/accounts")
     accounts = listed.json()["apiKeys"]
-    first, second, third = accounts
+    first, second, _third = accounts
 
     url_only = await async_client.patch(
         "/api/cliproxy/api-keys/openai-compatibility/0",
@@ -1219,8 +1277,11 @@ async def test_api_key_saves_keep_mappings_spaced_names_and_reject_stale_ids(asy
     assert stored["name"] == "My OpenRouter"
     assert stored["models"] == [{"name": "upstream-model", "alias": "friendly-model"}]
     assert stored["prefix"] == "keep-me"
-    assert stored["api-key-entries"][0]["api-key"] == "sk-old"
+    assert stored["keys"] == [{"api-key": "sk-old"}]
     assert stored["disabled"] is True
+    # A disabled group has no live credential, so CLIProxyAPI reports no
+    # auth_index; the locally computed one must equal the live value.
+    assert url_only.json()["authIndex"] is None
 
     renamed = await async_client.patch(
         "/api/cliproxy/api-keys/openai-compatibility/0",
@@ -1292,40 +1353,39 @@ async def test_api_key_saves_keep_mappings_spaced_names_and_reject_stale_ids(asy
 @pytest.mark.asyncio
 async def test_api_key_ids_distinguish_credentials_and_keep_crossed_aliases(async_client, monkeypatch):
     _install(monkeypatch)
-    shared = {
-        "base-url": "https://api.anthropic.com",
-        "models": [{"name": "claude-sonnet", "alias": "claude-sonnet"}],
-    }
-    _FakeClient.api_key_lists["claude-api-key"] = [
-        {"api-key": "sk-one", **shared},
-        {"api-key": "sk-two", **shared},
+    _FakeClient.api_key_lists["claude"] = [
+        {
+            "name": "shared-pool",
+            "base-url": "https://api.anthropic.com",
+            "keys": [{"api-key": "sk-one"}, {"api-key": "sk-two"}],
+            "models": [{"name": "claude-sonnet", "alias": "claude-sonnet"}],
+        },
     ]
     _FakeClient.api_key_lists["openai-compatibility"] = [
         {
             "name": "router",
             "base-url": "https://openrouter.ai/api/v1",
-            "api-key-entries": [{"api-key": "sk-router-a"}],
+            "keys": [{"api-key": "sk-router-a"}],
             "models": [
                 {"name": "upstream-a", "alias": "public-a"},
                 {"name": "upstream-b", "alias": "upstream-a"},
             ],
         },
         {
-            "name": "router",
+            "name": "router-b",
             "base-url": "https://openrouter.ai/api/v1",
-            "api-key-entries": [{"api-key": "sk-router-b"}],
+            "keys": [{"api-key": "sk-router-b"}],
             "models": [{"name": "shared", "alias": "shared"}],
         },
     ]
     await _ready(async_client)
     listed = await async_client.get("/api/cliproxy/accounts")
     assert listed.status_code == 200
-    assert "sk-one" not in listed.text
-    assert "sk-two" not in listed.text
-    assert "sk-router-a" not in listed.text
-    assert "sk-router-b" not in listed.text
+    for secret in ("sk-one", "sk-two", "sk-router-a", "sk-router-b"):
+        assert secret not in listed.text
     claude = [account for account in listed.json()["apiKeys"] if account["kind"] == "claude"]
     routers = [account for account in listed.json()["apiKeys"] if account["kind"] == "openai-compatibility"]
+    assert [account["group"] for account in claude] == ["shared-pool", "shared-pool"]
     assert claude[0]["id"] != claude[1]["id"]
     assert routers[0]["id"] != routers[1]["id"]
 
@@ -1344,10 +1404,15 @@ async def test_api_key_ids_distinguish_credentials_and_keep_crossed_aliases(asyn
         },
     )
     assert stale.status_code == 409
-    survivor = _FakeClient.api_key_lists["claude-api-key"]
-    assert len(survivor) == 1
-    assert survivor[0]["api-key"] == "sk-two"
-    assert survivor[0]["base-url"] == "https://api.anthropic.com"
+    # Deleting one key of a group keeps the group, its name, and its other key.
+    assert _FakeClient.api_key_lists["claude"] == [
+        {
+            "name": "shared-pool",
+            "base-url": "https://api.anthropic.com",
+            "keys": [{"api-key": "sk-two"}],
+            "models": [{"name": "claude-sonnet", "alias": "claude-sonnet"}],
+        },
+    ]
 
     rotated = await async_client.patch(
         "/api/cliproxy/api-keys/openai-compatibility/1",
@@ -1371,7 +1436,7 @@ async def test_api_key_ids_distinguish_credentials_and_keep_crossed_aliases(asyn
     )
     assert stale_router.status_code == 409
     stored_router = _FakeClient.api_key_lists["openai-compatibility"][1]
-    assert stored_router["api-key-entries"][0]["api-key"] == "sk-router-next"
+    assert stored_router["keys"] == [{"api-key": "sk-router-next"}]
     assert stored_router["base-url"] == "https://openrouter.ai/api/v1"
 
     merged = await async_client.patch(
@@ -1432,8 +1497,321 @@ async def test_overlapping_api_key_creates_keep_both_accounts(async_client, monk
 
     names = [item["name"] for item in _FakeClient.api_key_lists["openai-compatibility"]]
     assert names == ["alpha", "beta"]
-    methods = [call[0] for call in _FakeClient.management_calls if call[0] in {"GET", "PUT"}]
-    assert methods == ["GET", "PUT", "GET", "PUT"]
+    writes = [call[0] for call in _FakeClient.management_calls if call[0] == "PUT"]
+    assert writes == ["PUT", "PUT"]
+
+
+def _named_group_config() -> dict[str, list[dict[str, JsonValue]]]:
+    """The audit's named-group layout: named groups, a multi-key group, extra fields."""
+
+    return {
+        "claude": [
+            {
+                "name": "my-team-key",
+                "base-url": "https://api.anthropic.com",
+                "keys": [{"api-key": "sk-team"}],
+                "headers": {"X-Team": "core"},
+            },
+            {
+                "name": "shared-pool",
+                "base-url": "https://api.anthropic.com",
+                "priority": 5,
+                "keys": [
+                    {"api-key": "sk-pool-a", "weight": 2},
+                    {"api-key": "sk-pool-b", "weight": 1, "proxy-url": "socks5://proxy:1080"},
+                ],
+                "models": [{"name": "claude-sonnet-4", "alias": "sonnet"}],
+            },
+        ],
+        "codex": [
+            {
+                "name": "codex-main",
+                "base-url": "https://api.openai.com/v1",
+                "keys": [{"api-key": "sk-codex"}],
+            },
+        ],
+        "openai-compatibility": [
+            {
+                "name": "nv",
+                "base-url": "https://integrate.api.nvidia.com/v1",
+                "keys": [{"api-key": "nv-a"}, {"api-key": "nv-b", "weight": 3}],
+                "models": [{"name": "meta/llama", "alias": "llama"}],
+            },
+        ],
+    }
+
+
+def _route_identity(kind: str, family: str, group: int, key: int = 0) -> str:
+    stored = _FakeClient.api_key_lists[family][group]
+    keys = stored["keys"]
+    assert isinstance(keys, list)
+    entry = keys[key]
+    assert isinstance(entry, dict)
+    return _auth_index(kind, str(stored["base-url"]), str(entry["api-key"]))
+
+
+@pytest.mark.asyncio
+async def test_prefix_assignment_changes_only_the_target_credential(async_client, monkeypatch):
+    """Audit section 2.6: writing a prefix must not drop a group name or any other field."""
+
+    from app.modules.cliproxy_accounts.api_keys import set_api_key_prefix_if_empty
+
+    _install(monkeypatch)
+    _FakeClient.api_key_lists = _named_group_config()
+    before = copy.deepcopy(_FakeClient.api_key_lists)
+    client = _FakeClient(None)
+
+    team = _route_identity("claude", "claude", 0)
+    assert (
+        await set_api_key_prefix_if_empty(client, kind_slug="claude", route_identity=team, prefix="lbteam") == "lbteam"
+    )
+    pool_b = _route_identity("claude", "claude", 1, 1)
+    assert (
+        await set_api_key_prefix_if_empty(client, kind_slug="claude", route_identity=pool_b, prefix="lbpoolb")
+        == "lbpoolb"
+    )
+    nv = _route_identity("openai-compatibility", "openai-compatibility", 0)
+    assert (
+        await set_api_key_prefix_if_empty(client, kind_slug="openai-compatibility", route_identity=nv, prefix="lbnv")
+        == "lbnv"
+    )
+
+    expected = copy.deepcopy(before)
+    expected["claude"][0]["prefix"] = "lbteam"
+    pool_keys = expected["claude"][1]["keys"]
+    assert isinstance(pool_keys, list) and isinstance(pool_keys[1], dict)
+    pool_keys[1]["prefix"] = "lbpoolb"
+    expected["openai-compatibility"][0]["prefix"] = "lbnv"
+    assert _FakeClient.api_key_lists == expected
+
+    # A stored prefix is returned unchanged and nothing is written.
+    writes = sum(1 for call in _FakeClient.management_calls if call[0] == "PUT")
+    assert (
+        await set_api_key_prefix_if_empty(client, kind_slug="claude", route_identity=team, prefix="other") == "lbteam"
+    )
+    assert await set_api_key_prefix_if_empty(client, kind_slug="claude", route_identity="missing", prefix="x") is None
+    assert sum(1 for call in _FakeClient.management_calls if call[0] == "PUT") == writes
+    # Every write went to the v8 config API and carried the ETag of its read.
+    assert all(
+        call[0] != "PUT" or call[1].startswith("/v8/management/config/api-keys/")
+        for call in _FakeClient.management_calls
+    )
+    assert _FakeClient.if_match_seen == ['"v0"', '"v1"', '"v2"']
+
+
+@pytest.mark.asyncio
+async def test_prefix_assignment_redoes_the_edit_when_another_writer_won(monkeypatch):
+    from app.modules.cliproxy_accounts.api_keys import set_api_key_prefix_if_empty
+
+    _reset_fake()
+    _FakeClient.api_key_lists = _named_group_config()
+    client = _FakeClient(None)
+    team = _route_identity("claude", "claude", 0)
+    _FakeClient.conflicts = 2
+
+    assert (
+        await set_api_key_prefix_if_empty(client, kind_slug="claude", route_identity=team, prefix="lbteam") == "lbteam"
+    )
+    assert [call[0] for call in _FakeClient.management_calls] == ["GET", "PUT", "GET", "PUT", "GET", "PUT"]
+    assert _FakeClient.api_key_lists["claude"][0]["prefix"] == "lbteam"
+    assert _FakeClient.api_key_lists["claude"][1]["name"] == "shared-pool"
+
+
+@pytest.mark.asyncio
+async def test_prefix_assignment_gives_up_when_the_config_keeps_changing(monkeypatch):
+    from app.core.exceptions import DashboardConflictError
+    from app.modules.cliproxy_accounts.api_keys import set_api_key_prefix_if_empty
+
+    _reset_fake()
+    _FakeClient.api_key_lists = _named_group_config()
+    before = copy.deepcopy(_FakeClient.api_key_lists)
+    client = _FakeClient(None)
+    _FakeClient.conflicts = 99
+
+    with pytest.raises(DashboardConflictError):
+        await set_api_key_prefix_if_empty(
+            client,
+            kind_slug="claude",
+            route_identity=_route_identity("claude", "claude", 0),
+            prefix="lbteam",
+        )
+    assert _FakeClient.api_key_lists == before
+
+
+@pytest.mark.asyncio
+async def test_api_key_writes_fail_closed_without_the_v8_config_api(monkeypatch):
+    """Never fall back to the lossy v0 per-family endpoints."""
+
+    from app.modules.cliproxy_accounts.api_keys import set_api_key_prefix_if_empty
+
+    _reset_fake()
+    calls: list[tuple[str, str]] = []
+
+    async def old_build(self, method, path, body, if_match):  # noqa: ANN001
+        calls.append((method, path))
+        return ManagementResponse(status=404, etag=None, body=None)
+
+    monkeypatch.setattr(_FakeClient, "config_v8_request", old_build)
+    client = _FakeClient(None)
+    with pytest.raises(ClaudeSidecarError, match="v8"):
+        await set_api_key_prefix_if_empty(client, kind_slug="claude", route_identity="x", prefix="lbx")
+    assert calls == [("GET", "/v8/management/config/api-keys")]
+
+
+@pytest.mark.asyncio
+async def test_api_key_form_edits_keep_names_neighbors_and_unknown_fields(async_client, monkeypatch):
+    _install(monkeypatch)
+    _FakeClient.api_key_lists = _named_group_config()
+    _FakeClient.api_key_lists["claude"][1]["request-retry"] = 2
+    await _ready(async_client)
+    listed = (await async_client.get("/api/cliproxy/accounts")).json()["apiKeys"]
+    pool_a = next(row for row in listed if row["kind"] == "claude" and row["index"] == 1)
+    assert pool_a["group"] == "shared-pool"
+    pool_b = next(row for row in listed if row["kind"] == "claude" and row["index"] == 2)
+    assert pool_b["weight"] == 1
+
+    prefixed = await async_client.patch(
+        "/api/cliproxy/api-keys/claude/1",
+        json={
+            "kind": "claude",
+            "baseUrl": "https://api.anthropic.com",
+            "prefix": "poolA",
+            "accountId": pool_a["id"],
+        },
+    )
+    assert prefixed.status_code == 200
+    assert prefixed.json()["prefix"] == "poolA"
+    assert prefixed.json()["authIndex"] == pool_a["authIndex"]
+    pool = _FakeClient.api_key_lists["claude"][1]
+    assert pool["name"] == "shared-pool"
+    assert pool["request-retry"] == 2
+    assert pool["keys"] == [
+        {"api-key": "sk-pool-a", "weight": 2, "prefix": "poolA"},
+        {"api-key": "sk-pool-b", "weight": 1, "proxy-url": "socks5://proxy:1080"},
+    ]
+
+    moved = await async_client.patch(
+        "/api/cliproxy/api-keys/claude/2",
+        json={
+            "kind": "claude",
+            "baseUrl": "https://anthropic-proxy.example",
+            "accountId": pool_b["id"],
+        },
+    )
+    assert moved.status_code == 200
+    claude = _FakeClient.api_key_lists["claude"]
+    assert [group["name"] for group in claude] == ["my-team-key", "shared-pool", "shared-pool-2"]
+    assert claude[1]["base-url"] == "https://api.anthropic.com"
+    assert claude[1]["keys"] == [{"api-key": "sk-pool-a", "weight": 2, "prefix": "poolA"}]
+    assert claude[2] == {
+        "name": "shared-pool-2",
+        "base-url": "https://anthropic-proxy.example",
+        "priority": 5,
+        "models": [{"name": "claude-sonnet-4", "alias": "sonnet"}],
+        "request-retry": 2,
+        "keys": [{"api-key": "sk-pool-b", "weight": 1, "proxy-url": "socks5://proxy:1080"}],
+    }
+    assert _FakeClient.api_key_lists["codex"] == _named_group_config()["codex"]
+    assert _FakeClient.api_key_lists["openai-compatibility"] == _named_group_config()["openai-compatibility"]
+
+
+@pytest.mark.asyncio
+async def test_api_key_prefix_edit_rejects_a_prefix_used_by_another_family(async_client, monkeypatch):
+    _install(monkeypatch)
+    _FakeClient.api_key_lists = _named_group_config()
+    _FakeClient.api_key_lists["codex"][0]["prefix"] = "Taken"
+    await _ready(async_client)
+    listed = (await async_client.get("/api/cliproxy/accounts")).json()["apiKeys"]
+    team = next(row for row in listed if row["kind"] == "claude" and row["index"] == 0)
+
+    clash = await async_client.patch(
+        "/api/cliproxy/api-keys/claude/0",
+        json={"kind": "claude", "baseUrl": "https://api.anthropic.com", "prefix": "taken", "accountId": team["id"]},
+    )
+    assert clash.status_code == 409
+    assert "prefix" not in _FakeClient.api_key_lists["claude"][0]
+
+
+@pytest.mark.asyncio
+async def test_openai_compatible_group_toggles_the_prompt_cache_key(async_client, monkeypatch):
+    _install(monkeypatch)
+    _FakeClient.api_key_lists = _named_group_config()
+    await _ready(async_client)
+    listed = (await async_client.get("/api/cliproxy/accounts")).json()["apiKeys"]
+    nv = next(row for row in listed if row["kind"] == "openai-compatibility")
+    assert nv["keyCount"] == 2
+    assert nv["supportPromptCacheKey"] is False
+
+    enabled = await async_client.patch(
+        "/api/cliproxy/api-keys/openai-compatibility/0",
+        json={
+            "kind": "openai-compatibility",
+            "baseUrl": "https://integrate.api.nvidia.com/v1",
+            "supportPromptCacheKey": True,
+            "accountId": nv["id"],
+        },
+    )
+    assert enabled.status_code == 200
+    assert enabled.json()["supportPromptCacheKey"] is True
+    stored = _FakeClient.api_key_lists["openai-compatibility"][0]
+    assert stored["support-prompt-cache-key"] is True
+    assert stored["keys"] == [{"api-key": "nv-a"}, {"api-key": "nv-b", "weight": 3}]
+
+    disabled = await async_client.patch(
+        "/api/cliproxy/api-keys/openai-compatibility/0",
+        json={
+            "kind": "openai-compatibility",
+            "baseUrl": "https://integrate.api.nvidia.com/v1",
+            "supportPromptCacheKey": False,
+            "accountId": enabled.json()["id"],
+        },
+    )
+    assert disabled.status_code == 200
+    assert "support-prompt-cache-key" not in _FakeClient.api_key_lists["openai-compatibility"][0]
+
+    refused = await async_client.patch(
+        "/api/cliproxy/api-keys/claude/0",
+        json={
+            "kind": "claude",
+            "baseUrl": "https://api.anthropic.com",
+            "supportPromptCacheKey": True,
+            "accountId": listed[0]["id"],
+        },
+    )
+    assert refused.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_route_identity_is_the_auth_index_and_survives_edits(monkeypatch):
+    """Audit S8: pins key on CLIProxyAPI's auth_index, which edits other than key/URL never move."""
+
+    from app.modules.cliproxy_accounts.api_keys import list_routing_api_keys
+
+    _reset_fake()
+    _FakeClient.api_key_lists = _named_group_config()
+    client = _FakeClient(None)
+    rows = await list_routing_api_keys(client)
+    assert [(row.kind, row.name) for row in rows] == [
+        ("openai-compatibility", "nv"),
+        ("claude", "my-team-key#1"),
+        ("claude", "shared-pool#1"),
+        ("claude", "shared-pool#2"),
+        ("codex", "codex-main#1"),
+    ]
+    for row in rows:
+        assert row.route_identity == row.auth_index
+    identities = [row.route_identity for row in rows]
+
+    for family in _FakeClient.api_key_lists.values():
+        for group in family:
+            group["prefix"] = "edited"
+            group["models"] = [{"name": "other", "alias": "other"}]
+    _FakeClient.api_key_lists["openai-compatibility"][0]["name"] = "renamed"
+    _FakeClient.api_key_lists["openai-compatibility"][0]["disabled"] = True
+    after = await list_routing_api_keys(client)
+    assert [row.route_identity for row in after] == identities
+    # The disabled group has no auth_index from CLIProxyAPI; the local digest equals it.
+    assert after[0].auth_index is None
 
 
 @pytest.mark.asyncio

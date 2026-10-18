@@ -906,15 +906,18 @@ export const CliproxyApiKeyAccountSchema = z.object({
   kind: z.string(),
   index: z.number().int(),
   name: z.string(),
+  group: z.string().nullable().optional(),
   baseUrl: z.string(),
   disabled: z.boolean().nullable().optional(),
   supportsDisable: z.boolean(),
   hasApiKey: z.boolean(),
+  keyCount: z.number().int().optional(),
   models: z.array(CliproxyApiKeyModelSchema).default([]),
   discoveredModels: z.array(z.string()).default([]),
   modelsError: z.string().nullable().optional(),
   authIndex: z.string().nullable().optional(),
   prefix: z.string().nullable().optional(),
+  supportPromptCacheKey: z.boolean().nullable().optional(),
 });
 export const CliproxyAccountsResponseSchema = z.object({
   status: CliproxyAccountsStatusSchema,
@@ -933,6 +936,7 @@ export const CliproxyApiKeyWriteRequestSchema = z.object({
   disabled: z.boolean().nullable().optional(),
   accountId: z.string().optional(),
   prefix: z.string().optional(),
+  supportPromptCacheKey: z.boolean().optional(),
 });
 export const CliproxyApiKeyDeleteRequestSchema = z.object({
   confirm: z.boolean(),

@@ -422,7 +422,10 @@ def candidates_from_api_keys(rows: Sequence[ApiKeyRouteRow]) -> list[CliproxyCan
     built: list[CliproxyCandidate] = []
     for row in rows:
         provider = "openai-compatibility" if row.kind == "openai-compatibility" else row.kind
-        identity = row.auth_index or row.route_identity
+        # route_identity is CLIProxyAPI's auth_index, or the same digest computed
+        # locally when CLIProxyAPI omits it, so pins survive prefix, model,
+        # name, and on/off edits.
+        identity = row.route_identity
         status = AccountStatus.PAUSED if row.disabled else AccountStatus.ACTIVE
         state = AccountState(
             account_id=f"cliproxy:{provider}:key:{identity}",
@@ -820,8 +823,9 @@ def _remembered_prefix(account_id: str) -> str | None:
 def _with_remembered_prefixes(candidates: list[CliproxyCandidate]) -> list[CliproxyCandidate]:
     """Fill empty snapshot prefixes from assignments this process already stored.
 
-    API-key account ids use ``route_identity`` when CLIProxyAPI did not assign
-    an auth index, so a list deletion cannot reuse a neighbor's remembered prefix.
+    API-key account ids use ``route_identity`` (the credential's auth index),
+    never a list index, so a list deletion cannot reuse a neighbor's remembered
+    prefix.
     """
 
     updated: list[CliproxyCandidate] = []

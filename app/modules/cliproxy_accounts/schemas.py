@@ -64,10 +64,12 @@ class CliproxyApiKeyAccount(DashboardModel):
     kind: str
     index: int
     name: str
+    group: str | None = None
     base_url: str
     disabled: bool | None = None
     supports_disable: bool
     has_api_key: bool
+    key_count: int = 1
     models: list[CliproxyApiKeyModel] = Field(default_factory=list)
     discovered_models: list[str] = Field(default_factory=list)
     models_error: str | None = None
@@ -75,6 +77,7 @@ class CliproxyApiKeyAccount(DashboardModel):
     prefix: str | None = None
     weight: int | None = None
     priority: int | None = None
+    support_prompt_cache_key: bool | None = None
 
 
 class CliproxyAccountsResponse(DashboardModel):
@@ -195,6 +198,7 @@ class CliproxyApiKeyWriteRequest(DashboardModel):
     disabled: bool | None = None
     account_id: str | None = None
     prefix: str | None = None
+    support_prompt_cache_key: bool | None = None
 
 
 class CliproxyApiKeyDeleteRequest(DashboardModel):

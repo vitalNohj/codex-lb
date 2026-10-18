@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
@@ -17,8 +18,10 @@ from app.modules.cliproxy_accounts.api_keys import (
     ApiKeyRouteRow,
     api_key_account_id,
     api_key_route_identity,
+    local_auth_index,
     set_api_key_prefix_if_empty,
 )
+from app.modules.cliproxy_accounts.management import ManagementResponse
 from app.modules.proxy import claude_sidecar_dispatch
 from app.modules.proxy import cliproxy_account_routing as routing
 from app.modules.proxy.claude_sidecar_dispatch import build_sidecar_chat_payload
@@ -461,67 +464,102 @@ async def test_remembered_prefix_skips_another_management_listing() -> None:
 
 def test_route_identity_survives_a_prefix_and_rejects_a_different_key() -> None:
     kind = API_KEY_KINDS["claude"]
-    bare = {"api-key": "secret-a"}
-    filled = {"api-key": "secret-a", "prefix": "lbabc"}
-    other = {"api-key": "secret-b"}
+    bare = {"api-key": "secret-a", "base-url": "https://api.anthropic.com"}
+    filled = {**bare, "prefix": "lbabc", "models": [{"name": "m", "alias": "m"}], "priority": 3}
+    other = {**bare, "api-key": "secret-b"}
+    moved = {**bare, "base-url": "https://proxy.example"}
 
     assert api_key_route_identity(kind, bare) == api_key_route_identity(kind, filled)
     assert api_key_route_identity(kind, bare) != api_key_route_identity(kind, other)
+    assert api_key_route_identity(kind, bare) != api_key_route_identity(kind, moved)
     assert api_key_account_id(kind, bare) != api_key_account_id(kind, filled)
+
+
+class _V8Client:
+    """CLIProxyAPI's v8 ``api-keys`` config API over one in-memory family."""
+
+    def __init__(self, family: str, groups: list[dict[str, object]]) -> None:
+        self.family = family
+        self.groups = groups
+        self.writes: list[object] = []
+
+    async def config_v8_request(self, method: str, path: str, body: object, if_match: str | None) -> ManagementResponse:
+        if method == "GET":
+            assert path == "/v8/management/config/api-keys"
+            return ManagementResponse(status=200, etag='"v1"', body={self.family: self.groups})
+        assert path == f"/v8/management/config/api-keys/{self.family}"
+        assert if_match == '"v1"'
+        self.writes.append(body)
+        return ManagementResponse(status=200, etag=None, body={"status": "ok"})
 
 
 async def test_prefix_fill_follows_identity_after_the_list_shifts() -> None:
     kind = API_KEY_KINDS["claude"]
-    items = [{"api-key": "secret-b"}, {"api-key": "secret-a"}]
-    written: dict[str, object] = {}
+    client = _V8Client(
+        "claude",
+        [
+            {"name": "b", "base-url": "https://api.anthropic.com", "keys": [{"api-key": "secret-b"}]},
+            {"name": "a", "base-url": "https://api.anthropic.com", "keys": [{"api-key": "secret-a"}]},
+        ],
+    )
 
-    class _Client:
-        async def management_request(self, method: str, path: str, body: object) -> dict[str, object]:
-            assert path == kind.path
-            if method == "GET":
-                return {kind.response_key: items}
-            written["body"] = body
-            return {kind.response_key: items}
-
-    identity = api_key_route_identity(kind, {"api-key": "secret-a"})
+    identity = api_key_route_identity(kind, {"api-key": "secret-a", "base-url": "https://api.anthropic.com"})
     stored = await set_api_key_prefix_if_empty(
-        _Client(),  # type: ignore[arg-type]
+        client,  # type: ignore[arg-type]
         kind_slug="claude",
         route_identity=identity,
         prefix="lb-a",
     )
 
     assert stored == "lb-a"
-    body = written["body"]
-    assert isinstance(body, dict)
-    saved = body["items"]
-    assert isinstance(saved, list)
-    assert saved[0].get("prefix") is None
-    assert saved[1]["prefix"] == "lb-a"
+    assert client.writes == [
+        [
+            {"name": "b", "base-url": "https://api.anthropic.com", "keys": [{"api-key": "secret-b"}]},
+            {"name": "a", "base-url": "https://api.anthropic.com", "keys": [{"api-key": "secret-a"}], "prefix": "lb-a"},
+        ]
+    ]
 
 
 async def test_prefix_fill_does_not_write_a_deleted_identity_onto_the_neighbor() -> None:
     kind = API_KEY_KINDS["claude"]
-    items = [{"api-key": "secret-b"}]
-    written: list[object] = []
+    client = _V8Client(
+        "claude",
+        [{"name": "b", "base-url": "https://api.anthropic.com", "keys": [{"api-key": "secret-b"}]}],
+    )
 
-    class _Client:
-        async def management_request(self, method: str, path: str, body: object) -> dict[str, object]:
-            assert path == kind.path
-            if method == "PUT":
-                written.append(body)
-            return {kind.response_key: items}
-
-    identity = api_key_route_identity(kind, {"api-key": "secret-a"})
+    identity = api_key_route_identity(kind, {"api-key": "secret-a", "base-url": "https://api.anthropic.com"})
     stored = await set_api_key_prefix_if_empty(
-        _Client(),  # type: ignore[arg-type]
+        client,  # type: ignore[arg-type]
         kind_slug="claude",
         route_identity=identity,
         prefix="lb-a",
     )
 
     assert stored is None
-    assert written == []
+    assert client.writes == []
+
+
+def test_route_identity_is_cliproxyapi_auth_index() -> None:
+    """Values read from a real CLIProxyAPI v8.0.32 binary (audit lab config)."""
+
+    compat = API_KEY_KINDS["openai-compatibility"]
+    claude = API_KEY_KINDS["claude"]
+    lab_compat = {
+        "base-url": "http://127.0.0.1:18080/v1",
+        "api-key-entries": [{"api-key": "nv-key-a"}, {"api-key": "nv-key-b"}],
+    }
+    lab_claude = {"base-url": "http://127.0.0.1:18080", "api-key": "sk-ant-team"}
+    assert (
+        local_auth_index(compat, lab_compat)
+        == hashlib.sha256(b"openai-compatibility:http://127.0.0.1:18080/v1+nv-key-a").hexdigest()[:16]
+    )
+    assert (
+        local_auth_index(claude, lab_claude)
+        == hashlib.sha256(b"claude-api-key:http://127.0.0.1:18080+sk-ant-team").hexdigest()[:16]
+    )
+    # A reported auth_index wins; without one the local digest is used.
+    assert api_key_route_identity(claude, {**lab_claude, "auth-index": "abc"}) == "abc"
+    assert api_key_route_identity(claude, lab_claude) == local_auth_index(claude, lab_claude)
 
 
 def _api_key_row(index: int, route_identity: str, *, models: tuple[str, ...] = ("model-a",)) -> ApiKeyRouteRow:
