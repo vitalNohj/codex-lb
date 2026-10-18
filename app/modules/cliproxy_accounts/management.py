@@ -62,15 +62,6 @@ class CliproxyManagement:
         # Discard it. The panel polls our own status record instead.
         await self._request("POST", "/v0/management/auth-files/refresh", json_body=body)
 
-    async def get_json(self, path: str) -> Mapping[str, JsonValue]:
-        return await self._request("GET", path)
-
-    async def put_json(self, path: str, body: Mapping[str, JsonValue]) -> Mapping[str, JsonValue]:
-        return await self._request("PUT", path, json_body=body)
-
-    async def delete_path(self, path: str) -> None:
-        await self._request("DELETE", path)
-
     async def config_v8(
         self,
         method: str,
