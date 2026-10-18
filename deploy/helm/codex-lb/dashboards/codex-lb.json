@@ -356,6 +356,47 @@
       ],
       "title": "Account Status",
       "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "CLIProxyAPI credential routing outcomes. Sustained unpinned_no_key, rebind, no_candidate or fail_open traffic means conversations are not staying on one credential and prompt caches are being rewritten.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 20
+      },
+      "id": 7,
+      "options": {
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "sum by (outcome, key_source) (rate(codex_lb_cliproxy_route_outcome_total{namespace=\"$namespace\",job=~\"$job\"}[5m]))",
+          "legendFormat": "{{outcome}} ({{key_source}})",
+          "refId": "A"
+        }
+      ],
+      "title": "CLIProxyAPI Route Outcomes",
+      "type": "timeseries"
     }
   ],
   "refresh": "30s",

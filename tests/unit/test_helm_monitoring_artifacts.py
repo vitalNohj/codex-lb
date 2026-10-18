@@ -78,3 +78,14 @@ def test_grafana_error_rate_aggregates_request_series_before_division() -> None:
         '(sum(rate(codex_lb_requests_total{namespace="$namespace",job=~"$job",status=~"5.."}[5m]))'
         ' or vector(0)) / sum(rate(codex_lb_requests_total{namespace="$namespace",job=~"$job"}[5m]))'
     )
+
+
+def test_grafana_overview_charts_cliproxy_route_outcomes() -> None:
+    dashboard = json.loads((_CHART_DIR / "dashboards" / "codex-lb.json").read_text())
+    panel = next(panel for panel in dashboard["panels"] if panel["title"] == "CLIProxyAPI Route Outcomes")
+
+    assert panel["targets"][0]["expr"] == (
+        "sum by (outcome, key_source) "
+        '(rate(codex_lb_cliproxy_route_outcome_total{namespace="$namespace",job=~"$job"}[5m]))'
+    )
+    assert len({item["id"] for item in dashboard["panels"]}) == len(dashboard["panels"])
