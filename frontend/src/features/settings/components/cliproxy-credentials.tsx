@@ -703,16 +703,17 @@ function ApiKeyDialog({
     setApiKey("");
   }
 
+  // Every close path (Escape, overlay, Cancel) goes through here so a
+  // canceled secret never survives into the next add.
+  function handleOpenChange(next: boolean) {
+    if (!next) {
+      setApiKey("");
+    }
+    onOpenChange(next);
+  }
+
   return (
-    <Dialog
-      open={open}
-      onOpenChange={(next) => {
-        if (!next) {
-          setApiKey("");
-        }
-        onOpenChange(next);
-      }}
-    >
+    <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent className="sm:max-w-lg">
         <form className="space-y-4" onSubmit={submit} aria-label={t("settings.cliproxy.apiKeys.formAria")}>
           <DialogHeader>
@@ -784,7 +785,7 @@ function ApiKeyDialog({
             </div>
           </div>
           <DialogFooter>
-            <Button type="button" variant="outline" size="sm" onClick={() => onOpenChange(false)}>
+            <Button type="button" variant="outline" size="sm" onClick={() => handleOpenChange(false)}>
               {t("common.cancel")}
             </Button>
             <Button type="submit" size="sm" disabled={busy}>

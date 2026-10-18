@@ -344,6 +344,26 @@ describe("CliproxyCredentials", () => {
     });
   });
 
+  it("forgets a typed API key when the add dialog is canceled", async () => {
+    const user = userEvent.setup();
+    server.use(
+      http.get("*/api/cliproxy/accounts", () =>
+        HttpResponse.json({ status: "healthy", message: null, providers: [], apiKeys: [], sharedModelIds: [] }),
+      ),
+    );
+
+    renderCredentials(true);
+
+    await user.click(await screen.findByRole("button", { name: "Add API key" }));
+    await user.type(await screen.findByLabelText("API key"), "sk-canceled-secret");
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+
+    await user.click(screen.getByRole("button", { name: "Add API key" }));
+    expect(await screen.findByLabelText("API key")).toHaveValue("");
+    expect(screen.queryByDisplayValue("sk-canceled-secret")).not.toBeInTheDocument();
+  });
+
   it("keeps model mappings and spaced names out of unrelated saves", async () => {
     const user = userEvent.setup();
     const updates: unknown[] = [];
