@@ -221,6 +221,7 @@ class ApiKeyRouteRow:
     auth_index: str | None
     weight: int | None
     priority: int | None
+    route_identity: str
 
 
 async def list_routing_api_keys(client: ClaudeSidecarClient) -> list[ApiKeyRouteRow]:
@@ -253,6 +254,7 @@ async def list_routing_api_keys(client: ClaudeSidecarClient) -> list[ApiKeyRoute
                     auth_index=_text(item.get("auth-index")) or _text(item.get("auth_index")),
                     weight=_optional_int(item.get("weight")),
                     priority=_optional_int(item.get("priority")),
+                    route_identity=api_key_route_identity(kind, item),
                 )
             )
     return rows
@@ -292,24 +294,31 @@ async def set_api_key_prefix_if_empty(
     client: ClaudeSidecarClient,
     *,
     kind_slug: str,
-    index: int,
+    route_identity: str,
     prefix: str,
 ) -> str | None:
-    """Write ``prefix`` only when that entry's stored prefix is empty.
+    """Write ``prefix`` only when the entry with ``route_identity`` has none.
 
-    The caller holds the prefix lock and this provider's list lock. A prefix
-    that is already stored is returned unchanged.
+    The caller holds the prefix lock and this provider's list lock. The live
+    list is searched by identity, not by a cached index, so a deletion that
+    shifts the list cannot receive another credential's prefix. A prefix that
+    is already stored on the matching entry is returned unchanged. ``None``
+    means that identity is no longer in the list.
     """
 
     kind = api_key_kind(kind_slug)
     payload = await _request(client, "GET", kind.path, None)
     items = [dict(item) for item in _items(payload, kind.response_key) if is_json_mapping(item)]
-    if index < 0 or index >= len(items):
+    match = next(
+        (index for index, item in enumerate(items) if api_key_route_identity(kind, item) == route_identity),
+        None,
+    )
+    if match is None:
         return None
-    existing = _text(items[index].get("prefix"))
+    existing = _text(items[match].get("prefix"))
     if existing:
         return existing
-    items[index]["prefix"] = prefix
+    items[match]["prefix"] = prefix
     await _request(client, "PUT", kind.path, {"items": items})
     return prefix
 
@@ -497,8 +506,25 @@ def api_key_account_id(kind: ApiKeyKind, item: Mapping[str, JsonValue]) -> str:
     is not part of the token: moving an entry must not make it match a neighbor.
     """
 
+    payload = _identity_payload(kind, item)
+    payload["prefix"] = _text(item.get("prefix")) or ""
+    return _identity_digest(payload)
+
+
+def api_key_route_identity(kind: ApiKeyKind, item: Mapping[str, JsonValue]) -> str:
+    """Routing identity that stays put when only the credential prefix changes.
+
+    Dashboard edits keep using :func:`api_key_account_id`, which includes the
+    prefix the operator was looking at. Prefix fill must not treat that change
+    as a different credential, and it must not trust the list index.
+    """
+
+    return _identity_digest(_identity_payload(kind, item))
+
+
+def _identity_payload(kind: ApiKeyKind, item: Mapping[str, JsonValue]) -> dict[str, JsonValue]:
     disabled = item.get("disabled") if kind.supports_disable and isinstance(item.get("disabled"), bool) else None
-    payload = {
+    return {
         "authIndex": _text(item.get("auth-index")) or "",
         "baseUrl": _text(item.get("base-url")) or "",
         "credential": _credential_digest(kind, item),
@@ -506,8 +532,10 @@ def api_key_account_id(kind: ApiKeyKind, item: Mapping[str, JsonValue]) -> str:
         "kind": kind.slug,
         "models": [{"alias": model.alias, "name": model.name} for model in _configured_models(item.get("models"))],
         "name": (_text(item.get("name")) or "") if kind.named else "",
-        "prefix": _text(item.get("prefix")) or "",
     }
+
+
+def _identity_digest(payload: Mapping[str, JsonValue]) -> str:
     encoded = json.dumps(payload, separators=(",", ":"), sort_keys=True)
     return hashlib.sha256(encoded.encode()).hexdigest()
 

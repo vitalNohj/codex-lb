@@ -7,11 +7,17 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.core.balancer.logic import AccountState, select_account
+from app.core.balancer.logic import AccountState, RoutingStrategy, select_account
 from app.core.clients.claude_sidecar import ClaudeSidecarConfig, ClaudeSidecarError, SidecarPrefix
 from app.core.openai.chat_requests import ChatCompletionsRequest
 from app.db.models import AccountStatus, StickySessionKind
 from app.modules.claude_sidecar.quota import SidecarAuthQuota, SidecarModelQuota, SidecarQuotaSnapshot
+from app.modules.cliproxy_accounts.api_keys import (
+    API_KEY_KINDS,
+    api_key_account_id,
+    api_key_route_identity,
+    set_api_key_prefix_if_empty,
+)
 from app.modules.proxy import claude_sidecar_dispatch
 from app.modules.proxy import cliproxy_account_routing as routing
 from app.modules.proxy.claude_sidecar_dispatch import build_sidecar_chat_payload
@@ -22,10 +28,17 @@ from app.modules.proxy.cliproxy_account_routing import (
     candidates_from_snapshot,
     choose_cliproxy_route,
     cliproxy_log_attribution,
+    rewrite_model_for_credential,
 )
 from app.modules.request_logs.mappers import cliproxy_credential_label
 
 pytestmark = pytest.mark.unit
+
+
+@pytest.fixture(autouse=True)
+def _clear_cliproxy_route_memory() -> None:
+    routing._LAST_SELECTED.clear()
+    routing._PREFIX_OVERLAY.clear()
 
 
 def test_sidecar_chat_payload_forwards_the_resolved_model_id() -> None:
@@ -107,6 +120,7 @@ async def _choose(
     sticky: bool = False,
     existing: str | None = None,
     model: str = "grok-4",
+    strategy: RoutingStrategy = "usage_weighted",
 ) -> routing.CliproxyDispatchChoice | None:
     choice, _mutation = await choose_cliproxy_route(
         candidates,
@@ -116,7 +130,7 @@ async def _choose(
         sticky_repo=SimpleNamespace() if sticky else None,  # type: ignore[arg-type]
         sticky_enabled=sticky,
         existing_account_id=existing,
-        routing_strategy="usage_weighted",
+        routing_strategy=strategy,
         sticky_max_age_seconds=3600,
     )
     return choice
@@ -392,3 +406,117 @@ async def test_discovered_models_replace_the_family_guess() -> None:
     assert candidate_serves_model(attached[0], "grok-4") is False
     assert candidate_serves_model(attached[0], "grok-4-fast") is True
     assert candidate_serves_model(attached[0], "grok-3") is False
+
+
+def test_rewrite_keeps_a_namespaced_model_id() -> None:
+    assert rewrite_model_for_credential("openrouter/auto", "lbabc") == "lbabc/openrouter/auto"
+    assert (
+        rewrite_model_for_credential(
+            "lbother/openrouter/auto",
+            "lbabc",
+            known_prefixes=("lbother",),
+        )
+        == "lbabc/openrouter/auto"
+    )
+    assert rewrite_model_for_credential("vendor/model", "lbabc", known_prefixes=("lbabc",)) == "lbabc/vendor/model"
+
+
+async def test_namespaced_catalog_ids_are_not_interchangeable() -> None:
+    vendor = _candidate("cliproxy:xai:vendor", "pina", used=10.0, models=("vendor/model",))
+    other = _candidate("cliproxy:xai:other", "pinb", used=0.0, models=("other/model",))
+
+    choice = await _choose([other, vendor], model="vendor/model")
+
+    assert choice is not None
+    assert choice.account_id == vendor.account_id
+    assert choice.wire_model == "pina/vendor/model"
+
+
+async def test_round_robin_rotates_equally_used_credentials() -> None:
+    first_account = _candidate("cliproxy:xai:a", "a", used=10.0)
+    second_account = _candidate("cliproxy:xai:b", "b", used=10.0)
+
+    first = await _choose([first_account, second_account], strategy="round_robin")
+    second = await _choose([first_account, second_account], strategy="round_robin")
+
+    assert first is not None and second is not None
+    assert {first.account_id, second.account_id} == {first_account.account_id, second_account.account_id}
+    assert first.account_id != second.account_id
+
+
+async def test_remembered_prefix_skips_another_management_listing() -> None:
+    bare = _candidate("cliproxy:xai:bare", None, used=10.0)
+    routing._remember_prefix(bare.account_id, "kept")
+
+    class _Listing:
+        async def list_auth_files(self) -> list[object]:
+            raise AssertionError("stale snapshot should reuse the remembered prefix")
+
+    filled = await routing._fill_empty_prefixes([bare], "grok-4", _Listing())  # type: ignore[arg-type]
+
+    assert filled[0].prefix == "kept"
+
+
+def test_route_identity_survives_a_prefix_and_rejects_a_different_key() -> None:
+    kind = API_KEY_KINDS["claude"]
+    bare = {"api-key": "secret-a"}
+    filled = {"api-key": "secret-a", "prefix": "lbabc"}
+    other = {"api-key": "secret-b"}
+
+    assert api_key_route_identity(kind, bare) == api_key_route_identity(kind, filled)
+    assert api_key_route_identity(kind, bare) != api_key_route_identity(kind, other)
+    assert api_key_account_id(kind, bare) != api_key_account_id(kind, filled)
+
+
+async def test_prefix_fill_follows_identity_after_the_list_shifts() -> None:
+    kind = API_KEY_KINDS["claude"]
+    items = [{"api-key": "secret-b"}, {"api-key": "secret-a"}]
+    written: dict[str, object] = {}
+
+    class _Client:
+        async def management_request(self, method: str, path: str, body: object) -> dict[str, object]:
+            assert path == kind.path
+            if method == "GET":
+                return {kind.response_key: items}
+            written["body"] = body
+            return {kind.response_key: items}
+
+    identity = api_key_route_identity(kind, {"api-key": "secret-a"})
+    stored = await set_api_key_prefix_if_empty(
+        _Client(),  # type: ignore[arg-type]
+        kind_slug="claude",
+        route_identity=identity,
+        prefix="lb-a",
+    )
+
+    assert stored == "lb-a"
+    body = written["body"]
+    assert isinstance(body, dict)
+    saved = body["items"]
+    assert isinstance(saved, list)
+    assert saved[0].get("prefix") is None
+    assert saved[1]["prefix"] == "lb-a"
+
+
+async def test_prefix_fill_does_not_write_a_deleted_identity_onto_the_neighbor() -> None:
+    kind = API_KEY_KINDS["claude"]
+    items = [{"api-key": "secret-b"}]
+    written: list[object] = []
+
+    class _Client:
+        async def management_request(self, method: str, path: str, body: object) -> dict[str, object]:
+            assert path == kind.path
+            if method == "PUT":
+                written.append(body)
+            return {kind.response_key: items}
+
+    identity = api_key_route_identity(kind, {"api-key": "secret-a"})
+    stored = await set_api_key_prefix_if_empty(
+        _Client(),  # type: ignore[arg-type]
+        kind_slug="claude",
+        route_identity=identity,
+        prefix="lb-a",
+    )
+
+    assert stored is None
+    assert written == []

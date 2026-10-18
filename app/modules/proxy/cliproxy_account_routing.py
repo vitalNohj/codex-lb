@@ -6,12 +6,14 @@ codex-lb picks the credential. Scoring goes through
 ``sticky_sessions.account_id`` references ``accounts.id`` and a CLIProxyAPI
 credential id is not an account row.
 
-A pinned ``<prefix>/<model>`` is registered only on the credential that owns
+A pinned ``<prefix>/<model-id>`` is registered only on the credential that owns
 that prefix (``applyModelPrefixes`` in CLIProxyAPI
-``sdk/cliproxy/service_models.go``). CLIProxyAPI's session-affinity selector
-then sees that one credential, so the pin bypasses cross-account affinity.
-``routing.force-model-prefix`` stays untouched. When this router cannot
-choose, the wire model is left plain and CLIProxyAPI selects.
+``sdk/cliproxy/service_models.go``). The model id keeps every segment the
+client sent. A leading segment is removed only when it is already a known
+credential prefix, so a second pass does not nest prefixes. CLIProxyAPI's
+session-affinity selector then sees that one credential, so the pin bypasses
+cross-account affinity. ``routing.force-model-prefix`` stays untouched. When
+this router cannot choose, the wire model is left plain and CLIProxyAPI selects.
 
 Eligibility uses each OAuth file's discovered models from
 ``GET /v0/management/auth-files/models``. ``model_states`` only names models
@@ -24,8 +26,12 @@ fully used (100/100) so every measured account with remaining headroom
 ranks ahead of it. It still serves when it is the sticky pin or when no
 measured account is eligible. Missing weight counts as 1. A non-positive
 weight is excluded. Under ``capacity_weighted`` the weight is the capacity
-credit total, so remaining headroom scales with it. Other Codex strategies
-keep their usage order. Missing priority counts as 0, and a cold selection
+credit total, so remaining headroom scales with it. ``round_robin`` uses the
+same least-recently-selected order as Codex accounts; those timestamps stay
+in this process, the way the Codex balancer keeps them on the account
+runtime. Other strategies keep their usage order. A prefix learned from a
+successful fill is remembered here so a stale quota snapshot does not take
+the prefix lock again. Missing priority counts as 0, and a cold selection
 uses only the highest priority tier that still has an active account.
 Higher integers win, matching ``authPriority`` in
 ``sdk/cliproxy/auth/selector.go``. A sticky pin stays on a lower tier
@@ -37,6 +43,8 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import time
+from collections import OrderedDict
 from collections.abc import Mapping, Sequence
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
@@ -85,6 +93,10 @@ _API_KEY_CACHE: tuple[float, tuple[ApiKeyRouteRow, ...]] | None = None
 _API_KEY_CACHE_SECONDS = 15.0
 _MODEL_CACHE: tuple[float, dict[str, tuple[str, ...] | None]] | None = None
 _MODEL_CACHE_SECONDS = 15.0
+_LAST_SELECTED: OrderedDict[str, float] = OrderedDict()
+_LAST_SELECTED_LIMIT = 1024
+_PREFIX_OVERLAY: OrderedDict[str, str] = OrderedDict()
+_PREFIX_OVERLAY_LIMIT = 256
 
 
 @dataclass(frozen=True, slots=True)
@@ -103,6 +115,7 @@ class CliproxyCandidate:
     blocked_models: frozenset[str] = frozenset()
     api_key_kind: str | None = None
     api_key_index: int | None = None
+    route_identity: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -141,16 +154,36 @@ def prompt_cache_key_from_body(body: Mapping[str, JsonValue]) -> str | None:
     return text or None
 
 
-def rewrite_model_for_credential(model: str, prefix: str | None) -> str:
-    """Return ``prefix/leaf``, leaving ``model`` unchanged when prefix is unusable."""
+def rewrite_model_for_credential(
+    model: str,
+    prefix: str | None,
+    *,
+    known_prefixes: Sequence[str] = (),
+) -> str:
+    """Return ``prefix`` plus the full model id.
+
+    A leading segment is removed only when it is one of ``known_prefixes``.
+    ``openrouter/auto`` stays ``openrouter/auto`` under the credential prefix.
+    """
 
     credential_prefix = prefix_or_none(prefix)
     if credential_prefix is None:
         return model
-    leaf = model.rsplit("/", 1)[-1]
-    if not leaf:
+    body = _model_without_known_prefix(model, known_prefixes).strip()
+    if not body:
         return model
-    return f"{credential_prefix}/{leaf}"
+    return f"{credential_prefix}/{body}"
+
+
+def _model_without_known_prefix(model: str, known_prefixes: Sequence[str]) -> str:
+    text = model.strip()
+    head, separator, tail = text.partition("/")
+    if not separator or not tail:
+        return text
+    known = {item.casefold() for item in known_prefixes if prefix_or_none(item)}
+    if head.casefold() in known:
+        return tail
+    return text
 
 
 def model_is_excluded(patterns: Sequence[str], model: str) -> bool:
@@ -176,19 +209,25 @@ def model_is_excluded(patterns: Sequence[str], model: str) -> bool:
     return False
 
 
-def candidate_serves_model(candidate: CliproxyCandidate, model: str) -> bool:
-    leaf = model.rsplit("/", 1)[-1].strip()
-    if not leaf or model_is_excluded(candidate.excluded_models, leaf):
+def candidate_serves_model(
+    candidate: CliproxyCandidate,
+    model: str,
+    *,
+    known_prefixes: Sequence[str] = (),
+) -> bool:
+    requested = _model_without_known_prefix(model, known_prefixes).strip()
+    if not requested or model_is_excluded(candidate.excluded_models, requested):
         return False
-    folded = leaf.casefold()
-    if folded in candidate.blocked_models:
+    folded = requested.casefold()
+    leaf = requested.rsplit("/", 1)[-1].casefold()
+    if folded in candidate.blocked_models or leaf in candidate.blocked_models:
         return False
     if candidate.models:
-        names = {item.rsplit("/", 1)[-1].strip().casefold() for item in candidate.models}
+        names = {item.strip().casefold() for item in candidate.models if item.strip()}
         return folded in names
-    if not candidate.family_fallback:
+    if not candidate.family_fallback or "/" in requested:
         return False
-    return _model_family(leaf) == credential_provider(candidate.provider)
+    return _model_family(requested) == credential_provider(candidate.provider)
 
 
 def generated_prefix(provider: str, identity: str, taken: set[str]) -> str:
@@ -224,8 +263,9 @@ async def choose_cliproxy_route(
 ) -> tuple[CliproxyDispatchChoice | None, _StickyMutation | None]:
     """Pick one prefixed credential and the sticky write that should follow."""
 
+    known_prefixes = _known_credential_prefixes(candidates)
     prefixed = [item for item in candidates if prefix_or_none(item.prefix) and item.weight > 0]
-    serving = [item for item in prefixed if candidate_serves_model(item, model)]
+    serving = [item for item in prefixed if candidate_serves_model(item, model, known_prefixes=known_prefixes)]
     if not serving:
         return None, None
     use_sticky = sticky_enabled and bool(sticky_key) and sticky_kind is not None and sticky_repo is not None
@@ -264,12 +304,13 @@ async def choose_cliproxy_route(
         provider=match.provider,
         auth_index=match.auth_index,
         prefix=prefix,
-        wire_model=rewrite_model_for_credential(model, prefix),
+        wire_model=rewrite_model_for_credential(model, prefix, known_prefixes=known_prefixes),
         requested_model=model,
         route=route,
         sticky_key=sticky_key if use_sticky else None,
         sticky_kind=sticky_kind if use_sticky else None,
     )
+    _remember_selection(choice.account_id)
     return choice, outcome.mutation if use_sticky else None
 
 
@@ -403,6 +444,7 @@ def candidates_from_api_keys(rows: Sequence[ApiKeyRouteRow]) -> list[CliproxyCan
                 state=state,
                 api_key_kind=row.kind,
                 api_key_index=row.index,
+                route_identity=row.route_identity,
             )
         )
     return built
@@ -537,7 +579,11 @@ def _oauth_candidate(
 
 
 def _ranked_state(candidate: CliproxyCandidate, *, penalize_unknown: bool = True) -> AccountState:
-    state = replace(candidate.state, capacity_credits=float(candidate.weight))
+    state = replace(
+        candidate.state,
+        capacity_credits=float(candidate.weight),
+        last_selected_at=_LAST_SELECTED.get(candidate.account_id),
+    )
     measured = state.used_percent is not None or state.secondary_used_percent is not None
     if measured or not penalize_unknown:
         return state
@@ -715,10 +761,63 @@ async def _read_auth_models(
     return name, models
 
 
+def _known_credential_prefixes(candidates: Sequence[CliproxyCandidate]) -> tuple[str, ...]:
+    found: list[str] = []
+    seen: set[str] = set()
+    for item in candidates:
+        prefix = prefix_or_none(item.prefix)
+        if prefix is None:
+            continue
+        folded = prefix.casefold()
+        if folded in seen:
+            continue
+        seen.add(folded)
+        found.append(prefix)
+    return tuple(found)
+
+
+def _remember_selection(account_id: str) -> None:
+    _LAST_SELECTED[account_id] = time.time()
+    _LAST_SELECTED.move_to_end(account_id)
+    while len(_LAST_SELECTED) > _LAST_SELECTED_LIMIT:
+        _LAST_SELECTED.popitem(last=False)
+
+
+def _remember_prefix(account_id: str, prefix: str) -> None:
+    cleaned = prefix_or_none(prefix)
+    if cleaned is None:
+        return
+    _PREFIX_OVERLAY[account_id] = cleaned
+    _PREFIX_OVERLAY.move_to_end(account_id)
+    while len(_PREFIX_OVERLAY) > _PREFIX_OVERLAY_LIMIT:
+        _PREFIX_OVERLAY.popitem(last=False)
+
+
+def _with_remembered_prefixes(candidates: list[CliproxyCandidate]) -> list[CliproxyCandidate]:
+    """Fill empty snapshot prefixes from assignments this process already stored."""
+
+    updated: list[CliproxyCandidate] = []
+    for item in candidates:
+        if prefix_or_none(item.prefix) is not None:
+            updated.append(item)
+            continue
+        remembered = _PREFIX_OVERLAY.get(item.account_id)
+        if remembered is None:
+            updated.append(item)
+            continue
+        _PREFIX_OVERLAY.move_to_end(item.account_id)
+        updated.append(replace(item, prefix=remembered))
+    return updated
+
+
 async def _stored_prefixes(
     client: ClaudeSidecarClient,
-) -> tuple[dict[str, str], dict[tuple[str, int], str], set[str]]:
-    """Prefixes currently stored, read while the prefix lock is held."""
+) -> tuple[dict[str, str], dict[str, str], set[str]]:
+    """Prefixes currently stored, read while the prefix lock is held.
+
+    API-key prefixes are keyed by route identity, not list index. A deletion
+    that shifts the list cannot hand one entry's prefix to its neighbor.
+    """
 
     oauth: dict[str, str] = {}
     for entry in await client.list_auth_files():
@@ -727,11 +826,11 @@ async def _stored_prefixes(
         prefix = prefix_or_none(raw_prefix if isinstance(raw_prefix, str) else None)
         if isinstance(name, str) and name.strip() and prefix:
             oauth[name.strip()] = prefix
-    api: dict[tuple[str, int], str] = {}
+    api: dict[str, str] = {}
     for row in await list_routing_api_keys(client):
         prefix = prefix_or_none(row.prefix)
-        if prefix:
-            api[(row.kind, row.index)] = prefix
+        if prefix and row.route_identity:
+            api[row.route_identity] = prefix
     taken = {prefix.casefold() for prefix in oauth.values()}
     taken.update(prefix.casefold() for prefix in api.values())
     return oauth, api, taken
@@ -740,10 +839,12 @@ async def _stored_prefixes(
 def _known_prefix(
     candidate: CliproxyCandidate,
     oauth_prefixes: Mapping[str, str],
-    api_prefixes: Mapping[tuple[str, int], str],
+    api_prefixes: Mapping[str, str],
 ) -> str | None:
-    if candidate.api_key_kind is not None and candidate.api_key_index is not None:
-        return api_prefixes.get((candidate.api_key_kind, candidate.api_key_index))
+    if candidate.api_key_kind is not None:
+        if not candidate.route_identity:
+            return None
+        return api_prefixes.get(candidate.route_identity)
     if not candidate.name:
         return None
     return oauth_prefixes.get(candidate.name)
@@ -756,10 +857,14 @@ async def _fill_empty_prefixes(
 ) -> list[CliproxyCandidate]:
     if client is None:
         return candidates
+    candidates = _with_remembered_prefixes(candidates)
+    known_prefixes = _known_credential_prefixes(candidates)
     needing = [
         item
         for item in candidates
-        if prefix_or_none(item.prefix) is None and item.weight > 0 and candidate_serves_model(item, model)
+        if prefix_or_none(item.prefix) is None
+        and item.weight > 0
+        and candidate_serves_model(item, model, known_prefixes=known_prefixes)
     ]
     if not needing:
         return candidates
@@ -773,12 +878,14 @@ async def _fill_empty_prefixes(
                     if existing:
                         assigned[item.account_id] = existing
                         taken.add(existing.casefold())
+                        _remember_prefix(item.account_id, existing)
                         continue
                     prefix = generated_prefix(item.provider, item.account_id, taken)
                     stored = await _store_prefix_if_empty(client, session, item, prefix)
                     if stored:
                         assigned[item.account_id] = stored
                         taken.add(stored.casefold())
+                        _remember_prefix(item.account_id, stored)
     except Exception:
         logger.warning("cliproxy prefix assignment failed; unprefixed credentials stay unpinned", exc_info=True)
         return candidates
@@ -795,12 +902,14 @@ async def _store_prefix_if_empty(
     candidate: CliproxyCandidate,
     prefix: str,
 ) -> str | None:
-    if candidate.api_key_kind is not None and candidate.api_key_index is not None:
+    if candidate.api_key_kind is not None:
+        if not candidate.route_identity:
+            return None
         async with cliproxy_api_key_list_lock(session, candidate.api_key_kind):
             return await set_api_key_prefix_if_empty(
                 client,
                 kind_slug=candidate.api_key_kind,
-                index=candidate.api_key_index,
+                route_identity=candidate.route_identity,
                 prefix=prefix,
             )
     if not candidate.name:
