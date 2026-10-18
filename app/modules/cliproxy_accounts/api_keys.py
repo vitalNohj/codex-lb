@@ -553,17 +553,19 @@ async def create_api_key_account(
 
     kind = api_key_kind(write.kind)
 
-    def edit(_config: _ApiKeyConfig, groups: list[JsonValue]) -> tuple[list[JsonValue] | None, None]:
+    def edit(_config: _ApiKeyConfig, groups: list[JsonValue]) -> tuple[list[JsonValue] | None, str]:
         groups.append(_new_group(kind, write, groups))
-        return groups, None
+        created = _entries(kind, groups)[-1]
+        return groups, local_auth_index(kind, created.item)
 
-    await _edit_family(client, kind, edit)
+    identity = await _edit_family(client, kind, edit)
+    # Find the new credential by identity, not by position: another writer may
+    # append its own group between our write and this read.
     config = await _read_config(client)
-    entries = _entries(kind, config.families.get(kind.family, []))
-    if not entries:
-        raise DashboardConflictError(_STALE_ACCOUNT)
-    entry = entries[-1]
-    return await _project(client, kind, entry.index, entry.item, raw_files)
+    for entry in reversed(_entries(kind, config.families.get(kind.family, []))):
+        if identity in {api_key_route_identity(kind, entry.item), local_auth_index(kind, entry.item)}:
+            return await _project(client, kind, entry.index, entry.item, raw_files)
+    raise DashboardConflictError(_STALE_ACCOUNT)
 
 
 async def update_api_key_account(

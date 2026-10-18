@@ -1501,6 +1501,57 @@ async def test_overlapping_api_key_creates_keep_both_accounts(async_client, monk
     assert writes == ["PUT", "PUT"]
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("kind", "payload", "foreign"),
+    [
+        (
+            "claude",
+            {"baseUrl": "https://api.anthropic.com", "apiKey": "sk-ours", "models": []},
+            {"name": "theirs", "base-url": "https://api.anthropic.com", "keys": [{"api-key": "sk-theirs"}]},
+        ),
+        (
+            "openai-compatibility",
+            {"name": "ours", "baseUrl": "https://ours.example/v1", "apiKey": "sk-ours", "models": ["m"]},
+            {"name": "theirs", "base-url": "https://theirs.example/v1", "keys": [{"api-key": "sk-theirs"}]},
+        ),
+    ],
+)
+async def test_api_key_create_returns_the_created_account_when_another_writer_appends(
+    async_client, monkeypatch, kind, payload, foreign
+):
+    """The read-back after a create must find our group, not whatever is last."""
+
+    _install(monkeypatch)
+    await _ready(async_client)
+
+    async def append_after_our_write() -> None:
+        wrote = any(call[0] == "PUT" for call in _FakeClient.management_calls)
+        groups = _FakeClient.api_key_lists.setdefault(kind, [])
+        if wrote and all(group.get("name") != "theirs" for group in groups):
+            groups.append(copy.deepcopy(foreign))
+            _FakeClient.config_version += 1
+
+    _FakeClient.management_get_hook = append_after_our_write
+
+    response = await async_client.post("/api/cliproxy/api-keys", json={"kind": kind, **payload})
+
+    assert response.status_code == 200
+    body = response.json()
+    stored = _FakeClient.api_key_lists[kind]
+    assert [group["name"] for group in stored][-1] == "theirs"
+    ours = stored[-2]
+    ours_keys = ours["keys"]
+    assert isinstance(ours_keys, list) and isinstance(ours_keys[0], dict)
+    assert ours_keys[0]["api-key"] == "sk-ours"
+    assert body["index"] == len(stored) - 2
+    assert body["baseUrl"] == ours["base-url"]
+    listed = (await async_client.get("/api/cliproxy/accounts")).json()["apiKeys"]
+    ids = {item["index"]: item["id"] for item in listed if item["kind"] == kind}
+    assert body["id"] == ids[len(stored) - 2]
+    assert body["id"] != ids[len(stored) - 1]
+
+
 def _named_group_config() -> dict[str, list[dict[str, JsonValue]]]:
     """The audit's named-group layout: named groups, a multi-key group, extra fields."""
 
