@@ -3,9 +3,10 @@
 OAuth credentials stay on the auth-file endpoints. These accounts are the
 management lists CLIProxyAPI already edits: OpenAI-compatible providers
 (OpenRouter and the same shape) and the Claude, Gemini, Codex, and xAI
-API-key arrays. The panel never returns an API key to the browser and never
-writes a prefix. A prefix already stored on an entry is sent back unchanged
-when the list is replaced.
+API-key arrays. The panel never returns an API key to the browser. A prefix
+already stored on an entry is sent back unchanged when the list is replaced,
+unless the operator set a new one or the capacity router is filling an empty
+prefix. Neither path clears a prefix.
 """
 
 from __future__ import annotations
@@ -27,6 +28,7 @@ from app.modules.cliproxy_accounts.schemas import (
     CliproxyApiKeyModel,
     CliproxyCredential,
 )
+from app.modules.cliproxy_accounts.validation import validate_prefix
 
 _MAX_MODEL_LENGTH = 200
 _MAX_NAME_LENGTH = 64
@@ -92,6 +94,8 @@ class ApiKeyWrite:
     update_models: bool
     update_disabled: bool
     update_name: bool
+    prefix: str | None = None
+    update_prefix: bool = False
 
 
 def api_key_kind(slug: str) -> ApiKeyKind:
@@ -112,6 +116,8 @@ def normalize_api_key_write(
     update_models: bool,
     update_disabled: bool,
     creating: bool,
+    prefix: str | None = None,
+    update_prefix: bool = False,
 ) -> ApiKeyWrite:
     resolved = api_key_kind(kind)
     label, update_name = _name_for_write(resolved, name, creating=creating)
@@ -122,6 +128,7 @@ def normalize_api_key_write(
     model_ids = _models(models or ()) if update_models or creating else ()
     if update_disabled and disabled is not None and not resolved.supports_disable:
         raise DashboardBadRequestError("This provider has no on/off switch")
+    stored_prefix = validate_prefix(prefix) if update_prefix else None
     return ApiKeyWrite(
         kind=resolved.slug,
         name=label,
@@ -132,6 +139,8 @@ def normalize_api_key_write(
         update_models=update_models or creating,
         update_disabled=update_disabled and resolved.supports_disable,
         update_name=update_name,
+        prefix=stored_prefix,
+        update_prefix=update_prefix and not creating,
     )
 
 
@@ -185,12 +194,124 @@ async def update_api_key_account(
     payload = await _request(client, "GET", kind.path, None)
     items = [dict(item) for item in _items(payload, kind.response_key) if is_json_mapping(item)]
     current = _require_account(kind, items, index, account_id)
+    if write.update_prefix and write.prefix:
+        for offset, item in enumerate(items):
+            if offset == index:
+                continue
+            if (_text(item.get("prefix")) or "").casefold() == write.prefix.casefold():
+                raise DashboardConflictError("That prefix is already used by another CLIProxyAPI account")
     items[index] = _edited_item(kind, current, write)
     stored = await _request(client, "PUT", kind.path, {"items": items})
     saved = [item for item in _items(stored, kind.response_key) if is_json_mapping(item)] or items
     if index >= len(saved):
         raise DashboardConflictError(_STALE_ACCOUNT)
     return await _project(client, kind, index, saved[index], raw_files)
+
+
+@dataclass(frozen=True, slots=True)
+class ApiKeyRouteRow:
+    """One API-key entry the capacity router can pin, without the secret."""
+
+    kind: str
+    index: int
+    name: str
+    prefix: str | None
+    disabled: bool
+    models: tuple[str, ...]
+    auth_index: str | None
+    weight: int | None
+    priority: int | None
+
+
+async def list_routing_api_keys(client: ClaudeSidecarClient) -> list[ApiKeyRouteRow]:
+    """Return API-key rows for capacity routing, omitting the key material."""
+
+    rows: list[ApiKeyRouteRow] = []
+    for kind in API_KEY_KINDS.values():
+        try:
+            payload = await _request(client, "GET", kind.path, None)
+        except ClaudeSidecarError as exc:
+            if exc.status_code == 404:
+                continue
+            raise
+        for index, item in enumerate(_items(payload, kind.response_key)):
+            if not is_json_mapping(item):
+                continue
+            models = tuple(
+                text
+                for model in _configured_models(item.get("models"))
+                if (text := model.alias.strip() or model.name.strip())
+            )
+            rows.append(
+                ApiKeyRouteRow(
+                    kind=kind.slug,
+                    index=index,
+                    name=_text(item.get("name")) or _text(item.get("id")) or f"{kind.slug}:{index}",
+                    prefix=_text(item.get("prefix")),
+                    disabled=bool(item.get("disabled")) if kind.supports_disable else False,
+                    models=models,
+                    auth_index=_text(item.get("auth-index")) or _text(item.get("auth_index")),
+                    weight=_optional_int(item.get("weight")),
+                    priority=_optional_int(item.get("priority")),
+                )
+            )
+    return rows
+
+
+async def stored_api_key_prefixes(
+    client: ClaudeSidecarClient,
+    *,
+    skip: tuple[str, int] | None = None,
+) -> list[str]:
+    """Return prefixes currently stored on API-key entries.
+
+    ``skip`` is ``(kind, index)`` for the entry being edited, so its own
+    prefix is not treated as a collision.
+    """
+
+    found: list[str] = []
+    for kind in API_KEY_KINDS.values():
+        try:
+            payload = await _request(client, "GET", kind.path, None)
+        except ClaudeSidecarError as exc:
+            if exc.status_code == 404:
+                continue
+            raise
+        for index, item in enumerate(_items(payload, kind.response_key)):
+            if skip is not None and skip == (kind.slug, index):
+                continue
+            if not is_json_mapping(item):
+                continue
+            prefix = _text(item.get("prefix"))
+            if prefix:
+                found.append(prefix)
+    return found
+
+
+async def set_api_key_prefix_if_empty(
+    client: ClaudeSidecarClient,
+    *,
+    kind_slug: str,
+    index: int,
+    prefix: str,
+) -> str | None:
+    """Write ``prefix`` only when that entry's stored prefix is empty.
+
+    The caller holds the prefix lock and this provider's list lock. A prefix
+    that is already stored is returned unchanged.
+    """
+
+    kind = api_key_kind(kind_slug)
+    payload = await _request(client, "GET", kind.path, None)
+    items = [dict(item) for item in _items(payload, kind.response_key) if is_json_mapping(item)]
+    if index < 0 or index >= len(items):
+        return None
+    existing = _text(items[index].get("prefix"))
+    if existing:
+        return existing
+    items[index]["prefix"] = prefix
+    await _request(client, "PUT", kind.path, {"items": items})
+    return prefix
 
 
 async def delete_api_key_account(
@@ -266,6 +387,8 @@ async def _project(
         models_error=models_error,
         auth_index=auth_index,
         prefix=prefix,
+        weight=_optional_int(item.get("weight")),
+        priority=_optional_int(item.get("priority")),
     )
 
 
@@ -338,6 +461,8 @@ def _edited_item(kind: ApiKeyKind, current: Mapping[str, JsonValue], write: ApiK
             updated["api-key"] = write.api_key
     if write.update_disabled and write.disabled is not None:
         updated["disabled"] = write.disabled
+    if write.update_prefix and write.prefix:
+        updated["prefix"] = write.prefix
     return updated
 
 
@@ -608,6 +733,12 @@ def _models(values: Sequence[str]) -> tuple[str, ...]:
         seen.add(key)
         models.append(text)
     return tuple(models)
+
+
+def _optional_int(value: JsonValue | None) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value
 
 
 def _text(value: JsonValue | None) -> str | None:

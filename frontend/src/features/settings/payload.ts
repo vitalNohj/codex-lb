@@ -26,6 +26,7 @@ export function buildSettingsUpdateRequest(
   const payload: SettingsUpdateRequest = {
     expectedVersion: settings.version,
     stickyThreadsEnabled: settings.stickyThreadsEnabled,
+    cliproxyCapacityRoutingEnabled: settings.cliproxyCapacityRoutingEnabled,
     upstreamStreamTransport: settings.upstreamStreamTransport,
     prohibitFastMode: settings.prohibitFastMode,
     httpDownstreamTransportPolicy: settings.httpDownstreamTransportPolicy,

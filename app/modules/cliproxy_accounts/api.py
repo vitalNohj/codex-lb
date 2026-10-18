@@ -39,6 +39,7 @@ from app.modules.cliproxy_accounts.schemas import (
 from app.modules.cliproxy_accounts.validation import (
     CredentialFieldChange,
     validate_excluded_models,
+    validate_prefix,
     validate_priority,
     validate_weight,
 )
@@ -68,7 +69,7 @@ async def update_cliproxy_credential_fields(
     _write_access=Depends(require_dashboard_write_access),
     context: CliproxyAccountsContext = Depends(get_cliproxy_accounts_context),
 ) -> CliproxyCredentialFieldsResponse:
-    """Update weight, priority, or excluded models for one credential."""
+    """Update weight, priority, excluded models, or the operator prefix."""
 
     change = _field_change(body)
     if change.is_empty():
@@ -238,6 +239,8 @@ async def update_cliproxy_api_key(
         update_models="models" in provided,
         update_disabled="disabled" in provided,
         creating=False,
+        prefix=body.prefix,
+        update_prefix="prefix" in provided,
     )
     account_id = (body.account_id or "").strip()
     if not account_id:
@@ -282,11 +285,18 @@ def _field_change(body: CliproxyCredentialFieldsUpdate) -> CredentialFieldChange
         if body.excluded_models is None:
             raise DashboardBadRequestError("Excluded models must be a list")
         excluded = validate_excluded_models(body.excluded_models)
+    prefix = None
+    if "prefix" in provided:
+        if not isinstance(body.prefix, str):
+            raise DashboardBadRequestError("Prefix must be a single path segment")
+        prefix = validate_prefix(body.prefix)
     return CredentialFieldChange(
         weight=weight,
         priority=priority,
         excluded_models=excluded,
+        prefix=prefix,
         update_weight="weight" in provided,
         update_priority="priority" in provided,
         update_excluded_models="excluded_models" in provided,
+        update_prefix="prefix" in provided,
     )

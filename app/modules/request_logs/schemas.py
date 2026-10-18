@@ -34,6 +34,7 @@ class RequestLogEntry(DashboardModel):
     sidecar_account_label: str | None = None
     sidecar_provider: str | None = None
     sidecar_auth_index: str | None = None
+    sidecar_route: str | None = None
     model_source_id: str | None = None
     model_source_kind: str | None = None
     useragent: str | None = None

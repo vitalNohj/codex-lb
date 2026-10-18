@@ -167,6 +167,7 @@ export const ClaudeSidecarAuthPlanSchema = z.object({
 export const DashboardSettingsSchema = z
   .object({
     stickyThreadsEnabled: z.boolean(),
+    cliproxyCapacityRoutingEnabled: z.boolean().optional().default(true),
     upstreamStreamTransport:
       UpstreamStreamTransportSchema.optional().default("default"),
     prohibitFastMode: z.boolean().optional().default(false),
@@ -398,6 +399,7 @@ export const SettingsUpdateRequestSchema = z
   .object({
     expectedVersion: z.number().int().min(1).optional(),
     stickyThreadsEnabled: z.boolean().optional(),
+    cliproxyCapacityRoutingEnabled: z.boolean().optional(),
     upstreamStreamTransport: UpstreamStreamTransportSchema.optional(),
     prohibitFastMode: z.boolean().optional(),
     httpDownstreamTransportPolicy: HttpDownstreamTransportPolicySchema.optional(),
@@ -872,6 +874,7 @@ export const CliproxyCredentialFieldsUpdateSchema = z.object({
   weight: z.number().int().nullable().optional(),
   priority: z.number().int().nullable().optional(),
   excludedModels: z.array(z.string()).optional(),
+  prefix: z.string().optional(),
 });
 export const CliproxyCredentialFieldsResponseSchema = z.object({
   name: z.string(),
@@ -929,6 +932,7 @@ export const CliproxyApiKeyWriteRequestSchema = z.object({
   models: z.array(z.string()).optional(),
   disabled: z.boolean().nullable().optional(),
   accountId: z.string().optional(),
+  prefix: z.string().optional(),
 });
 export const CliproxyApiKeyDeleteRequestSchema = z.object({
   confirm: z.boolean(),

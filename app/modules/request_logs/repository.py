@@ -1065,6 +1065,7 @@ class RequestLogsRepository:
         pool_attempts: int | None = None,
         sidecar_provider: str | None = None,
         sidecar_auth_index: str | None = None,
+        sidecar_route: str | None = None,
     ) -> RequestLog:
         async with sqlite_writer_section():
             # Telemetry write: this transaction only appends one request-log
@@ -1096,6 +1097,7 @@ class RequestLogsRepository:
                 source=source,
                 sidecar_provider=sidecar_provider,
                 sidecar_auth_index=sidecar_auth_index,
+                sidecar_route=sidecar_route,
                 transport=transport,
                 upstream_transport=upstream_transport,
                 request_kind=request_kind,

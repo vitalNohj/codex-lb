@@ -5027,6 +5027,23 @@ async def test_cliproxy_routing_attribution_migration_adds_log_columns_and_stick
         assert "cliproxy_sticky_sessions" not in tables
         assert "cliproxy_prefix_write_claims" in tables
         assert {"sidecar_provider", "sidecar_auth_index"} <= columns
+        assert "sidecar_route" not in columns
+
+        capacity_revision = "20261018_000000_add_cliproxy_capacity_router"
+        restored = await to_thread.run_sync(lambda: run_upgrade(db_url, capacity_revision, bootstrap_legacy=False))
+        assert restored.current_revision == capacity_revision
+        async with engine.connect() as conn:
+            tables = {
+                row[0]
+                for row in (await conn.execute(text("SELECT name FROM sqlite_master WHERE type = 'table'"))).fetchall()
+            }
+            columns = {row[1] for row in (await conn.execute(text("PRAGMA table_info(request_logs)"))).fetchall()}
+            settings_columns = {
+                row[1] for row in (await conn.execute(text("PRAGMA table_info(dashboard_settings)"))).fetchall()
+            }
+        assert "cliproxy_sticky_sessions" in tables
+        assert "sidecar_route" in columns
+        assert "cliproxy_capacity_routing_enabled" in settings_columns
         assert await to_thread.run_sync(lambda: check_schema_drift(db_url)) == ()
     finally:
         await engine.dispose()

@@ -601,6 +601,67 @@ describe("CliproxyCredentials", () => {
     });
   });
 
+  it("saves a replacement prefix and leaves an emptied prefix unchanged", async () => {
+    const user = userEvent.setup();
+    const fieldBodies: unknown[] = [];
+    server.use(
+      http.get("*/api/cliproxy/accounts", () =>
+        HttpResponse.json({
+          status: "healthy",
+          message: null,
+          providers: [
+            {
+              provider: "xai",
+              credentials: [
+                {
+                  name: "grok-a.json",
+                  authIndex: "x1",
+                  email: "grok@example.com",
+                  provider: "xai",
+                  health: "active",
+                  disabled: false,
+                  unavailable: false,
+                  quotaExceeded: false,
+                  prefix: "acct2",
+                  models: ["grok-4"],
+                  modelsError: null,
+                  excludedModels: [],
+                  excludedModelsState: "available",
+                },
+              ],
+            },
+          ],
+        }),
+      ),
+      http.patch("*/api/cliproxy/accounts/:name/fields", async ({ request }) => {
+        fieldBodies.push(await request.json());
+        return HttpResponse.json({
+          name: "grok-a.json",
+          prefix: "newpin",
+          weight: null,
+          priority: null,
+          excludedModels: [],
+          excludedModelsState: "available",
+          disabled: false,
+        });
+      }),
+    );
+
+    renderCredentials(true);
+
+    expect(await screen.findByText("acct2")).toBeInTheDocument();
+    await user.click(screen.getByText("Advanced"));
+    const prefix = screen.getByRole("textbox", { name: "Prefix for grok@example.com" });
+    await user.clear(prefix);
+    prefix.blur();
+    expect(fieldBodies).toEqual([]);
+    await user.type(prefix, "newpin");
+    prefix.blur();
+    await waitFor(() => {
+      expect(fieldBodies).toEqual([{ prefix: "newpin" }]);
+    });
+  });
+
   it("deletes with one confirmation and does not send a separate disable", async () => {
     const user = userEvent.setup();
     const statusBodies: unknown[] = [];
