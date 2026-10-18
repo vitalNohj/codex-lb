@@ -408,6 +408,71 @@ describe("CliproxyCredentials", () => {
     expect(updates[1]).not.toHaveProperty("models");
   });
 
+  it("toggles the prompt cache key on an OpenAI-compatible group and shows key groups", async () => {
+    const user = userEvent.setup();
+    const updates: unknown[] = [];
+    const compat = {
+      id: "nv-group",
+      kind: "openai-compatibility",
+      index: 0,
+      name: "nv",
+      baseUrl: "https://integrate.api.nvidia.com/v1",
+      disabled: false,
+      supportsDisable: true,
+      hasApiKey: true,
+      keyCount: 2,
+      models: [],
+      discoveredModels: [],
+      supportPromptCacheKey: false,
+    };
+    server.use(
+      http.get("*/api/cliproxy/accounts", () =>
+        HttpResponse.json({
+          status: "healthy",
+          message: null,
+          providers: [],
+          apiKeys: [
+            compat,
+            {
+              id: "pool-b",
+              kind: "claude",
+              index: 1,
+              name: "Claude API key 2",
+              group: "shared-pool",
+              baseUrl: "https://api.anthropic.com",
+              supportsDisable: false,
+              hasApiKey: true,
+              models: [],
+              discoveredModels: [],
+              supportPromptCacheKey: null,
+            },
+          ],
+        }),
+      ),
+      http.get("*/api/settings", () => HttpResponse.json(createDashboardSettings({ claudeSidecarFullModels: [] }))),
+      http.patch("*/api/cliproxy/api-keys/openai-compatibility/0", async ({ request }) => {
+        updates.push(await request.json());
+        return HttpResponse.json({ ...compat, supportPromptCacheKey: true });
+      }),
+    );
+
+    renderCredentials(true);
+    expect(await screen.findByText("Group shared-pool")).toBeInTheDocument();
+    expect(screen.getByText(/Routing pins this group, not one of its 2 keys/)).toBeInTheDocument();
+    expect(screen.queryByRole("switch", { name: "Send prompt cache key for Claude API key 2" })).toBeNull();
+    await user.click(screen.getByRole("switch", { name: "Send prompt cache key for nv" }));
+    await waitFor(() => {
+      expect(updates).toEqual([
+        {
+          kind: "openai-compatibility",
+          accountId: "nv-group",
+          baseUrl: "https://integrate.api.nvidia.com/v1",
+          supportPromptCacheKey: true,
+        },
+      ]);
+    });
+  });
+
   it("drops a deleted account's drafts instead of saving them onto the next account", async () => {
     const user = userEvent.setup();
     const updates: unknown[] = [];

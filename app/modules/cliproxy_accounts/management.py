@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import cast
 from urllib.parse import quote
 
@@ -23,6 +24,15 @@ from app.modules.cliproxy_accounts.redaction import public_message
 
 def build_management(client: ClaudeSidecarClient) -> CliproxyManagement:
     return CliproxyManagement(client)
+
+
+@dataclass(frozen=True, slots=True)
+class ManagementResponse:
+    """One raw management reply. The caller decides what each status means."""
+
+    status: int
+    etag: str | None
+    body: JsonValue | None
 
 
 class CliproxyManagement:
@@ -52,14 +62,38 @@ class CliproxyManagement:
         # Discard it. The panel polls our own status record instead.
         await self._request("POST", "/v0/management/auth-files/refresh", json_body=body)
 
-    async def get_json(self, path: str) -> Mapping[str, JsonValue]:
-        return await self._request("GET", path)
+    async def config_v8(
+        self,
+        method: str,
+        path: str,
+        *,
+        body: JsonValue | None = None,
+        if_match: str | None = None,
+    ) -> ManagementResponse:
+        """Call CLIProxyAPI's v8 config API without raising on HTTP errors.
 
-    async def put_json(self, path: str, body: Mapping[str, JsonValue]) -> Mapping[str, JsonValue]:
-        return await self._request("PUT", path, json_body=body)
+        The v8 API edits the raw YAML tree under ``/v8/management/config``.
+        GET replies carry an ``ETag``. A write sent with ``If-Match`` gets 412
+        when the file changed after that read, so a caller can retry a
+        read-modify-write instead of overwriting another writer's change.
+        """
 
-    async def delete_path(self, path: str) -> None:
-        await self._request("DELETE", path)
+        url = f"{self._client.base_url}{path}"
+        headers = _headers(self._client)
+        raw_body: bytes | None = None
+        if body is not None:
+            raw_body = json.dumps(body, separators=(",", ":"), ensure_ascii=False).encode()
+            headers["Content-Type"] = "application/json"
+        if if_match:
+            headers["If-Match"] = if_match
+        try:
+            async with lease_http_session() as session:
+                async with _open(session, method, url, headers, self._client, None, raw_body) as resp:
+                    data = await _read_json(resp)
+                    return ManagementResponse(status=resp.status, etag=resp.headers.get("ETag"), body=data)
+        except (asyncio.TimeoutError, aiohttp.ClientError, OSError) as exc:
+            detail = str(exc) or exc.__class__.__name__
+            raise ClaudeSidecarUnavailableError(public_message(f"Failed to call CLIProxyAPI: {detail}")) from exc
 
     async def upload_auth_file(self, name: str, data: bytes) -> None:
         await self._request(
@@ -130,8 +164,10 @@ def _open(
     if method == "DELETE":
         return session.delete(url, headers=dict(headers), timeout=timeout)
     if method in {"PUT", "PATCH"}:
-        payload = None if json_body is None else dict(json_body)
         opener = session.put if method == "PUT" else session.patch
+        if raw_body is not None:
+            return opener(url, headers=dict(headers), data=raw_body, timeout=timeout)
+        payload = None if json_body is None else dict(json_body)
         return opener(url, headers=dict(headers), json=payload, timeout=timeout)
     if raw_body is not None:
         return session.post(url, headers=dict(headers), data=raw_body, timeout=timeout)
@@ -147,6 +183,10 @@ async def _read_json(resp: aiohttp.ClientResponse) -> JsonValue | None:
         return cast(JsonValue, json.loads(text))
     except json.JSONDecodeError:
         return {"message": public_message(text[:200])}
+
+
+def error_message(status_code: int, body: JsonValue | None) -> str:
+    return _error_message(status_code, body)
 
 
 def _error_message(status_code: int, body: JsonValue | None) -> str:

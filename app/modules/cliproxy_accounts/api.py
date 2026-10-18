@@ -212,6 +212,8 @@ async def create_cliproxy_api_key(
         update_models=True,
         update_disabled="disabled" in body.model_fields_set,
         creating=True,
+        support_prompt_cache_key=body.support_prompt_cache_key,
+        update_support_prompt_cache_key="support_prompt_cache_key" in body.model_fields_set,
     )
     return await context.service.create_api_key(write)
 
@@ -241,6 +243,8 @@ async def update_cliproxy_api_key(
         creating=False,
         prefix=body.prefix,
         update_prefix="prefix" in provided,
+        support_prompt_cache_key=body.support_prompt_cache_key,
+        update_support_prompt_cache_key="support_prompt_cache_key" in provided,
     )
     account_id = (body.account_id or "").strip()
     if not account_id:
