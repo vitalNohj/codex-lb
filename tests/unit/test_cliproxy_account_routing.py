@@ -1,20 +1,46 @@
-"""Dispatch no longer rewrites a model id onto a CLIProxyAPI credential prefix."""
+"""Capacity routing for CLIProxyAPI credentials, with Codex selection unchanged."""
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+from types import SimpleNamespace
+
 import pytest
 
-from app.core.clients.claude_sidecar import ClaudeSidecarConfig, SidecarPrefix
+from app.core.balancer.logic import AccountState, RoutingStrategy, select_account
+from app.core.clients.claude_sidecar import ClaudeSidecarConfig, ClaudeSidecarError, SidecarPrefix
 from app.core.openai.chat_requests import ChatCompletionsRequest
+from app.db.models import AccountStatus, StickySessionKind
+from app.modules.claude_sidecar.quota import SidecarAuthQuota, SidecarModelQuota, SidecarQuotaSnapshot
+from app.modules.cliproxy_accounts.api_keys import (
+    API_KEY_KINDS,
+    ApiKeyRouteRow,
+    api_key_account_id,
+    api_key_route_identity,
+    set_api_key_prefix_if_empty,
+)
 from app.modules.proxy import claude_sidecar_dispatch
+from app.modules.proxy import cliproxy_account_routing as routing
 from app.modules.proxy.claude_sidecar_dispatch import build_sidecar_chat_payload
+from app.modules.proxy.cliproxy_account_routing import (
+    CliproxyCandidate,
+    apply_cliproxy_account_route,
+    candidate_serves_model,
+    candidates_from_api_keys,
+    candidates_from_snapshot,
+    choose_cliproxy_route,
+    cliproxy_log_attribution,
+    rewrite_model_for_credential,
+)
+from app.modules.request_logs.mappers import cliproxy_credential_label
 
 pytestmark = pytest.mark.unit
 
 
-def test_sidecar_dispatch_does_not_select_a_credential_prefix() -> None:
-    assert not hasattr(claude_sidecar_dispatch, "prepare_cliproxy_account_route")
-    assert not hasattr(claude_sidecar_dispatch, "sidecar_operation_with_credential_failover")
+@pytest.fixture(autouse=True)
+def _clear_cliproxy_route_memory() -> None:
+    routing._LAST_SELECTED.clear()
+    routing._PREFIX_OVERLAY.clear()
 
 
 def test_sidecar_chat_payload_forwards_the_resolved_model_id() -> None:
@@ -34,3 +60,498 @@ def test_sidecar_chat_payload_forwards_the_resolved_model_id() -> None:
     forwarded = build_sidecar_chat_payload(payload, "grok-4", config)
 
     assert forwarded.body["model"] == "grok-4"
+    assert not hasattr(claude_sidecar_dispatch, "prepare_cliproxy_account_route")
+
+
+def test_codex_usage_weighted_still_prefers_the_lower_usage_account() -> None:
+    low = AccountState(
+        account_id="codex-low",
+        status=AccountStatus.ACTIVE,
+        used_percent=10.0,
+        secondary_used_percent=10.0,
+    )
+    high = AccountState(
+        account_id="codex-high",
+        status=AccountStatus.ACTIVE,
+        used_percent=80.0,
+        secondary_used_percent=80.0,
+    )
+
+    selected = select_account((high, low), routing_strategy="usage_weighted")
+
+    assert selected.account is not None
+    assert selected.account.account_id == "codex-low"
+
+
+def _candidate(
+    account_id: str,
+    prefix: str | None,
+    *,
+    used: float | None,
+    priority: int = 0,
+    weight: int = 1,
+    status: AccountStatus = AccountStatus.ACTIVE,
+    models: tuple[str, ...] = ("grok-4",),
+    excluded: tuple[str, ...] = (),
+    provider: str = "xai",
+) -> CliproxyCandidate:
+    return CliproxyCandidate(
+        account_id=account_id,
+        provider=provider,
+        auth_index=account_id.rsplit(":", 1)[-1],
+        name=f"{account_id}.json",
+        prefix=prefix,
+        priority=priority,
+        weight=weight,
+        models=models,
+        excluded_models=excluded,
+        family_fallback=not models,
+        state=AccountState(
+            account_id=account_id,
+            status=status,
+            used_percent=used,
+            secondary_used_percent=used,
+            plan_type=provider,
+        ),
+    )
+
+
+async def _choose(
+    candidates: list[CliproxyCandidate],
+    *,
+    sticky: bool = False,
+    existing: str | None = None,
+    model: str = "grok-4",
+    strategy: RoutingStrategy = "usage_weighted",
+) -> routing.CliproxyDispatchChoice | None:
+    choice, _mutation = await choose_cliproxy_route(
+        candidates,
+        model=model,
+        sticky_key="cliproxy:prompt_cache:thread-1" if sticky else None,
+        sticky_kind=StickySessionKind.PROMPT_CACHE if sticky else None,
+        sticky_repo=SimpleNamespace() if sticky else None,  # type: ignore[arg-type]
+        sticky_enabled=sticky,
+        existing_account_id=existing,
+        routing_strategy=strategy,
+        sticky_max_age_seconds=3600,
+    )
+    return choice
+
+
+async def test_usage_weighted_prefers_measured_headroom_over_unknown_capacity() -> None:
+    measured = _candidate("cliproxy:xai:busy", "busy", used=40.0)
+    unknown = _candidate("cliproxy:xai:unknown", "unknown", used=None)
+
+    choice = await _choose([unknown, measured])
+
+    assert choice is not None
+    assert choice.account_id == measured.account_id
+    assert choice.route == "selected"
+    assert choice.wire_model == "busy/grok-4"
+
+
+async def test_unknown_capacity_serves_when_it_is_the_only_eligible_account() -> None:
+    unknown = _candidate("cliproxy:xai:unknown", "unknown", used=None)
+
+    choice = await _choose([unknown])
+
+    assert choice is not None
+    assert choice.wire_model == "unknown/grok-4"
+
+
+async def test_non_positive_weight_is_excluded() -> None:
+    paused_weight = _candidate("cliproxy:xai:zero", "zero", used=0.0, weight=0)
+    serving = _candidate("cliproxy:xai:one", "one", used=50.0, weight=1)
+
+    choice = await _choose([paused_weight, serving])
+
+    assert choice is not None
+    assert choice.account_id == serving.account_id
+
+
+async def test_cold_selection_uses_the_highest_priority_tier_with_an_active_account() -> None:
+    preferred = _candidate("cliproxy:xai:high", "high", used=80.0, priority=5)
+    spare = _candidate("cliproxy:xai:low", "low", used=1.0, priority=0)
+    exhausted_tier = _candidate(
+        "cliproxy:xai:top",
+        "top",
+        used=100.0,
+        priority=9,
+        status=AccountStatus.QUOTA_EXCEEDED,
+    )
+
+    choice = await _choose([spare, exhausted_tier, preferred])
+
+    assert choice is not None
+    assert choice.account_id == preferred.account_id
+
+
+async def test_sticky_hit_keeps_the_pinned_account_below_the_budget() -> None:
+    pinned = _candidate("cliproxy:xai:pin", "pin", used=10.0, priority=0)
+    fresher = _candidate("cliproxy:xai:fresh", "fresh", used=0.0, priority=5)
+
+    choice = await _choose([fresher, pinned], sticky=True, existing=pinned.account_id)
+
+    assert choice is not None
+    assert choice.account_id == pinned.account_id
+    assert choice.route == "sticky"
+    assert choice.wire_model == "pin/grok-4"
+
+
+async def test_sticky_rebinds_when_the_pin_is_over_budget() -> None:
+    pinned = _candidate("cliproxy:xai:pin", "pin", used=96.0)
+    spare = _candidate("cliproxy:xai:spare", "spare", used=10.0)
+
+    choice = await _choose([pinned, spare], sticky=True, existing=pinned.account_id)
+
+    assert choice is not None
+    assert choice.account_id == spare.account_id
+    assert choice.route == "rebind"
+    assert choice.wire_model == "spare/grok-4"
+
+
+async def test_sticky_rebinds_when_the_pin_is_quota_exhausted() -> None:
+    pinned = _candidate("cliproxy:xai:pin", "pin", used=100.0, status=AccountStatus.QUOTA_EXCEEDED)
+    spare = _candidate("cliproxy:xai:spare", "spare", used=20.0)
+
+    choice = await _choose([pinned, spare], sticky=True, existing=pinned.account_id)
+
+    assert choice is not None
+    assert choice.account_id == spare.account_id
+    assert choice.route == "rebind"
+
+
+async def test_unknown_capacity_sticky_pin_stays_while_it_can_serve() -> None:
+    pinned = _candidate("cliproxy:xai:pin", "pin", used=None)
+    measured = _candidate("cliproxy:xai:measured", "measured", used=5.0)
+
+    choice = await _choose([measured, pinned], sticky=True, existing=pinned.account_id)
+
+    assert choice is not None
+    assert choice.account_id == pinned.account_id
+    assert choice.route == "sticky"
+
+
+def _settings(*, enabled: bool = True) -> SimpleNamespace:
+    return SimpleNamespace(
+        cliproxy_capacity_routing_enabled=enabled,
+        claude_sidecar_base_url="http://127.0.0.1:8317",
+        claude_sidecar_quota_state_json=None,
+        sticky_threads_enabled=False,
+        routing_strategy="usage_weighted",
+        prefer_earlier_reset_accounts=False,
+        prefer_earlier_reset_window="secondary",
+        sticky_reallocation_primary_budget_threshold_pct=95.0,
+        sticky_reallocation_secondary_budget_threshold_pct=100.0,
+        http_responses_session_bridge_prompt_cache_idle_ttl_seconds=3600,
+    )
+
+
+def _install_settings(monkeypatch: pytest.MonkeyPatch, settings: SimpleNamespace) -> None:
+    class _Cache:
+        async def get(self) -> SimpleNamespace:
+            return settings
+
+    monkeypatch.setattr(routing, "get_settings_cache", lambda: _Cache())
+
+
+async def test_dispatch_pins_the_chosen_prefix_on_a_stubbed_sidecar(monkeypatch: pytest.MonkeyPatch) -> None:
+    chosen = _candidate("cliproxy:xai:acct1", "acct1", used=10.0)
+    _install_settings(monkeypatch, _settings())
+    monkeypatch.setattr(routing, "candidates_from_snapshot", lambda snapshot, *, now: [chosen])
+    seen: list[str] = []
+
+    class _Stub:
+        async def chat_completion(self, body: dict[str, object]) -> dict[str, str]:
+            model = body["model"]
+            assert isinstance(model, str)
+            seen.append(model)
+            return {"id": "ok"}
+
+    body: dict[str, object] = {"model": "grok-4"}
+    choice = await apply_cliproxy_account_route(body, headers={}, client=None)  # type: ignore[arg-type]
+    await claude_sidecar_dispatch._chat_completion_with_rebind(_Stub(), body)  # type: ignore[arg-type]
+
+    assert choice is not None
+    assert choice.wire_model == "acct1/grok-4"
+    assert body["model"] == "acct1/grok-4"
+    assert seen == ["acct1/grok-4"]
+    assert cliproxy_log_attribution() == ("xai", "acct1", "selected")
+    assert cliproxy_credential_label("xai", "acct1", "selected") == "xai/acct1 · selected"
+
+
+async def test_dispatch_leaves_a_plain_model_when_routing_is_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    _install_settings(monkeypatch, _settings(enabled=False))
+    body: dict[str, object] = {"model": "grok-4"}
+
+    choice = await apply_cliproxy_account_route(body, headers={}, client=None)  # type: ignore[arg-type]
+
+    assert choice is None
+    assert body["model"] == "grok-4"
+    assert cliproxy_log_attribution() == (None, None, None)
+
+
+async def test_dispatch_leaves_a_plain_model_when_selection_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    _install_settings(monkeypatch, _settings())
+
+    async def _boom(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("quota store unavailable")
+
+    monkeypatch.setattr(routing, "_select_dispatch", _boom)
+    body: dict[str, object] = {"model": "grok-4"}
+
+    choice = await apply_cliproxy_account_route(body, headers={}, client=None)  # type: ignore[arg-type]
+
+    assert choice is None
+    assert body["model"] == "grok-4"
+
+
+async def test_rebind_after_upstream_429_pins_the_other_credential(monkeypatch: pytest.MonkeyPatch) -> None:
+    first = _candidate("cliproxy:xai:first", "first", used=10.0)
+    second = _candidate("cliproxy:xai:second", "second", used=40.0)
+    _install_settings(monkeypatch, _settings())
+    monkeypatch.setattr(routing, "candidates_from_snapshot", lambda snapshot, *, now: [first, second])
+    seen: list[str] = []
+    calls = {"count": 0}
+
+    class _Stub:
+        async def chat_completion(self, body: dict[str, object]) -> dict[str, str]:
+            model = body["model"]
+            assert isinstance(model, str)
+            seen.append(model)
+            calls["count"] += 1
+            if calls["count"] == 1:
+                raise ClaudeSidecarError(429, "rate limited")
+            return {"id": "ok"}
+
+    body: dict[str, object] = {"model": "grok-4"}
+    await apply_cliproxy_account_route(body, headers={}, client=None)  # type: ignore[arg-type]
+    await claude_sidecar_dispatch._chat_completion_with_rebind(_Stub(), body)  # type: ignore[arg-type]
+
+    assert seen == ["first/grok-4", "second/grok-4"]
+    assert body["model"] == "second/grok-4"
+    assert cliproxy_log_attribution() == ("xai", "second", "rebind")
+
+
+def test_quota_model_states_block_a_model_without_becoming_the_catalog() -> None:
+    snapshot = SidecarQuotaSnapshot(
+        checked_at=datetime(2026, 10, 18, tzinfo=timezone.utc),
+        status="healthy",
+        message=None,
+        accounts=(
+            SidecarAuthQuota(
+                name="grok-a.json",
+                auth_index="x1",
+                email="grok@example.com",
+                status="active",
+                status_message=None,
+                disabled=False,
+                unavailable=False,
+                quota_exceeded=False,
+                next_recover_at=None,
+                model_states=(SidecarModelQuota(model="grok-4", quota_exceeded=True, next_recover_at=None),),
+                success=0,
+                failed=0,
+                last_refresh=None,
+                provider="xai",
+                prefix="acct",
+            ),
+        ),
+    )
+
+    built = candidates_from_snapshot(snapshot, now=datetime(2026, 10, 18, tzinfo=timezone.utc))
+
+    assert len(built) == 1
+    assert built[0].models == ()
+    assert built[0].blocked_models == frozenset({"grok-4"})
+    assert candidate_serves_model(built[0], "grok-4") is False
+    assert candidate_serves_model(built[0], "grok-4-fast") is True
+
+
+async def test_discovered_models_replace_the_family_guess() -> None:
+    routing._MODEL_CACHE = None
+    snapshot = SidecarQuotaSnapshot(
+        checked_at=datetime(2026, 10, 18, tzinfo=timezone.utc),
+        status="healthy",
+        message=None,
+        accounts=(
+            SidecarAuthQuota(
+                name="grok-a.json",
+                auth_index="x1",
+                email="grok@example.com",
+                status="active",
+                status_message=None,
+                disabled=False,
+                unavailable=False,
+                quota_exceeded=False,
+                next_recover_at=None,
+                model_states=(SidecarModelQuota(model="grok-4", quota_exceeded=True, next_recover_at=None),),
+                success=0,
+                failed=0,
+                last_refresh=None,
+                provider="xai",
+                prefix="acct",
+            ),
+        ),
+    )
+    built = candidates_from_snapshot(snapshot, now=datetime(2026, 10, 18, tzinfo=timezone.utc))
+
+    class _Catalog:
+        async def list_auth_file_models(self, name: str) -> list[str]:
+            assert name == "grok-a.json"
+            return ["grok-4", "grok-4-fast"]
+
+    attached = await routing._attach_discovered_models(built, _Catalog())  # type: ignore[arg-type]
+
+    assert attached[0].models == ("grok-4", "grok-4-fast")
+    assert attached[0].family_fallback is False
+    assert candidate_serves_model(attached[0], "grok-4") is False
+    assert candidate_serves_model(attached[0], "grok-4-fast") is True
+    assert candidate_serves_model(attached[0], "grok-3") is False
+
+
+def test_rewrite_keeps_a_namespaced_model_id() -> None:
+    assert rewrite_model_for_credential("openrouter/auto", "lbabc") == "lbabc/openrouter/auto"
+    assert (
+        rewrite_model_for_credential(
+            "lbother/openrouter/auto",
+            "lbabc",
+            known_prefixes=("lbother",),
+        )
+        == "lbabc/openrouter/auto"
+    )
+    assert rewrite_model_for_credential("vendor/model", "lbabc", known_prefixes=("lbabc",)) == "lbabc/vendor/model"
+
+
+async def test_namespaced_catalog_ids_are_not_interchangeable() -> None:
+    vendor = _candidate("cliproxy:xai:vendor", "pina", used=10.0, models=("vendor/model",))
+    other = _candidate("cliproxy:xai:other", "pinb", used=0.0, models=("other/model",))
+
+    choice = await _choose([other, vendor], model="vendor/model")
+
+    assert choice is not None
+    assert choice.account_id == vendor.account_id
+    assert choice.wire_model == "pina/vendor/model"
+
+
+async def test_round_robin_rotates_equally_used_credentials() -> None:
+    first_account = _candidate("cliproxy:xai:a", "a", used=10.0)
+    second_account = _candidate("cliproxy:xai:b", "b", used=10.0)
+
+    first = await _choose([first_account, second_account], strategy="round_robin")
+    second = await _choose([first_account, second_account], strategy="round_robin")
+
+    assert first is not None and second is not None
+    assert {first.account_id, second.account_id} == {first_account.account_id, second_account.account_id}
+    assert first.account_id != second.account_id
+
+
+async def test_remembered_prefix_skips_another_management_listing() -> None:
+    bare = _candidate("cliproxy:xai:bare", None, used=10.0)
+    routing._remember_prefix(bare.account_id, "kept")
+
+    class _Listing:
+        async def list_auth_files(self) -> list[object]:
+            raise AssertionError("stale snapshot should reuse the remembered prefix")
+
+    filled = await routing._fill_empty_prefixes([bare], "grok-4", _Listing())  # type: ignore[arg-type]
+
+    assert filled[0].prefix == "kept"
+
+
+def test_route_identity_survives_a_prefix_and_rejects_a_different_key() -> None:
+    kind = API_KEY_KINDS["claude"]
+    bare = {"api-key": "secret-a"}
+    filled = {"api-key": "secret-a", "prefix": "lbabc"}
+    other = {"api-key": "secret-b"}
+
+    assert api_key_route_identity(kind, bare) == api_key_route_identity(kind, filled)
+    assert api_key_route_identity(kind, bare) != api_key_route_identity(kind, other)
+    assert api_key_account_id(kind, bare) != api_key_account_id(kind, filled)
+
+
+async def test_prefix_fill_follows_identity_after_the_list_shifts() -> None:
+    kind = API_KEY_KINDS["claude"]
+    items = [{"api-key": "secret-b"}, {"api-key": "secret-a"}]
+    written: dict[str, object] = {}
+
+    class _Client:
+        async def management_request(self, method: str, path: str, body: object) -> dict[str, object]:
+            assert path == kind.path
+            if method == "GET":
+                return {kind.response_key: items}
+            written["body"] = body
+            return {kind.response_key: items}
+
+    identity = api_key_route_identity(kind, {"api-key": "secret-a"})
+    stored = await set_api_key_prefix_if_empty(
+        _Client(),  # type: ignore[arg-type]
+        kind_slug="claude",
+        route_identity=identity,
+        prefix="lb-a",
+    )
+
+    assert stored == "lb-a"
+    body = written["body"]
+    assert isinstance(body, dict)
+    saved = body["items"]
+    assert isinstance(saved, list)
+    assert saved[0].get("prefix") is None
+    assert saved[1]["prefix"] == "lb-a"
+
+
+async def test_prefix_fill_does_not_write_a_deleted_identity_onto_the_neighbor() -> None:
+    kind = API_KEY_KINDS["claude"]
+    items = [{"api-key": "secret-b"}]
+    written: list[object] = []
+
+    class _Client:
+        async def management_request(self, method: str, path: str, body: object) -> dict[str, object]:
+            assert path == kind.path
+            if method == "PUT":
+                written.append(body)
+            return {kind.response_key: items}
+
+    identity = api_key_route_identity(kind, {"api-key": "secret-a"})
+    stored = await set_api_key_prefix_if_empty(
+        _Client(),  # type: ignore[arg-type]
+        kind_slug="claude",
+        route_identity=identity,
+        prefix="lb-a",
+    )
+
+    assert stored is None
+    assert written == []
+
+
+def _api_key_row(index: int, route_identity: str, *, models: tuple[str, ...] = ("model-a",)) -> ApiKeyRouteRow:
+    return ApiKeyRouteRow(
+        kind="claude",
+        index=index,
+        name=f"key-{index}",
+        prefix=None,
+        disabled=False,
+        models=models,
+        auth_index=None,
+        weight=None,
+        priority=None,
+        route_identity=route_identity,
+    )
+
+
+def test_remembered_prefix_does_not_follow_a_shifted_api_key_index() -> None:
+    deleted = candidates_from_api_keys([_api_key_row(0, "identity-a", models=("model-a",))])[0]
+    shifted = candidates_from_api_keys([_api_key_row(0, "identity-b", models=("model-b",))])[0]
+    routing._remember_prefix(deleted.account_id, "from-a")
+
+    filled = routing._with_remembered_prefixes([shifted])
+
+    assert deleted.account_id != shifted.account_id
+    assert filled[0].prefix is None
+
+
+def test_operator_prefix_edit_drops_remembered_prefixes() -> None:
+    routing._remember_prefix("cliproxy:xai:acct", "old")
+    routing.forget_remembered_prefixes()
+
+    assert routing._PREFIX_OVERLAY == {}

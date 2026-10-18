@@ -166,7 +166,7 @@ class RequestLogsService:
                 log,
                 api_key_name=api_key_name_by_id.get(log.api_key_id or ""),
                 sidecar_account_label=(
-                    cliproxy_credential_label(log.sidecar_provider, log.sidecar_auth_index)
+                    cliproxy_credential_label(log.sidecar_provider, log.sidecar_auth_index, log.sidecar_route)
                     or sidecar_account_label_by_request_id.get(log.request_id)
                     or openai_compat_label_by_source.get(log.source or "")
                 ),

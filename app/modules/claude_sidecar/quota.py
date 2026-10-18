@@ -104,6 +104,9 @@ class SidecarAuthQuota:
     excluded_models_available: bool = False
     prefix: str | None = None
     grok_credits: GrokCreditsQuota | None = None
+    # CLIProxyAPI selection controls. Missing weight is 1; missing priority is 0.
+    weight: int | None = None
+    priority: int | None = None
 
 
 def credential_provider(value: str | None) -> str:
@@ -256,6 +259,8 @@ def _parse_one(entry: Mapping[str, JsonValue], *, auth_dir: Path) -> SidecarAuth
         excluded_models=tuple(excluded) if excluded is not None else (),
         excluded_models_available=excluded is not None,
         prefix=_str(entry.get("prefix")),
+        weight=_int(entry.get("weight")),
+        priority=_int(entry.get("priority")),
     )
 
 
@@ -530,6 +535,8 @@ def snapshot_to_json(snapshot: SidecarQuotaSnapshot) -> str:
                 "excluded_models": list(account.excluded_models),
                 "excluded_models_available": account.excluded_models_available,
                 "prefix": account.prefix,
+                "weight": account.weight,
+                "priority": account.priority,
                 **_grok_credits_json_fields(account.grok_credits),
             }
             for account in snapshot.accounts
@@ -604,6 +611,8 @@ def snapshot_from_json(raw: str | None) -> SidecarQuotaSnapshot | None:
                     excluded_models_available=bool(entry.get("excluded_models_available", False)),
                     prefix=_str(entry.get("prefix")),
                     grok_credits=_grok_credits_from_json(entry.get("grok_credits")),
+                    weight=_int(entry.get("weight")),
+                    priority=_int(entry.get("priority")),
                 )
             )
     message_field = parsed.get("message")

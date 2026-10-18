@@ -38,6 +38,10 @@ class ApiKeyWriteLockTimeout(Exception):
     """The API-key list claim stayed held past the acquisition timeout."""
 
 
+class PrefixWriteLockTimeout(Exception):
+    """The prefix claim stayed held past the acquisition timeout."""
+
+
 class _ClaimLock:
     def __init__(self, name: str, pg_key: str, timeout_message: str, timeout_type: type[Exception]) -> None:
         self.name = name
@@ -77,6 +81,22 @@ def _api_key_list_lock(kind: str) -> _ClaimLock:
         timeout_type=ApiKeyWriteLockTimeout,
     )
     return _API_KEY_LIST_LOCKS.setdefault(kind, created)
+
+
+_PREFIX_LOCK = _ClaimLock(
+    "prefix",
+    "cliproxy-prefix-writes",
+    "Another CLIProxyAPI prefix update is in progress",
+    PrefixWriteLockTimeout,
+)
+
+
+@asynccontextmanager
+async def cliproxy_prefix_write_lock(session: AsyncSession) -> AsyncIterator[None]:
+    """Hold the prefix lock while a stored prefix is assigned or replaced."""
+
+    async with _claim_lock(session, _PREFIX_LOCK):
+        yield
 
 
 @asynccontextmanager

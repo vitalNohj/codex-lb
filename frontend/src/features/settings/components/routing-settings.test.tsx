@@ -145,6 +145,18 @@ describe("RoutingSettings", () => {
     });
   });
 
+  it("saves the CLIProxyAPI capacity routing toggle", async () => {
+    const user = userEvent.setup();
+    const onSave = vi.fn().mockResolvedValue(undefined);
+    renderWithProviders(<RoutingSettings settings={BASE_SETTINGS} busy={false} onSave={onSave} />);
+
+    await user.click(screen.getByRole("switch", { name: "Enable CLIProxyAPI capacity routing" }));
+
+    expect(onSave).toHaveBeenCalledWith({
+      cliproxyCapacityRoutingEnabled: false,
+    });
+  });
+
   it("saves the Fast Mode prohibition toggle", async () => {
     const user = userEvent.setup();
     const onSave = vi.fn().mockResolvedValue(undefined);

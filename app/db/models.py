@@ -662,6 +662,8 @@ class RequestLog(Base):
     # which keeps historical Claude sidecar rows on the usage-event label.
     sidecar_provider: Mapped[str | None] = mapped_column(String, nullable=True)
     sidecar_auth_index: Mapped[str | None] = mapped_column(String, nullable=True)
+    # sticky, rebind, or selected. Null when CLIProxyAPI chose the account.
+    sidecar_route: Mapped[str | None] = mapped_column(String, nullable=True)
     useragent: Mapped[str | None] = mapped_column(Text, nullable=True)
     useragent_group: Mapped[str | None] = mapped_column(String, nullable=True)
     conversation_id: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -1089,6 +1091,23 @@ class CliproxyPrefixWriteClaim(Base):
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+class CliproxyStickySession(Base):
+    """Prompt-cache pin for one CLIProxyAPI credential.
+
+    ``sticky_sessions.account_id`` references ``accounts.id``. CLIProxyAPI
+    credential ids are not account rows, so a Codex session pin cannot store
+    them. The key and kind match the Codex sticky key; only the owner table
+    differs.
+    """
+
+    __tablename__ = "cliproxy_sticky_sessions"
+
+    key: Mapped[str] = mapped_column(String, primary_key=True)
+    kind: Mapped[str] = mapped_column(String, primary_key=True)
+    account_id: Mapped[str] = mapped_column(String, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class SchedulerLeader(Base):
     __tablename__ = "scheduler_leader"
 
@@ -1249,6 +1268,12 @@ class DashboardSettings(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=False)
     sticky_threads_enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default=true(), nullable=False)
+    cliproxy_capacity_routing_enabled: Mapped[bool] = mapped_column(
+        Boolean,
+        default=True,
+        server_default=true(),
+        nullable=False,
+    )
     upstream_stream_transport: Mapped[str] = mapped_column(
         String,
         default="default",

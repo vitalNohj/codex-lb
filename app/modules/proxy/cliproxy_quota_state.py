@@ -1,9 +1,8 @@
 """Quota headroom for one CLIProxyAPI credential.
 
-The selector used to skip a credential that had no single-segment prefix,
-because the prefix was how a request named that credential. Dispatch no
-longer picks the credential. Headroom is still reported, keyed by the
-auth index CLIProxyAPI already uses.
+The capacity router scores these states with the Codex account selector.
+A credential with no measured window stays unknown and ranks behind
+measured headroom. Headroom is keyed by the auth index CLIProxyAPI uses.
 """
 
 from __future__ import annotations

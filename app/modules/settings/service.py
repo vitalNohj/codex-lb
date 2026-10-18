@@ -195,6 +195,7 @@ class DashboardSettingsData:
     usage_history_retention_override_days: int | None
     hourly_rollup_retention_override_days: int | None
     version: int
+    cliproxy_capacity_routing_enabled: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -329,6 +330,7 @@ class DashboardSettingsUpdateData:
     # the dataclass unchanged (None/False = leave the stored value untouched).
     hourly_rollup_retention_override_days: int | None = None
     clear_hourly_rollup_retention_override: bool = False
+    cliproxy_capacity_routing_enabled: bool | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -459,6 +461,7 @@ class SettingsService:
         row = await self._repository.update(
             expected_version=expected_version,
             sticky_threads_enabled=payload.sticky_threads_enabled,
+            cliproxy_capacity_routing_enabled=payload.cliproxy_capacity_routing_enabled,
             upstream_stream_transport=payload.upstream_stream_transport,
             prohibit_fast_mode=payload.prohibit_fast_mode,
             http_downstream_transport_policy=payload.http_downstream_transport_policy,
@@ -779,6 +782,7 @@ class SettingsService:
             usage_history_retention_override_days=row.usage_history_retention_days,
             hourly_rollup_retention_override_days=row.hourly_rollup_retention_days,
             version=row.version,
+            cliproxy_capacity_routing_enabled=row.cliproxy_capacity_routing_enabled,
         )
 
 

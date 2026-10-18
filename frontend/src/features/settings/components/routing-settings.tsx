@@ -822,6 +822,19 @@ export function RoutingSettings({
             </p>
           </div>
 
+          <div className="flex items-center justify-between gap-4 p-3">
+            <div>
+              <p className="text-sm font-medium">{t("settings.routing.cliproxyCapacity.label")}</p>
+              <p className="text-xs text-muted-foreground">{t("settings.routing.cliproxyCapacity.description")}</p>
+            </div>
+            <Switch
+              aria-label={t("settings.routing.cliproxyCapacity.ariaLabel")}
+              checked={settings.cliproxyCapacityRoutingEnabled}
+              disabled={busy}
+              onCheckedChange={(checked) => save({ cliproxyCapacityRoutingEnabled: checked })}
+            />
+          </div>
+
           <div className="space-y-1 p-3">
             <p className="text-sm font-medium">{t("settings.routing.quotaWindows.title")}</p>
             <p className="text-xs text-muted-foreground">{t("settings.routing.quotaWindows.explainer")}</p>

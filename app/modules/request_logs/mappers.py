@@ -17,14 +17,26 @@ RATE_LIMIT_CODES = {"rate_limit_exceeded", "usage_limit_reached"}
 QUOTA_CODES = {"insufficient_quota", "usage_not_included", "quota_exceeded"}
 
 
-def cliproxy_credential_label(provider: str | None, auth_index: str | None) -> str | None:
-    """Dispatch-time credential facet: ``provider/auth_index``."""
+_ROUTE_LABELS = frozenset({"sticky", "rebind", "selected"})
+
+
+def cliproxy_credential_label(
+    provider: str | None,
+    auth_index: str | None,
+    route: str | None = None,
+) -> str | None:
+    """Dispatch-time credential facet: ``provider/auth_index · route``."""
 
     provider_text = provider.strip() if isinstance(provider, str) else ""
     index_text = auth_index.strip() if isinstance(auth_index, str) else ""
     if provider_text and index_text:
-        return f"{provider_text}/{index_text}"
-    return provider_text or index_text or None
+        label = f"{provider_text}/{index_text}"
+    else:
+        label = provider_text or index_text or None
+    route_text = route.strip() if isinstance(route, str) else ""
+    if label and route_text in _ROUTE_LABELS:
+        return f"{label} · {route_text}"
+    return label
 
 
 def normalize_log_status(status: str, error_code: str | None) -> str:
@@ -78,6 +90,7 @@ def to_request_log_entry(
         sidecar_account_label=sidecar_account_label,
         sidecar_provider=log.sidecar_provider,
         sidecar_auth_index=log.sidecar_auth_index,
+        sidecar_route=log.sidecar_route,
         model_source_id=log.model_source_id,
         model_source_kind=log.model_source_kind,
         useragent=log.useragent if include_sensitive_metadata else None,

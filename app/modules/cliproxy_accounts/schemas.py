@@ -32,8 +32,8 @@ class CliproxyCredential(DashboardModel):
     disabled: bool = False
     unavailable: bool = False
     quota_exceeded: bool = False
-    # Read from the auth file when CLIProxyAPI returns one. The panel does
-    # not assign or rewrite it.
+    # Read from the auth file. The capacity router fills an empty prefix.
+    # The advanced field replaces one only when the operator sends a new value.
     prefix: str | None = None
     weight: int | None = None
     priority: int | None = None
@@ -73,6 +73,8 @@ class CliproxyApiKeyAccount(DashboardModel):
     models_error: str | None = None
     auth_index: str | None = None
     prefix: str | None = None
+    weight: int | None = None
+    priority: int | None = None
 
 
 class CliproxyAccountsResponse(DashboardModel):
@@ -88,6 +90,7 @@ class CliproxyCredentialFieldsUpdate(DashboardModel):
     weight: int | None = None
     priority: int | None = None
     excluded_models: list[str] | None = None
+    prefix: str | None = None
 
 
 class CliproxyCredentialFieldsResponse(DashboardModel):
@@ -191,6 +194,7 @@ class CliproxyApiKeyWriteRequest(DashboardModel):
     models: list[str] = Field(default_factory=list)
     disabled: bool | None = None
     account_id: str | None = None
+    prefix: str | None = None
 
 
 class CliproxyApiKeyDeleteRequest(DashboardModel):

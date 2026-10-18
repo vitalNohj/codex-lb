@@ -177,6 +177,7 @@ def _dashboard_settings_response(settings) -> DashboardSettingsResponse:
     ]
     return DashboardSettingsResponse(
         sticky_threads_enabled=settings.sticky_threads_enabled,
+        cliproxy_capacity_routing_enabled=settings.cliproxy_capacity_routing_enabled,
         upstream_stream_transport=settings.upstream_stream_transport,
         prohibit_fast_mode=settings.prohibit_fast_mode,
         http_downstream_transport_policy=settings.http_downstream_transport_policy,
@@ -992,6 +993,11 @@ async def update_settings(
                     if payload.sticky_threads_enabled is not None
                     else current.sticky_threads_enabled
                 ),
+                cliproxy_capacity_routing_enabled=(
+                    payload.cliproxy_capacity_routing_enabled
+                    if payload.cliproxy_capacity_routing_enabled is not None
+                    else current.cliproxy_capacity_routing_enabled
+                ),
                 upstream_stream_transport=payload.upstream_stream_transport or current.upstream_stream_transport,
                 prohibit_fast_mode=(
                     payload.prohibit_fast_mode if payload.prohibit_fast_mode is not None else current.prohibit_fast_mode
@@ -1537,6 +1543,7 @@ async def update_settings(
         field_name
         for field_name in (
             "sticky_threads_enabled",
+            "cliproxy_capacity_routing_enabled",
             "upstream_stream_transport",
             "prohibit_fast_mode",
             "http_downstream_transport_policy",

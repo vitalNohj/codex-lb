@@ -132,6 +132,15 @@ function CredentialEditor({
     setPriorityBaseline(nextPriority.baseline);
     setPriority(nextPriority.draft);
   }
+  const serverPrefix = credential.prefix ?? "";
+  const [prefixOpen, setPrefixOpen] = useState(false);
+  const [prefix, setPrefix] = useState(serverPrefix);
+  const [prefixBaseline, setPrefixBaseline] = useState(serverPrefix);
+  const nextPrefix = adoptServerDraft(serverPrefix, prefix, prefixBaseline);
+  if (nextPrefix.baseline !== prefixBaseline || nextPrefix.draft !== prefix) {
+    setPrefixBaseline(nextPrefix.baseline);
+    setPrefix(nextPrefix.draft);
+  }
   const [formError, setFormError] = useState<string | null>(null);
   const [pendingLastDisable, setPendingLastDisable] = useState(false);
   const [pendingDelete, setPendingDelete] = useState(false);
@@ -155,6 +164,15 @@ function CredentialEditor({
       return;
     }
     onSave(kind === "weight" ? { weight: parsed } : { priority: parsed });
+  }
+
+  function commitPrefix() {
+    const next = prefix.trim();
+    if (!next || next === (credential.prefix ?? "")) {
+      return;
+    }
+    setFormError(null);
+    onSave({ prefix: next });
   }
 
   function onEnabledChange(enabled: boolean) {
@@ -213,6 +231,33 @@ function CredentialEditor({
         state={credential.excludedModelsState}
         onChange={(excludedModels) => onSave({ excludedModels })}
       />
+      <div className="text-sm">
+        <button
+          type="button"
+          className="cursor-pointer text-muted-foreground"
+          aria-expanded={prefixOpen}
+          onClick={() => setPrefixOpen((open) => !open)}
+        >
+          Advanced
+        </button>
+        {prefixOpen ? (
+          <div className="mt-2 space-y-1">
+            <Label htmlFor={`cliproxy-prefix-${credential.name}`}>Prefix</Label>
+            <Input
+              id={`cliproxy-prefix-${credential.name}`}
+              value={prefix}
+              placeholder="Assigned when routing"
+              aria-label={`Prefix for ${label}`}
+              onChange={(event) => setPrefix(event.target.value)}
+              onBlur={commitPrefix}
+              disabled={busy}
+            />
+            <p className="text-xs text-muted-foreground">
+              Replacing the prefix moves later requests. An empty value is left unchanged.
+            </p>
+          </div>
+        ) : null}
+      </div>
       {formError ? <p className="text-sm text-destructive">{formError}</p> : null}
       <div className="flex flex-wrap gap-2">
         <Button
@@ -559,6 +604,7 @@ function ApiKeyAccountCard({
     apiKey?: string;
     models?: string[];
     disabled?: boolean | null;
+    prefix?: string;
   }) => void;
   onDelete: () => void;
   onAddModel: (model: string) => void;
@@ -570,6 +616,7 @@ function ApiKeyAccountCard({
   const [baseUrl, setBaseUrl] = useState(account.baseUrl);
   const [models, setModels] = useState(serverModels.join(", "));
   const [apiKey, setApiKey] = useState("");
+  const [prefix, setPrefix] = useState(account.prefix ?? "");
   const [pendingDelete, setPendingDelete] = useState(false);
   if (boundId !== account.id) {
     setBoundId(account.id);
@@ -577,6 +624,7 @@ function ApiKeyAccountCard({
     setBaseUrl(account.baseUrl);
     setModels(serverModels.join(", "));
     setApiKey("");
+    setPrefix(account.prefix ?? "");
     setPendingDelete(false);
   }
   const discovered = account.discoveredModels.length > 0
@@ -593,6 +641,7 @@ function ApiKeyAccountCard({
       baseUrl: string;
       apiKey?: string;
       models?: string[];
+      prefix?: string;
     } = {
       kind: account.kind,
       accountId: account.id,
@@ -608,6 +657,10 @@ function ApiKeyAccountCard({
     const secret = apiKey.trim();
     if (secret) {
       body.apiKey = secret;
+    }
+    const nextPrefix = prefix.trim();
+    if (nextPrefix && nextPrefix !== (account.prefix ?? "")) {
+      body.prefix = nextPrefix;
     }
     onSave(body);
     setApiKey("");
@@ -673,6 +726,17 @@ function ApiKeyAccountCard({
             disabled={busy}
             placeholder="Leave blank to keep the stored key"
             onChange={(event) => setApiKey(event.target.value)}
+          />
+        </div>
+        <div className="space-y-1 sm:col-span-2">
+          <Label htmlFor={`cliproxy-api-key-prefix-${account.id}`}>Prefix</Label>
+          <Input
+            id={`cliproxy-api-key-prefix-${account.id}`}
+            value={prefix}
+            disabled={busy}
+            placeholder="Assigned when routing"
+            aria-label={`Prefix for ${label}`}
+            onChange={(event) => setPrefix(event.target.value)}
           />
         </div>
         <div className="space-y-1 sm:col-span-2">

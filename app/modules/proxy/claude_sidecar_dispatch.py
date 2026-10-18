@@ -45,6 +45,11 @@ from app.modules.claude_sidecar.capacity_hold import (
     no_claude_auth_enabled,
 )
 from app.modules.claude_sidecar.quota import SidecarQuotaSnapshot
+from app.modules.proxy.cliproxy_account_routing import (
+    apply_cliproxy_account_route,
+    cliproxy_log_attribution,
+    rebind_cliproxy_account_route,
+)
 from app.modules.proxy.cursor_chat_compat import (
     apply_cursor_usage_fallback_to_response,
     cursor_context_limit_usage_completion,
@@ -1298,6 +1303,25 @@ def ensure_stream_usage_requested(payload: dict[str, JsonValue]) -> None:
     payload["stream_options"] = options
 
 
+_ACCOUNT_REBIND_STATUSES = frozenset({401, 403, 429})
+
+
+async def _chat_completion_with_rebind(
+    client: ClaudeSidecarClient,
+    body: dict[str, JsonValue],
+) -> JsonValue:
+    """Send one chat completion, moving the pin once if that credential fails."""
+
+    try:
+        return await retry_claude_sidecar_cooldown(lambda: client.chat_completion(body))
+    except ClaudeSidecarError as exc:
+        if exc.status_code not in _ACCOUNT_REBIND_STATUSES:
+            raise
+        if await rebind_cliproxy_account_route(body, client=client) is None:
+            raise
+        return await retry_claude_sidecar_cooldown(lambda: client.chat_completion(body))
+
+
 async def proxy_chat_to_sidecar(
     request: Request,
     payload: ChatCompletionsRequest,
@@ -1314,6 +1338,11 @@ async def proxy_chat_to_sidecar(
     # ``effective_model`` is used for reservations/logging; ``wire_model`` (the
     # resolver's stripped model) shapes the forwarded payload.
     sidecar_payload = build_sidecar_chat_payload(payload, wire_model or effective_model, client.config)
+    await apply_cliproxy_account_route(
+        sidecar_payload.body,
+        headers=request.headers,
+        client=client,
+    )
     deepseek_scope = deepseek_resolve_scope(
         effective_model=effective_model,
         provider="claude",
@@ -1410,9 +1439,7 @@ async def proxy_chat_to_sidecar(
         raise
 
     try:
-        response_body = await retry_claude_sidecar_cooldown(
-            lambda: client.chat_completion(sidecar_payload.body),
-        )
+        response_body = await _chat_completion_with_rebind(client, sidecar_payload.body)
     except ClaudeSidecarUnavailableError:
         await _release_sidecar_reservation(reservation, api_key=api_key)
         await _log_sidecar_request(
@@ -1538,6 +1565,7 @@ async def _sidecar_stream_iterator(
     settled = False
     deepseek_recorder = None
     yielded = False
+    account_rebound = False
     wait_seconds = CLAUDE_SIDECAR_COOLDOWN_WAIT_SECONDS
     cooldown_deadline = time.monotonic() + wait_seconds
     last_cooldown_exc: ClaudeSidecarError | None = None
@@ -1589,6 +1617,18 @@ async def _sidecar_stream_iterator(
                     await _finish_claude_sidecar_cooldown_attempt(None, deadline=cooldown_deadline, held=held)
                 break
             except ClaudeSidecarError as exc:
+                if (
+                    not yielded
+                    and not account_rebound
+                    and exc.status_code in _ACCOUNT_REBIND_STATUSES
+                    and isinstance(payload, dict)
+                ):
+                    rebound = await rebind_cliproxy_account_route(payload, client=client)
+                    if rebound is not None:
+                        account_rebound = True
+                        if wait_seconds > 0.0:
+                            await _CLAUDE_SIDECAR_COOLDOWN_GATE.end_poll(held=held)
+                        continue
                 if wait_seconds <= 0.0:
                     raise
                 if yielded:
@@ -2021,6 +2061,7 @@ async def _log_sidecar_request(
     try:
         if cost is None:
             cost = await _sidecar_request_cost(model, usage)
+        sidecar_provider, sidecar_auth_index, sidecar_route = cliproxy_log_attribution()
         async with get_background_session() as session:
             repo = RequestLogsRepository(session)
             await repo.add_log(
@@ -2040,8 +2081,9 @@ async def _log_sidecar_request(
                 transport="http",
                 api_key_id=api_key.id if api_key else None,
                 source="claude_sidecar",
-                sidecar_provider=None,
-                sidecar_auth_index=None,
+                sidecar_provider=sidecar_provider,
+                sidecar_auth_index=sidecar_auth_index,
+                sidecar_route=sidecar_route,
                 failure_phase="sidecar" if status != "success" else None,
                 cost_usd=cost.cost_usd,
                 cost_source=cost.cost_source,

@@ -39,6 +39,7 @@ from app.modules.cliproxy_accounts.api_keys import (
     delete_api_key_account,
     list_api_key_accounts,
     shared_model_ids,
+    stored_api_key_prefixes,
     update_api_key_account,
 )
 from app.modules.cliproxy_accounts.management import CliproxyManagement, build_management
@@ -81,13 +82,20 @@ from app.modules.cliproxy_accounts.schemas import (
 )
 from app.modules.cliproxy_accounts.status_lock import (
     ApiKeyWriteLockTimeout,
+    PrefixWriteLockTimeout,
     StatusWriteLockTimeout,
     cliproxy_api_key_list_lock,
+    cliproxy_prefix_write_lock,
     cliproxy_status_write_lock,
 )
 from app.modules.cliproxy_accounts.upload import normalize_credential_name, prepare_upload_document
-from app.modules.cliproxy_accounts.validation import CredentialFieldChange, disabling_last_enabled_account
+from app.modules.cliproxy_accounts.validation import (
+    CredentialFieldChange,
+    disabling_last_enabled_account,
+    reject_duplicate_prefix,
+)
 from app.modules.proxy.claude_sidecar_dispatch import sidecar_config_from_settings
+from app.modules.proxy.cliproxy_account_routing import forget_remembered_prefixes
 from app.modules.proxy.sidecar_routing import parse_sidecar_full_models
 from app.modules.settings.repository import SettingsRepository
 
@@ -96,8 +104,8 @@ class CliproxyAccountsService:
     """List CLIProxyAPI credentials and edit their management fields.
 
     Writes go to CLIProxyAPI's auth-file field and status endpoints, and to
-    the API-key config lists. A prefix already on an account is left as
-    CLIProxyAPI stored it. Nothing here rewrites the model on a request.
+    the API-key config lists. A stored prefix changes only when the operator
+    sends a new one. Nothing here rewrites the model on a request.
     """
 
     def __init__(self, settings_repository: SettingsRepository, session: AsyncSession) -> None:
@@ -319,15 +327,30 @@ class CliproxyAccountsService:
 
     async def update_api_key(self, index: int, write: ApiKeyWrite, account_id: str) -> CliproxyApiKeyAccount:
         try:
-            async with cliproxy_api_key_list_lock(self._session, write.kind):
-                client, raw_files = await self._management_client()
-                account = await update_api_key_account(client, raw_files, index, write, account_id)
+            if write.update_prefix and write.prefix:
+                async with cliproxy_prefix_write_lock(self._session):
+                    client, raw_files = await self._management_client()
+                    await _reject_prefix_collision(
+                        client,
+                        write.prefix,
+                        skip_api_key=(write.kind, index),
+                    )
+                    async with cliproxy_api_key_list_lock(self._session, write.kind):
+                        account = await update_api_key_account(client, raw_files, index, write, account_id)
+            else:
+                async with cliproxy_api_key_list_lock(self._session, write.kind):
+                    client, raw_files = await self._management_client()
+                    account = await update_api_key_account(client, raw_files, index, write, account_id)
+        except PrefixWriteLockTimeout as exc:
+            raise DashboardConflictError("Another CLIProxyAPI prefix update is in progress") from exc
         except ApiKeyWriteLockTimeout as exc:
             raise DashboardConflictError("Another API-key account update is in progress") from exc
         except ClaudeSidecarUnavailableError as exc:
             raise DashboardServiceUnavailableError(public_message(exc.message)) from exc
         except ClaudeSidecarError as exc:
             _raise_management_error(exc)
+        if write.update_prefix and write.prefix:
+            forget_remembered_prefixes()
         _audit_api_key("cliproxy_api_key_updated", account)
         return account
 
@@ -432,7 +455,19 @@ class CliproxyAccountsService:
 
     async def _patch_fields(self, settings: DashboardSettings, name: str, change: CredentialFieldChange) -> None:
         client = ClaudeSidecarClient(sidecar_config_from_settings(settings))
-        await _send_auth_file_fields(client, name, _field_payload(change))
+        payload = _field_payload(change)
+        if not payload:
+            return
+        if change.update_prefix and change.prefix:
+            try:
+                async with cliproxy_prefix_write_lock(self._session):
+                    await _reject_prefix_collision(client, change.prefix, skip_oauth_name=name)
+                    await _send_auth_file_fields(client, name, payload)
+            except PrefixWriteLockTimeout as exc:
+                raise DashboardConflictError("Another CLIProxyAPI prefix update is in progress") from exc
+            forget_remembered_prefixes()
+            return
+        await _send_auth_file_fields(client, name, payload)
 
 
 async def _send_auth_file_fields(client: ClaudeSidecarClient, name: str, fields: Mapping[str, JsonValue]) -> None:
@@ -604,7 +639,30 @@ def _field_payload(change: CredentialFieldChange) -> dict[str, JsonValue]:
         payload["priority"] = change.priority
     if change.update_excluded_models:
         payload["excluded_models"] = list(change.excluded_models or ())
+    if change.update_prefix and change.prefix:
+        payload["prefix"] = change.prefix
     return payload
+
+
+async def _reject_prefix_collision(
+    client: ClaudeSidecarClient,
+    prefix: str,
+    *,
+    skip_oauth_name: str | None = None,
+    skip_api_key: tuple[str, int] | None = None,
+) -> None:
+    """Refuse ``prefix`` when another OAuth file or API-key entry already has it."""
+
+    others: list[str | None] = []
+    for entry in await client.list_auth_files():
+        name = entry.get("name")
+        if isinstance(name, str) and skip_oauth_name is not None and name == skip_oauth_name:
+            continue
+        raw_prefix = entry.get("prefix")
+        if isinstance(raw_prefix, str):
+            others.append(raw_prefix)
+    others.extend(await stored_api_key_prefixes(client, skip=skip_api_key))
+    reject_duplicate_prefix(prefix, others)
 
 
 def _fields_response(
@@ -612,7 +670,7 @@ def _fields_response(
     raw: Mapping[str, JsonValue] | None,
     change: CredentialFieldChange,
 ) -> CliproxyCredentialFieldsResponse:
-    prefix = account.prefix
+    prefix = change.prefix if change.update_prefix and change.prefix else account.prefix
     excluded_state: ExcludedModelsState = "available" if account.excluded_models_available else "unreadable"
     excluded = list(change.excluded_models or ()) if change.update_excluded_models else list(account.excluded_models)
     return CliproxyCredentialFieldsResponse(
@@ -638,6 +696,8 @@ def _audit_fields(account: SidecarAuthQuota, change: CredentialFieldChange) -> N
         details["priority"] = change.priority
     if change.update_excluded_models:
         details["excluded_models"] = list(change.excluded_models or ())
+    if change.update_prefix:
+        details["prefix"] = change.prefix
     AuditService.log_async("cliproxy_credential_fields_updated", details=details)
 
 
