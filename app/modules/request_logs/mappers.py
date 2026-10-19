@@ -5,6 +5,7 @@ from typing import cast as typing_cast
 from app.core.usage.logs import (
     CANCELLED_STATUS,
     RequestLogLike,
+    cache_write_input_tokens_from_log,
     cached_input_tokens_from_log,
     cost_breakdown_from_log,
     output_tokens_from_log,
@@ -123,6 +124,7 @@ def to_request_log_entry(
         output_tokens_raw=log.output_tokens,
         reasoning_tokens=log.reasoning_tokens,
         cached_input_tokens=cached_input_tokens_from_log(log_like),
+        cache_write_input_tokens=cache_write_input_tokens_from_log(log_like),
         cost_usd=cost_breakdown.total_usd,
         cost_source=log.cost_source,
         price_status=price_status,

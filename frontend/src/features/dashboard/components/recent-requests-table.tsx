@@ -269,8 +269,11 @@ function formatRequestCostSummary(request: RequestLog | null, t: ReturnType<type
   const totalUsd = request.costBreakdown?.totalUsd ?? request.costUsd;
   const segments: string[] = [];
   const cachedInputTokens = request.cachedInputTokens ?? 0;
+  const cacheWriteInputTokens = request.cacheWriteInputTokens ?? 0;
   const nonCachedInputTokens =
-    request.inputTokens == null ? null : Math.max(0, request.inputTokens - cachedInputTokens);
+    request.inputTokens == null
+      ? null
+      : Math.max(0, request.inputTokens - cachedInputTokens - cacheWriteInputTokens);
 
   if (nonCachedInputTokens != null && request.costBreakdown?.inputUsd != null) {
     segments.push(
@@ -288,6 +291,16 @@ function formatRequestCostSummary(request: RequestLog | null, t: ReturnType<type
         count: formatCompactNumber(request.cachedInputTokens),
         label: t("common.units.cached"),
         cost: formatCurrency(request.costBreakdown.cachedInputUsd),
+      }),
+    );
+  }
+
+  if (cacheWriteInputTokens > 0 && request.costBreakdown?.cacheWriteInputUsd != null) {
+    segments.push(
+      t("dashboard.requestDetails.costSegment", {
+        count: formatCompactNumber(cacheWriteInputTokens),
+        label: t("common.units.cacheWrite"),
+        cost: formatCurrency(request.costBreakdown.cacheWriteInputUsd),
       }),
     );
   }

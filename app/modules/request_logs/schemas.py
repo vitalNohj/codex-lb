@@ -10,6 +10,7 @@ from app.modules.shared.schemas import DashboardModel
 class RequestLogCostBreakdown(DashboardModel):
     input_usd: float | None = None
     cached_input_usd: float | None = None
+    cache_write_input_usd: float | None = None
     output_usd: float | None = None
     total_usd: float | None = None
 
@@ -65,6 +66,8 @@ class RequestLogEntry(DashboardModel):
     output_tokens_raw: int | None = None
     reasoning_tokens: int | None = None
     cached_input_tokens: int | None = None
+    # Prompt-cache write tokens, part of ``input_tokens`` like the cached reads.
+    cache_write_input_tokens: int | None = None
     reasoning_effort: str | None = None
     requested_reasoning_effort: str | None = None
     cost_usd: float | None = None

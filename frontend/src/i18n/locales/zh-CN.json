@@ -635,6 +635,7 @@
   "common.time.weekly": "每周",
   "common.traffic.foreground": "前台",
   "common.traffic.opportunistic": "机会型",
+  "common.units.cacheWrite": "缓存写入",
   "common.units.cached": "缓存",
   "common.units.cachedShort": "{{count}} cached",
   "common.units.input": "输入",

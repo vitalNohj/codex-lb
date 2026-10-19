@@ -29,11 +29,27 @@ class ModelPrice:
     long_context_cached_input_per_1m: float | None = None
 
 
+# Anthropic bills a prompt-cache write at 2x the base input rate for the 1-hour
+# TTL (1.25x for 5 minutes). CLIProxyAPI upgrades every Claude Code cache
+# breakpoint to the 1-hour TTL, and its OpenAI-compatible usage does not split
+# writes by TTL, so every reported write is priced at the 1-hour rate.
+# https://platform.claude.com/docs/en/build-with-claude/prompt-caching
+CACHE_WRITE_INPUT_RATE_MULTIPLIER = 2.0
+
+
 @dataclass(frozen=True)
 class UsageTokens:
+    """Token counts for one request.
+
+    ``input_tokens`` is the whole prompt. ``cached_input_tokens`` (cache reads)
+    and ``cache_write_input_tokens`` (cache writes) are both parts of it; what
+    remains is billed at the plain input rate.
+    """
+
     input_tokens: float
     output_tokens: float
     cached_input_tokens: float = 0.0
+    cache_write_input_tokens: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -42,6 +58,7 @@ class UsageCostBreakdown:
     cached_input_usd: float | None
     output_usd: float | None
     total_usd: float | None
+    cache_write_input_usd: float | None = None
 
 
 @dataclass(frozen=True)
@@ -79,13 +96,18 @@ def _normalize_usage(usage: UsageTokens | ResponseUsage | None) -> UsageTokens |
         input_tokens = _as_number(usage.input_tokens)
         output_tokens = _as_number(usage.output_tokens)
         cached_tokens = _as_number(usage.cached_input_tokens)
+        write_tokens = _as_number(usage.cache_write_input_tokens)
         if input_tokens is None or output_tokens is None:
             return None
         cached_tokens = max(0.0, min(cached_tokens or 0.0, input_tokens))
+        # Writes are the part of the prompt that is neither a read nor plain
+        # input, so they can never exceed what the reads left over.
+        write_tokens = max(0.0, min(write_tokens or 0.0, input_tokens - cached_tokens))
         return UsageTokens(
             input_tokens=input_tokens,
             output_tokens=output_tokens,
             cached_input_tokens=cached_tokens,
+            cache_write_input_tokens=write_tokens,
         )
     if not usage:
         return None
@@ -859,7 +881,8 @@ def calculate_cost_breakdown_from_usage(
     normalized = _normalize_usage(usage)
     if not normalized:
         return None
-    billable_input = max(0.0, normalized.input_tokens - normalized.cached_input_tokens)
+    write_tokens = normalized.cache_write_input_tokens
+    billable_input = max(0.0, normalized.input_tokens - normalized.cached_input_tokens - write_tokens)
 
     input_rate, cached_rate, output_rate = _effective_rates(
         normalized,
@@ -870,13 +893,22 @@ def calculate_cost_breakdown_from_usage(
     input_usd = (billable_input / 1_000_000) * input_rate
     cached_input_usd = (normalized.cached_input_tokens / 1_000_000) * cached_rate
     output_usd = (normalized.output_tokens / 1_000_000) * output_rate
+    # Zero writes leave every pre-existing total bit-identical: no extra term is
+    # added, so persisted costs keep matching their recomputation.
+    cache_write_input_usd = (
+        (write_tokens / 1_000_000) * input_rate * CACHE_WRITE_INPUT_RATE_MULTIPLIER if write_tokens > 0 else None
+    )
 
     if precision is not None:
         input_usd = round(input_usd, precision)
         cached_input_usd = round(cached_input_usd, precision)
         output_usd = round(output_usd, precision)
+        if cache_write_input_usd is not None:
+            cache_write_input_usd = round(cache_write_input_usd, precision)
 
     total_usd = input_usd + cached_input_usd + output_usd
+    if cache_write_input_usd is not None:
+        total_usd += cache_write_input_usd
 
     if precision is not None:
         total_usd = round(total_usd, precision)
@@ -886,6 +918,7 @@ def calculate_cost_breakdown_from_usage(
         cached_input_usd=cached_input_usd,
         output_usd=output_usd,
         total_usd=total_usd,
+        cache_write_input_usd=cache_write_input_usd,
     )
 
 

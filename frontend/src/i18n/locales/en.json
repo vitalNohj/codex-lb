@@ -635,6 +635,7 @@
   "common.time.weekly": "Weekly",
   "common.traffic.foreground": "Foreground",
   "common.traffic.opportunistic": "Opportunistic",
+  "common.units.cacheWrite": "Cache write",
   "common.units.cached": "Cached",
   "common.units.cachedShort": "{{count}} cached",
   "common.units.input": "Input",
