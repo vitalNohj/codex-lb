@@ -323,9 +323,24 @@ class _SseEventFramer:
         return complete
 
     def flush(self) -> str:
-        rest = _decode_frame(bytes(self._pending))
+        """Return what is left, closed as an event if the upstream left it open.
+
+        A stream cut mid-event leaves a tail with no blank line. Sent as is,
+        whatever follows (a keepalive, or the ``response.failed`` this route
+        adds) would join that event and never parse as its own. The decoder
+        already reads the tail as an event, so the client sees what codex-lb
+        saw.
+        """
+
+        rest = bytes(self._pending)
         self._pending.clear()
-        return rest
+        if not rest or rest.endswith((b"\n\n", b"\r\n\r\n")):
+            return _decode_frame(rest)
+        if rest.endswith(b"\r\n"):
+            return _decode_frame(rest + b"\r\n")
+        if rest.endswith(b"\n"):
+            return _decode_frame(rest + b"\n")
+        return _decode_frame(rest + b"\n\n")
 
 
 def _decode_frame(frame: bytes) -> str:
@@ -446,9 +461,22 @@ async def _native_stream(
         return
     except BaseException as exc:
         # A client disconnect lands here as a cancellation, inside a cancel scope
-        # that re-cancels every plain await - so the release and the log must
+        # that re-cancels every plain await - so the settlement and the log must
         # finish shielded, or the reservation stays held with no log row.
         settled = True
+        if observer.terminal is not None:
+            # The upstream finished the turn before the client left: the
+            # terminal event (and its usage) was read before the frame was
+            # handed on, so xAI billed it and the key is charged for it.
+            await await_deferring_cancellation(
+                _settle_and_log(
+                    reservation,
+                    log=log,
+                    response=observer.response,
+                    failure=_stream_failure(observer),
+                )
+            )
+            raise
         await await_deferring_cancellation(
             _release_and_log_sidecar_request(
                 reservation,

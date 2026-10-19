@@ -258,7 +258,7 @@ def test_a_missing_tick_field_is_no_cost(payload: Any) -> None:
 
 
 def test_the_framer_emits_only_whole_events_and_loses_no_byte() -> None:
-    whole = b'event: a\ndata: {"x":1}\n\nevent: b\r\ndata: {"y":"\xc3\xa9"}\r\n\r\ndata: tail'
+    whole = b'event: a\ndata: {"x":1}\n\nevent: b\r\ndata: {"y":"\xc3\xa9"}\r\n\r\ndata: tail\n\n'
     framer = _SseEventFramer()
     out = []
     for index in range(len(whole)):
@@ -276,6 +276,34 @@ def test_the_framer_holds_a_chunk_with_no_boundary() -> None:
     assert framer.feed(b'"a":1}\n') == ""
     assert framer.feed(b"\n") == 'data: {"a":1}\n\n'
     assert framer.flush() == ""
+
+
+@pytest.mark.parametrize(
+    ("tail", "closed"),
+    [
+        (b'data: {"type":"response.output_text.delta"', 'data: {"type":"response.output_text.delta"\n\n'),
+        (b"data: x\n", "data: x\n\n"),
+        (b"data: x\r\n", "data: x\r\n\r\n"),
+    ],
+)
+def test_the_framer_closes_an_event_the_upstream_left_open(tail: bytes, closed: str) -> None:
+    """Whatever follows a cut stream must parse as its own event."""
+
+    framer = _SseEventFramer()
+    assert framer.feed(tail) == ""
+    assert framer.flush() == closed
+
+
+def test_a_failure_frame_after_a_cut_tail_parses_as_its_own_event() -> None:
+    from app.core.utils.sse import SseJsonDataDecoder
+
+    framer = _SseEventFramer()
+    framer.feed(b'event: response.output_text.delta\ndata: {"type":"response.output_text.delta"')
+    stream = framer.flush() + 'event: response.failed\ndata: {"type":"response.failed"}\n\n'
+
+    decoder = SseJsonDataDecoder()
+    events = decoder.feed(stream.encode()) + decoder.flush()
+    assert {"type": "response.failed"} in events
 
 
 def test_the_framer_keeps_a_lone_newline_inside_an_event() -> None:
@@ -490,3 +518,90 @@ async def test_the_check_reports_the_state(caplog: pytest.LogCaptureFixture) -> 
 @pytest.mark.parametrize("error", [ClaudeSidecarUnavailableError("down"), ClaudeSidecarError(500, "x"), ValueError()])
 async def test_a_failed_read_never_raises(error: Exception) -> None:
     assert await session_affinity_guard.check_cliproxy_session_affinity(cast(Any, _AffinityClient(error))) is None
+
+
+# --- stream settlement on client disconnect ---------------------------------------------
+
+
+class _OneStreamClient:
+    def __init__(self, chunks: list[bytes]) -> None:
+        self.chunks = chunks
+
+    def stream_responses(self, payload):
+        del payload
+        chunks = self.chunks
+
+        class _Stream:
+            async def __aenter__(self):
+                async def iterate():
+                    for chunk in chunks:
+                        yield chunk
+
+                return iterate()
+
+            async def __aexit__(self, *exc):
+                return False
+
+        return _Stream()
+
+
+def _sse(event: dict) -> bytes:
+    return f"event: {event['type']}\ndata: {json.dumps(event)}\n\n".encode()
+
+
+async def _close_after(frames_wanted: int, chunks: list[bytes], monkeypatch) -> tuple[list[str], list[str]]:
+    from app.modules.proxy import claude_sidecar_dispatch, cliproxy_responses_dispatch
+
+    monkeypatch.setattr(claude_sidecar_dispatch, "CLAUDE_SIDECAR_COOLDOWN_WAIT_SECONDS", 0.0)
+    outcomes: list[str] = []
+
+    async def fake_settle(reservation, *, log, response, failure):
+        del reservation, log, failure
+        outcomes.append("settled" if response is not None else "settled-without-usage")
+
+    async def fake_release(*args, **kwargs):
+        del args, kwargs
+        outcomes.append("released")
+
+    monkeypatch.setattr(cliproxy_responses_dispatch, "_settle_and_log", fake_settle)
+    monkeypatch.setattr(cliproxy_responses_dispatch, "_release_and_log_sidecar_request", fake_release)
+    log = cliproxy_responses_dispatch._LogFields(
+        api_key=None, model="grok-4.3", started_at=0.0, reasoning_effort=None, requested_reasoning_effort=None
+    )
+    stream = cliproxy_responses_dispatch._native_stream(
+        {"model": "grok-4.3"},
+        client=cast(Any, _OneStreamClient(chunks)),
+        reservation=None,
+        log=log,
+    )
+    frames: list[str] = []
+    async for frame in stream:
+        frames.append(frame)
+        if len(frames) == frames_wanted:
+            break
+    await stream.aclose()
+    return frames, outcomes
+
+
+@pytest.mark.asyncio
+async def test_a_client_leaving_after_the_terminal_event_is_still_charged(monkeypatch) -> None:
+    """xAI billed the turn once response.completed arrived; a disconnect must not release it."""
+
+    completed = {
+        "type": "response.completed",
+        "response": {"id": "r", "status": "completed", "usage": {"input_tokens": 3, "output_tokens": 2}},
+    }
+    frames, outcomes = await _close_after(1, [_sse(completed)], monkeypatch)
+
+    assert "response.completed" in frames[0]
+    assert outcomes == ["settled"]
+
+
+@pytest.mark.asyncio
+async def test_a_client_leaving_mid_turn_releases_the_reservation(monkeypatch) -> None:
+    delta = {"type": "response.output_text.delta", "delta": "hi"}
+    completed = {"type": "response.completed", "response": {"id": "r", "usage": {"input_tokens": 3}}}
+    frames, outcomes = await _close_after(1, [_sse(delta), _sse(completed)], monkeypatch)
+
+    assert "output_text.delta" in frames[0]
+    assert outcomes == ["released"]
