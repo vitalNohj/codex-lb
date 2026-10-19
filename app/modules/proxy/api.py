@@ -357,7 +357,7 @@ from app.modules.proxy.request_policy import (
     validate_model_access,
     validate_top_level_compaction_trigger_input_shape,
 )
-from app.modules.proxy.responses_chat_bridge import responses_to_chat_request
+from app.modules.proxy.responses_chat_bridge import ResponsesChatTranslation, translate_responses_to_chat
 from app.modules.proxy.responses_provider_dispatch import (
     codex_serves_model,
     dispatch_responses_via_chat_provider,
@@ -1263,6 +1263,11 @@ async def _opencode_go_responses_dispatch_or_none(
 
     validate_model_access(api_key, effective_model, routing_entries=routing_entries)
     rate_limit_headers = await context.service.rate_limit_headers()
+    translation = _responses_chat_translation_or_error(
+        request, responses_payload, decision.wire_model or effective_model, rate_limit_headers
+    )
+    if isinstance(translation, Response):
+        return translation
     reservation = await _enforce_request_limits(
         api_key,
         request_model=effective_model,
@@ -1280,6 +1285,7 @@ async def _opencode_go_responses_dispatch_or_none(
         sse_keepalive_interval_seconds=settings.sse_keepalive_interval_seconds,
         client=OpenCodeGoSidecarClient(opencode_go_config),
         wire_model=decision.wire_model,
+        translation=translation,
     )
 
 
@@ -1310,6 +1316,11 @@ async def _omniroute_responses_dispatch_or_none(
         return None
     validate_model_access(api_key, effective_model, routing_entries=tuple(routing_entries))
     rate_limit_headers = await context.service.rate_limit_headers()
+    translation = _responses_chat_translation_or_error(
+        request, responses_payload, decision.wire_model or effective_model, rate_limit_headers
+    )
+    if isinstance(translation, Response):
+        return translation
     reservation = await _enforce_request_limits(
         api_key,
         request_model=effective_model,
@@ -1327,6 +1338,7 @@ async def _omniroute_responses_dispatch_or_none(
         sse_keepalive_interval_seconds=settings.sse_keepalive_interval_seconds,
         client=OmniRouteSidecarClient(omniroute_config),
         wire_model=decision.wire_model,
+        translation=translation,
     )
 
 
@@ -1339,7 +1351,7 @@ async def _chat_provider_responses_dispatch_or_none(
     """Dispatch Responses traffic that chat already serves through a sidecar.
 
     OmniRoute and OpenCode Go keep their own Responses dispatchers. Every other
-    chat provider is translated with ``responses_to_chat_request`` and sent
+    chat provider is translated with ``translate_responses_to_chat`` and sent
     through that provider's chat dispatcher, which owns logging, quota, and
     error mapping. ``None`` means this model is not one of those providers.
     """
@@ -1370,7 +1382,9 @@ async def _chat_provider_responses_dispatch_or_none(
     # This path returns the response itself, so the key's service tier has to
     # be on the payload before translation copies it and before quota accounting.
     await _apply_api_key_enforcement_with_fast_mode_policy(responses_payload, api_key)
-    chat_request = responses_to_chat_request(responses_payload, effective_model)
+    translation = _responses_chat_translation_or_error(request, responses_payload, effective_model, rate_limit_headers)
+    if isinstance(translation, Response):
+        return translation
     reservation = await _enforce_request_limits(
         api_key,
         request_model=effective_model,
@@ -1380,7 +1394,8 @@ async def _chat_provider_responses_dispatch_or_none(
     settings = get_settings()
     return await dispatch_responses_via_chat_provider(
         request,
-        chat_request,
+        translation.chat_request,
+        translation=translation,
         provider=decision.provider,
         effective_model=effective_model,
         wire_model=decision.wire_model,
@@ -1391,6 +1406,30 @@ async def _chat_provider_responses_dispatch_or_none(
         cursor_compat=is_cursor_compat_client(request, api_key),
         client=client,
     )
+
+
+def _responses_chat_translation_or_error(
+    request: Request,
+    responses_payload: ResponsesRequest,
+    model: str,
+    rate_limit_headers: Mapping[str, str],
+) -> ResponsesChatTranslation | Response:
+    """Translate a Responses request for a chat provider, or answer 400.
+
+    Runs before any quota is reserved: a request a chat provider cannot serve
+    (a hosted tool, ``previous_response_id``, ``store: true`` ...) is refused
+    outright instead of being sent with that part silently missing.
+    """
+
+    try:
+        return translate_responses_to_chat(responses_payload, model)
+    except ClientPayloadError as exc:
+        return _logged_error_json_response(
+            request,
+            400,
+            openai_client_payload_error(exc),
+            headers=rate_limit_headers,
+        )
 
 
 async def _responses_chat_provider_client(provider: str) -> object | None:

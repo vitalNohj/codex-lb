@@ -77,6 +77,7 @@ from app.modules.proxy.external_pricing_logging import (
     external_response_settlement,
     usage_tokens_from_sidecar,
 )
+from app.modules.proxy.responses_chat_tools import normalize_chat_function_tools
 from app.modules.proxy.sidecar_model_profiles import read_reasoning_effort, set_reasoning_effort_override
 from app.modules.proxy.sidecar_routing import SidecarRoutingEntry
 from app.modules.proxy.sidecar_upstream_errors import (
@@ -169,6 +170,9 @@ def build_openai_compat_chat_payload(
     config: OpenAICompatSidecarConfig,
 ) -> OpenAICompatChatPayload:
     body = cast(dict[str, JsonValue], payload.model_dump(mode="json", exclude_none=True))
+    # A strict chat upstream rejects or ignores the flat Responses tool shape
+    # (``{"type": "function", "name": ...}``); send ``{"function": {...}}``.
+    normalize_chat_function_tools(body)
     requested_reasoning_effort = read_reasoning_effort(body)
     # ``effective_model`` is the wire model already resolved (and stripped per
     # the matched prefix's flag) by the unified resolver.

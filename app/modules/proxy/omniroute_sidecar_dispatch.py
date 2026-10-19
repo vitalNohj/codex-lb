@@ -56,9 +56,10 @@ from app.modules.proxy.deepseek_v4_compat import (
     resolve_scope as deepseek_resolve_scope,
 )
 from app.modules.proxy.responses_chat_bridge import (
+    ResponsesChatTranslation,
     ResponsesStreamSynthesizer,
     chat_to_responses_result,
-    responses_to_chat_request,
+    translate_responses_to_chat,
 )
 from app.modules.proxy.sidecar_model_profiles import read_reasoning_effort, set_reasoning_effort_override
 from app.modules.proxy.sidecar_routing import (
@@ -553,6 +554,7 @@ async def proxy_responses_to_omniroute(
     sse_keepalive_interval_seconds: float,
     client: OmniRouteSidecarClient,
     wire_model: str | None = None,
+    translation: ResponsesChatTranslation | None = None,
 ) -> Response:
     """Dispatch a Responses-shaped request to OmniRoute and return Responses output.
 
@@ -562,8 +564,10 @@ async def proxy_responses_to_omniroute(
     """
 
     forward_model = wire_model or effective_model
-    chat_request = responses_to_chat_request(payload, forward_model)
-    chat_payload = build_omniroute_chat_payload(chat_request, forward_model)
+    # The caller translates before reserving quota so an untranslatable
+    # request is refused with a 400 rather than sent with parts missing.
+    translation = translation or translate_responses_to_chat(payload, forward_model)
+    chat_payload = build_omniroute_chat_payload(translation.chat_request, forward_model)
     chat_body = chat_payload.body
     requested_reasoning_effort = chat_payload.requested_reasoning_effort
     effective_reasoning_effort = chat_payload.effective_reasoning_effort
@@ -582,6 +586,7 @@ async def proxy_responses_to_omniroute(
                 client=client,
                 reasoning_effort=effective_reasoning_effort,
                 requested_reasoning_effort=requested_reasoning_effort,
+                translation=translation,
             ),
             abandon=partial(
                 _abandon_unstarted_omniroute_stream,
@@ -667,7 +672,7 @@ async def proxy_responses_to_omniroute(
         reasoning_effort=effective_reasoning_effort,
         requested_reasoning_effort=requested_reasoning_effort,
     )
-    result = chat_to_responses_result(response_body, model=effective_model)
+    result = chat_to_responses_result(response_body, model=effective_model, translation=translation)
     return JSONResponse(content=result, status_code=200, headers=dict(rate_limit_headers))
 
 
@@ -681,11 +686,12 @@ async def _omniroute_responses_stream_iterator(
     client: OmniRouteSidecarClient,
     reasoning_effort: str | None = None,
     requested_reasoning_effort: str | None = None,
+    translation: ResponsesChatTranslation | None = None,
 ) -> AsyncIterator[bytes]:
     usage: SidecarUsage | None = None
     completed = False
     settled = False
-    synthesizer = ResponsesStreamSynthesizer(model=model)
+    synthesizer = ResponsesStreamSynthesizer(model=model, translation=translation)
     try:
         async with client.stream_chat_completion(payload) as chunks:
             decoder = SseJsonDataDecoder()

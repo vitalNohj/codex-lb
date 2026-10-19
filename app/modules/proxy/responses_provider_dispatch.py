@@ -44,6 +44,7 @@ from app.modules.proxy.openrouter_sidecar_dispatch import proxy_chat_to_openrout
 from app.modules.proxy.orcarouter_sidecar_dispatch import proxy_chat_to_orcarouter
 from app.modules.proxy.request_policy import resolve_model_alias
 from app.modules.proxy.responses_chat_bridge import (
+    ResponsesChatTranslation,
     ResponsesStreamSynthesizer,
     chat_to_responses_result,
 )
@@ -136,6 +137,7 @@ async def dispatch_responses_via_chat_provider(
     sse_keepalive_interval_seconds: float,
     cursor_compat: bool,
     client: object,
+    translation: ResponsesChatTranslation | None = None,
 ) -> Response:
     """Dispatch one Responses request through the chat provider that owns it.
 
@@ -161,10 +163,15 @@ async def dispatch_responses_via_chat_provider(
         cursor_compat=cursor_compat,
         client=client,
     )
-    return translate_chat_response_to_responses(chat_response, model=effective_model)
+    return translate_chat_response_to_responses(chat_response, model=effective_model, translation=translation)
 
 
-def translate_chat_response_to_responses(response: Response, *, model: str) -> Response:
+def translate_chat_response_to_responses(
+    response: Response,
+    *,
+    model: str,
+    translation: ResponsesChatTranslation | None = None,
+) -> Response:
     """Rewrite a chat dispatcher response into Responses output.
 
     Non-success bodies and error envelopes pass through unchanged, including
@@ -175,7 +182,7 @@ def translate_chat_response_to_responses(response: Response, *, model: str) -> R
     if isinstance(response, StreamingResponse):
         settling = response._settling if isinstance(response, ClosingStreamingResponse) else None
         return ClosingStreamingResponse(
-            _translate_chat_sse(response.body_iterator, model=model),
+            _translate_chat_sse(response.body_iterator, model=model, translation=translation),
             status_code=response.status_code,
             headers=_passthrough_headers(response),
             media_type="text/event-stream",
@@ -184,7 +191,7 @@ def translate_chat_response_to_responses(response: Response, *, model: str) -> R
     parsed = _json_body(response)
     if response.status_code == 200 and _is_chat_completion(parsed):
         return JSONResponse(
-            content=chat_to_responses_result(parsed, model=model),
+            content=chat_to_responses_result(parsed, model=model, translation=translation),
             status_code=200,
             headers=_passthrough_headers(response),
         )
@@ -301,9 +308,14 @@ def _is_chat_completion(body: JsonValue | None) -> bool:
     return is_json_mapping(body) and "choices" in body
 
 
-async def _translate_chat_sse(chunks: AsyncIterable[object], *, model: str) -> AsyncIterator[bytes]:
+async def _translate_chat_sse(
+    chunks: AsyncIterable[object],
+    *,
+    model: str,
+    translation: ResponsesChatTranslation | None = None,
+) -> AsyncIterator[bytes]:
     decoder = SseJsonDataDecoder()
-    synthesizer = ResponsesStreamSynthesizer(model=model)
+    synthesizer = ResponsesStreamSynthesizer(model=model, translation=translation)
     state = _SseTranslateState()
     try:
         async for raw_chunk in chunks:
@@ -321,11 +333,10 @@ async def _translate_chat_sse(chunks: AsyncIterable[object], *, model: str) -> A
                 yield payload
                 if done:
                     return
-        if not state.finished and not state.saw_error:
-            for event in synthesizer.finish(upstream_completed=False):
-                yield _responses_sse(event)
-            yield b"data: [DONE]\n\n"
-        elif not state.finished:
+        if not state.finished:
+            if not state.saw_error:
+                for event in synthesizer.finish(upstream_completed=False):
+                    yield _responses_sse(event)
             yield b"data: [DONE]\n\n"
     finally:
         await aclose_stream(chunks)
@@ -351,8 +362,11 @@ def _frames_for_events(
             frames.append((b"data: [DONE]\n\n", True))
             return frames
         if is_json_mapping(event) and "error" in event and "choices" not in event:
+            # A Responses client waits for a terminal response event; a bare
+            # chat error chunk would leave it without one.
             state.saw_error = True
-            frames.append((format_sse_data(event).encode("utf-8"), False))
+            for responses_event in synthesizer.fail(event.get("error")):
+                frames.append((_responses_sse(responses_event), False))
             continue
         if state.saw_error or not is_json_mapping(event):
             continue
