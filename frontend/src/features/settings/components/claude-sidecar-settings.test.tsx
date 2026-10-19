@@ -481,6 +481,54 @@ describe("ClaudeSidecarSettings", () => {
     );
 
     await waitFor(() => expect(screen.getByRole("switch", { name: "Session affinity" })).toBeChecked());
+    expect(screen.queryByText(/Session affinity is off/)).not.toBeInTheDocument();
+  });
+
+  it("warns when CLIProxyAPI reports session affinity off", async () => {
+    server.use(
+      http.get("*/api/claude-sidecar/routing", () => {
+        return HttpResponse.json({
+          status: "healthy",
+          message: null,
+          strategy: "fill_first",
+          sessionAffinity: false,
+          accounts: [],
+        });
+      }),
+    );
+    renderWithQueryClient(
+      <ClaudeSidecarSettings
+        settings={{ ...BASE_SETTINGS, claudeSidecarManagementKeyConfigured: true }}
+        busy={false}
+        onSave={vi.fn()}
+      />,
+    );
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(/Session affinity is off/);
+  });
+
+  it("does not warn while session affinity is unknown", async () => {
+    server.use(
+      http.get("*/api/claude-sidecar/routing", () => {
+        return HttpResponse.json({
+          status: "error",
+          message: "unreachable",
+          strategy: null,
+          sessionAffinity: null,
+          accounts: [],
+        });
+      }),
+    );
+    renderWithQueryClient(
+      <ClaudeSidecarSettings
+        settings={{ ...BASE_SETTINGS, claudeSidecarManagementKeyConfigured: true }}
+        busy={false}
+        onSave={vi.fn()}
+      />,
+    );
+
+    await screen.findByRole("switch", { name: "Session affinity" });
+    expect(screen.queryByText(/Session affinity is off/)).not.toBeInTheDocument();
   });
 
   it("updates account priority on blur", async () => {

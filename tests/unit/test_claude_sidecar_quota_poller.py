@@ -1280,3 +1280,60 @@ async def test_poll_keeps_stored_grok_windows_when_the_passthrough_is_down(monke
     assert by_provider["claude"].oauth_usage.five_hour is not None
     assert by_provider["claude"].oauth_usage.five_hour.remaining_percent == 12.0
     assert snapshot.rate_limit_holds == ()
+
+
+class _AffinityOffClient(_FakeClient):
+    reads = 0
+
+    async def get_session_affinity(self) -> bool:
+        type(self).reads += 1
+        return False
+
+
+class _AffinityBrokenClient(_FakeClient):
+    async def get_session_affinity(self) -> bool:
+        raise ClaudeSidecarUnavailableError("management api down")
+
+
+@pytest.mark.asyncio
+async def test_poll_once_warns_when_cliproxy_session_affinity_is_off(monkeypatch, caplog) -> None:
+    import logging
+
+    from app.modules.claude_sidecar import session_affinity_guard
+
+    session_affinity_guard.reset_session_affinity_guard()
+    _AffinityOffClient.reads = 0
+    repo_holder: list[_FakeRepo] = []
+    _patch_environment(
+        monkeypatch,
+        settings=_FakeSettings(),
+        client_factory=_AffinityOffClient,
+        repo_holder=repo_holder,
+    )
+    poller = ClaudeSidecarQuotaPoller(interval_seconds=60.0, enabled=True, _client_factory=_AffinityOffClient)
+    caplog.set_level(logging.WARNING, logger=session_affinity_guard.__name__)
+
+    await poller._poll_once()
+
+    assert _AffinityOffClient.reads == 1
+    assert any("session-affinity is off" in record.getMessage() for record in caplog.records)
+    snapshot = _read_snapshot(repo_holder)
+    assert snapshot is not None and snapshot.status == "healthy"
+    session_affinity_guard.reset_session_affinity_guard()
+
+
+@pytest.mark.asyncio
+async def test_poll_once_survives_a_failed_session_affinity_read(monkeypatch) -> None:
+    repo_holder: list[_FakeRepo] = []
+    _patch_environment(
+        monkeypatch,
+        settings=_FakeSettings(),
+        client_factory=_AffinityBrokenClient,
+        repo_holder=repo_holder,
+    )
+    poller = ClaudeSidecarQuotaPoller(interval_seconds=60.0, enabled=True, _client_factory=_AffinityBrokenClient)
+
+    await poller._poll_once()
+
+    snapshot = _read_snapshot(repo_holder)
+    assert snapshot is not None and snapshot.status == "healthy"

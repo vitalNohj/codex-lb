@@ -46,10 +46,10 @@ from app.core.utils.json_guards import is_json_mapping
 from app.core.utils.sse import SseJsonDataDecoder, format_sse_event, inject_sse_keepalives
 from app.core.utils.stream_close import ClosingStreamingResponse, SettlingStream
 from app.modules.api_keys.service import ApiKeyData, ApiKeyUsageReservationData
+from app.modules.proxy import claude_sidecar_dispatch
 from app.modules.proxy.claude_sidecar_dispatch import (
     _ACCOUNT_REBIND_STATUSES,
     _CLAUDE_SIDECAR_COOLDOWN_GATE,
-    CLAUDE_SIDECAR_COOLDOWN_WAIT_SECONDS,
     SidecarUsage,
     _abandon_unstarted_sidecar_stream,
     _finalize_or_release_sidecar_reservation,
@@ -366,7 +366,9 @@ async def _native_stream(
     settled = False
     yielded = False
     account_rebound = False
-    wait_seconds = CLAUDE_SIDECAR_COOLDOWN_WAIT_SECONDS
+    # Read at call time, as the chat route does, so a patched or tuned wait
+    # applies to both routes alike.
+    wait_seconds = claude_sidecar_dispatch.CLAUDE_SIDECAR_COOLDOWN_WAIT_SECONDS
     cooldown_deadline = time.monotonic() + wait_seconds
     last_cooldown_exc: ClaudeSidecarError | None = None
     try:
