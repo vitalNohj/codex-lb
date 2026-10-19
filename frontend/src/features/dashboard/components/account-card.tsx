@@ -22,6 +22,7 @@ import type { SidecarAuthAccount } from "@/features/accounts/schemas";
 import { formatCompactAccountId } from "@/utils/account-identifiers";
 import {
   claudeAuthBadgeStatus,
+  cliproxyAuthBadgeStatus,
   normalizeStatus,
 } from "@/utils/account-status";
 import {
@@ -350,16 +351,6 @@ export function ClaudeAuthCard({
   );
 }
 
-function cliproxyAuthStatus(auth: SidecarAuthAccount, account: AccountSummary) {
-  if (auth.paused) {
-    return normalizeStatus("paused");
-  }
-  if (auth.quotaExceeded) {
-    return normalizeStatus("quota_exceeded");
-  }
-  return normalizeStatus(auth.status ?? account.status);
-}
-
 function CliproxyProviderAuths({ account }: { account: AccountSummary }) {
   const { t } = useTranslation();
   const auths = account.sidecarAuths ?? [];
@@ -380,7 +371,7 @@ function CliproxyProviderAuths({ account }: { account: AccountSummary }) {
                   {formatSlug(auth.provider ?? account.provider ?? "unknown")}
                 </p>
               </div>
-              <StatusBadge status={cliproxyAuthStatus(auth, account)} />
+              <StatusBadge status={cliproxyAuthBadgeStatus(auth, account.status)} />
             </div>
             {windows.length > 0 ? (
               <div

@@ -22,7 +22,7 @@ import { useDateDisplayFormatStore } from "@/hooks/use-date-format";
 import { usePrivacyStore } from "@/hooks/use-privacy";
 import { cn } from "@/lib/utils";
 import { formatCompactAccountId } from "@/utils/account-identifiers";
-import { claudeAuthBadgeStatus, normalizeStatus, quotaBarColor, quotaBarTrack } from "@/utils/account-status";
+import { claudeAuthBadgeStatus, cliproxyAuthBadgeStatus, normalizeStatus, quotaBarColor, quotaBarTrack } from "@/utils/account-status";
 import {
   formatDateTimeInline,
   formatPercentNullable,
@@ -535,11 +535,7 @@ function CliproxyAuthListRow({
   const { t } = useTranslation();
   const title = auth.email ?? auth.name;
   const windows = auth.quotaWindows ?? [];
-  const status = auth.paused
-    ? normalizeStatus("paused")
-    : auth.quotaExceeded
-      ? normalizeStatus("quota_exceeded")
-      : normalizeStatus(auth.status ?? account.status);
+  const status = cliproxyAuthBadgeStatus(auth, account.status);
   return (
     <div
       data-testid="account-list-row"
