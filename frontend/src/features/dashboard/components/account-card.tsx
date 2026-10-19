@@ -1,4 +1,4 @@
-import { Clock, ExternalLink, Pause, Play, RotateCcw, Zap } from "lucide-react";
+import { ExternalLink, Pause, Play, RotateCcw, Zap } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { usePrivacyStore } from "@/hooks/use-privacy";
@@ -7,6 +7,7 @@ import { useDateDisplayFormatStore } from "@/hooks/use-date-format";
 import { Button } from "@/components/ui/button";
 import { SidecarEffortSelect } from "@/features/accounts/components/sidecar-effort-select";
 import { useClaudeSidecarAccountPause } from "@/features/settings/hooks/use-settings";
+import { QuotaBar } from "@/components/quota-bar";
 import { StatusBadge } from "@/components/status-badge";
 import { ExcludedModelsRail } from "@/features/dashboard/components/excluded-models-rail";
 import {
@@ -21,14 +22,12 @@ import type { SidecarAuthAccount } from "@/features/accounts/schemas";
 import { formatCompactAccountId } from "@/utils/account-identifiers";
 import {
   claudeAuthBadgeStatus,
+  cliproxyAuthBadgeStatus,
   normalizeStatus,
-  quotaBarColor,
-  quotaBarTrack,
 } from "@/utils/account-status";
 import {
   formatCurrency,
   formatDateTimeInline,
-  formatPercentNullable,
   formatQuotaResetLabel,
   formatSingleUnitRemaining,
   formatSlug,
@@ -45,50 +44,6 @@ export type AccountCardProps = {
 
 function formatWarmupWindow(window: string): string {
   return window === "primary" || window === "primary_idle" ? "5h" : "weekly";
-}
-
-function QuotaBar({
-  label,
-  percent,
-  resetLabel,
-}: {
-  label: string;
-  percent: number | null;
-  resetLabel: string;
-}) {
-  const clamped = percent === null ? 0 : Math.max(0, Math.min(100, percent));
-  const hasPercent = percent !== null;
-  return (
-    <div className="space-y-1">
-      <div className="flex items-center justify-between text-xs">
-        <span className="text-muted-foreground">{label}</span>
-        <span
-          className={cn(
-            "tabular-nums font-medium",
-            !hasPercent
-              ? "text-muted-foreground"
-              : clamped >= 70
-                ? "text-emerald-600 dark:text-emerald-400"
-                : clamped >= 30
-                  ? "text-amber-600 dark:text-amber-400"
-                  : "text-red-600 dark:text-red-400",
-          )}
-        >
-          {formatPercentNullable(percent)}
-        </span>
-      </div>
-      <div className={cn("h-1.5 w-full overflow-hidden rounded-full", quotaBarTrack(clamped))}>
-        <div
-          className={cn("h-full rounded-full transition-all duration-500 ease-out", quotaBarColor(clamped))}
-          style={{ width: `${clamped}%` }}
-        />
-      </div>
-      <div className="flex items-center gap-1 text-[11px] text-muted-foreground">
-        <Clock className="h-3 w-3 shrink-0" />
-        <span>{resetLabel}</span>
-      </div>
-    </div>
-  );
 }
 
 export function AccountCard({ account, showAccountId = false, readOnly = false, onAction }: AccountCardProps) {
@@ -397,37 +352,49 @@ export function ClaudeAuthCard({
 }
 
 function CliproxyProviderAuths({ account }: { account: AccountSummary }) {
+  const { t } = useTranslation();
   const auths = account.sidecarAuths ?? [];
   return (
-    <div className="mt-3 space-y-3">
+    <div className="mt-3.5 space-y-2.5">
       {auths.map((auth) => {
         const title = auth.email ?? auth.name;
         const windows = auth.quotaWindows ?? [];
         return (
-          <div key={auth.name} className="space-y-2 rounded-lg border bg-muted/20 p-3">
+          <div
+            key={auth.name}
+            className={cn("space-y-2.5 rounded-lg border bg-muted/20 p-3", auth.paused && "opacity-60")}
+          >
             <div className="flex items-center justify-between gap-2">
-              <span className="min-w-0 truncate text-xs font-medium">{title}</span>
-              <Badge variant="outline" className="text-[11px]">{formatSlug(auth.provider ?? account.provider ?? "unknown")}</Badge>
+              <div className="min-w-0">
+                <p className="truncate text-xs font-medium">{title}</p>
+                <p className="truncate text-[11px] text-muted-foreground">
+                  {formatSlug(auth.provider ?? account.provider ?? "unknown")}
+                </p>
+              </div>
+              <StatusBadge status={cliproxyAuthBadgeStatus(auth, account.status)} />
             </div>
-            <p className="text-[11px] text-muted-foreground">{formatSlug(auth.status ?? account.status)}</p>
             {windows.length > 0 ? (
-              <ul className="space-y-1 text-xs" aria-label={`Quota for ${title}`}>
+              <div
+                role="group"
+                aria-label={t("dashboard.cliproxyAuth.quotaAria", { label: title })}
+                className={cn("grid gap-3", windows.length > 1 ? "grid-cols-2" : "grid-cols-1")}
+              >
                 {windows.map((window) => (
-                  <li key={window.id} className="flex items-center justify-between gap-2">
-                    <span className="text-muted-foreground">{window.label}</span>
-                    <span className="tabular-nums font-medium">
-                      {formatPercentNullable(window.percentRemaining)} left
-                    </span>
-                  </li>
+                  <QuotaBar
+                    key={window.id}
+                    label={window.label}
+                    percent={window.percentRemaining}
+                    resetLabel={window.resetsAt ? formatQuotaResetLabel(window.resetsAt) : null}
+                  />
                 ))}
-              </ul>
+              </div>
             ) : (
-              <p className="text-xs text-muted-foreground">Quota unknown</p>
+              <p className="text-xs text-muted-foreground">{t("dashboard.cliproxyAuth.quotaUnknown")}</p>
             )}
-            <p className="text-[11px] text-muted-foreground">Models are listed on the CLIProxyAPI settings card.</p>
           </div>
         );
       })}
+      <p className="text-[11px] text-muted-foreground">{t("dashboard.cliproxyAuth.modelsHint")}</p>
     </div>
   );
 }

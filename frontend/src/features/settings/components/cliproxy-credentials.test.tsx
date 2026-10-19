@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { describe, expect, it } from "vitest";
@@ -9,6 +9,12 @@ import { createDashboardSettings } from "@/test/mocks/factories";
 import { server } from "@/test/mocks/server";
 
 const TOKEN = "cliproxy-test-access-token";
+
+async function expandModelLists(user: ReturnType<typeof userEvent.setup>) {
+  for (const toggle of await screen.findAllByRole("button", { name: /^Models \(/ })) {
+    await user.click(toggle);
+  }
+}
 
 function renderCredentials(enabled: boolean) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -23,11 +29,12 @@ describe("CliproxyCredentials", () => {
   it("asks for a management key and does not fetch while disabled", () => {
     renderCredentials(false);
 
-    expect(screen.getByText(/Add a management key to list CLIProxyAPI credentials/)).toBeInTheDocument();
+    expect(screen.getByText(/Save a CLIProxyAPI management key above/)).toBeInTheDocument();
     expect(screen.queryByText("grok@example.com")).not.toBeInTheDocument();
   });
 
   it("lists health, models, and provider badges without token fields", async () => {
+    const user = userEvent.setup();
     server.use(
       http.get("*/api/cliproxy/accounts", () =>
         HttpResponse.json({
@@ -80,13 +87,15 @@ describe("CliproxyCredentials", () => {
 
     expect(await screen.findByText("claude@example.com")).toBeInTheDocument();
     expect(screen.getByText("grok@example.com")).toBeInTheDocument();
-    expect(screen.getByText("Healthy")).toBeInTheDocument();
-    expect(screen.getByText("Quota exceeded")).toBeInTheDocument();
-    expect(screen.getByText("claude-opus-5")).toBeInTheDocument();
-    expect(screen.getByText("grok-4")).toBeInTheDocument();
-    expect(screen.getByText("grok-4-fast")).toBeInTheDocument();
-    expect(screen.getAllByText("claude").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("xai").length).toBeGreaterThan(0);
+    expect(screen.getByText("Active")).toBeInTheDocument();
+    expect(screen.getByText("Quota exhausted")).toBeInTheDocument();
+    expect(screen.queryByText("grok-4-fast")).not.toBeInTheDocument();
+    await expandModelLists(user);
+    expect(screen.getAllByText("claude-opus-5").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("grok-4").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("grok-4-fast").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Claude").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("xAI").length).toBeGreaterThan(0);
     expect(screen.getByText("acct2")).toBeInTheDocument();
     expect(screen.getByText("grok-a.json")).toBeInTheDocument();
     expect(screen.queryByText(TOKEN)).not.toBeInTheDocument();
@@ -139,11 +148,10 @@ describe("CliproxyCredentials", () => {
 
     expect(await screen.findByLabelText("Quota for grok@example.com")).toBeInTheDocument();
     expect(screen.getByText("week")).toBeInTheDocument();
-    expect(screen.getByText(/50% left/)).toBeInTheDocument();
-    expect(screen.getByText(/resets/)).toBeInTheDocument();
+    expect(screen.getByText("50%")).toBeInTheDocument();
+    expect(screen.getByText(/^Resets /)).toBeInTheDocument();
     expect(screen.getByText("42")).toBeInTheDocument();
-    expect(screen.getByText(/3 requests/)).toBeInTheDocument();
-    expect(screen.getByText(/1,200 tokens|1200 tokens/)).toBeInTheDocument();
+    expect(screen.getByText(/3 req · (1,200|1200) tok/)).toBeInTheDocument();
     expect(screen.getByText("Rate limited")).toBeInTheDocument();
   });
 
@@ -297,13 +305,14 @@ describe("CliproxyCredentials", () => {
 
     renderCredentials(true);
 
-    expect(await screen.findByText(/load-balances these model ids/)).toBeInTheDocument();
+    expect(await screen.findByText(/Shared models are served by more than one account/)).toBeInTheDocument();
     expect(screen.getByText("keep-me")).toBeInTheDocument();
-    expect(screen.getAllByText("Quota unknown").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Not reported").length).toBeGreaterThan(0);
     expect(screen.queryByText("sk-should-not-render")).not.toBeInTheDocument();
     expect(screen.queryByRole("textbox", { name: "Prefix for grok@example.com" })).not.toBeInTheDocument();
 
-    await user.selectOptions(screen.getByLabelText("Provider"), "openai-compatibility");
+    await user.click(screen.getByRole("button", { name: "Add API key" }));
+    await user.selectOptions(await screen.findByLabelText("Provider"), "openai-compatibility");
     const [accountName] = screen.getAllByLabelText("Name");
     const [baseUrl] = screen.getAllByLabelText("Base URL");
     const [models] = screen.getAllByLabelText("Models");
@@ -324,12 +333,35 @@ describe("CliproxyCredentials", () => {
       ]);
     });
     expect(screen.queryByDisplayValue("sk-created-secret")).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
 
-    const addButtons = screen.getAllByRole("button", { name: "Add grok-4 to the model list" });
+    await expandModelLists(user);
+    expect(screen.getAllByText("shared").length).toBeGreaterThan(0);
+    const addButtons = screen.getAllByRole("button", { name: "Add grok-4 to codex-lb" });
     await user.click(addButtons[0]);
     await waitFor(() => {
       expect(catalog).toEqual([{ model: "grok-4" }]);
     });
+  });
+
+  it("forgets a typed API key when the add dialog is canceled", async () => {
+    const user = userEvent.setup();
+    server.use(
+      http.get("*/api/cliproxy/accounts", () =>
+        HttpResponse.json({ status: "healthy", message: null, providers: [], apiKeys: [], sharedModelIds: [] }),
+      ),
+    );
+
+    renderCredentials(true);
+
+    await user.click(await screen.findByRole("button", { name: "Add API key" }));
+    await user.type(await screen.findByLabelText("API key"), "sk-canceled-secret");
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+
+    await user.click(screen.getByRole("button", { name: "Add API key" }));
+    expect(await screen.findByLabelText("API key")).toHaveValue("");
+    expect(screen.queryByDisplayValue("sk-canceled-secret")).not.toBeInTheDocument();
   });
 
   it("keeps model mappings and spaced names out of unrelated saves", async () => {
@@ -390,6 +422,7 @@ describe("CliproxyCredentials", () => {
       ]);
     });
 
+    await user.click(screen.getByRole("button", { name: "Edit My OpenRouter" }));
     const url = document.getElementById("cliproxy-api-key-url-spaced-name");
     if (!(url instanceof HTMLInputElement)) {
       throw new Error("missing base URL field");
@@ -457,7 +490,9 @@ describe("CliproxyCredentials", () => {
     );
 
     renderCredentials(true);
-    expect(await screen.findByText("Group shared-pool")).toBeInTheDocument();
+    const pool = await screen.findByRole("article", { name: "Claude API-key account Claude API key 2" });
+    expect(within(pool).getByText("Group")).toBeInTheDocument();
+    expect(within(pool).getByText("shared-pool")).toBeInTheDocument();
     expect(screen.getByText(/Routing pins this group, not one of its 2 keys/)).toBeInTheDocument();
     expect(screen.queryByRole("switch", { name: "Send prompt cache key for Claude API key 2" })).toBeNull();
     await user.click(screen.getByRole("switch", { name: "Send prompt cache key for nv" }));
@@ -529,6 +564,7 @@ describe("CliproxyCredentials", () => {
     );
 
     renderCredentials(true);
+    await user.click(await screen.findByRole("button", { name: "Edit first" }));
     const leakedUrl = await screen.findByDisplayValue("https://first.example/v1");
     const leakedSecret = document.getElementById("cliproxy-api-key-secret-account-a");
     if (!(leakedSecret instanceof HTMLInputElement)) {
@@ -543,6 +579,8 @@ describe("CliproxyCredentials", () => {
       expect(removed).toEqual([{ confirm: true, accountId: "account-a" }]);
     });
 
+    await waitFor(() => expect(screen.queryByText("first")).not.toBeInTheDocument());
+    await user.click(screen.getByRole("button", { name: "Edit second" }));
     const keptUrl = await screen.findByDisplayValue("https://kept.example/v1");
     expect(keptUrl).toBeInTheDocument();
     expect(screen.queryByDisplayValue("https://deleted.example/v1")).not.toBeInTheDocument();
@@ -631,6 +669,7 @@ describe("CliproxyCredentials", () => {
 
     renderCredentials(true);
 
+    await user.click(await screen.findByRole("button", { name: "Routing settings for grok@example.com" }));
     const weight = await screen.findByRole("textbox", { name: "Weight for grok@example.com" });
     await user.type(weight, "4");
     weight.blur();
@@ -715,7 +754,7 @@ describe("CliproxyCredentials", () => {
     renderCredentials(true);
 
     expect(await screen.findByText("acct2")).toBeInTheDocument();
-    await user.click(screen.getByText("Advanced"));
+    await user.click(screen.getByRole("button", { name: "Routing settings for grok@example.com" }));
     const prefix = screen.getByRole("textbox", { name: "Prefix for grok@example.com" });
     await user.clear(prefix);
     prefix.blur();
@@ -822,7 +861,7 @@ describe("CliproxyCredentials", () => {
 
     renderCredentials(true);
     await user.click(await screen.findByRole("button", { name: "Refresh claude@example.com" }));
-    expect(await screen.findByText("Refreshing")).toBeInTheDocument();
+    expect(await screen.findByText("Refreshing...")).toBeInTheDocument();
     expect(await screen.findByText("Refreshed", {}, { timeout: 4000 })).toBeInTheDocument();
     expect(polls).toBeGreaterThan(1);
   });

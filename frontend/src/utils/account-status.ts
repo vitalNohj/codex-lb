@@ -25,6 +25,27 @@ export function claudeAuthBadgeStatus(
   return normalizeStatus(auth.status ?? fallbackStatus);
 }
 
+/**
+ * Badge status for one CLIProxyAPI auth. Re-auth wins over everything, as in
+ * the backend's dashboard_status_for_auth, because it needs operator action;
+ * then an operator pause, then quota exhaustion, then the reported status.
+ */
+export function cliproxyAuthBadgeStatus(
+  auth: { paused?: boolean; quotaExceeded?: boolean; status?: string | null },
+  fallbackStatus: string,
+): DashboardAccountStatus {
+  if (auth.status === "reauth_required") {
+    return "reauth";
+  }
+  if (auth.paused) {
+    return "paused";
+  }
+  if (auth.quotaExceeded) {
+    return "exceeded";
+  }
+  return normalizeStatus(auth.status ?? fallbackStatus);
+}
+
 export function normalizeStatus(status: string): DashboardAccountStatus {
   if (status === "paused") {
     return "paused";

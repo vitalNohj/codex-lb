@@ -3,7 +3,7 @@ import { useTranslation } from "react-i18next";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 
-type StatusValue = "active" | "paused" | "limited" | "exceeded" | "reauth" | "deactivated";
+export type StatusValue = "active" | "paused" | "limited" | "exceeded" | "reauth" | "deactivated";
 
 const statusClassMap: Record<StatusValue, string> = {
   active: "bg-emerald-500/15 text-emerald-700 border-emerald-500/20 hover:bg-emerald-500/20 dark:text-emerald-400",
@@ -17,12 +17,14 @@ const statusClassMap: Record<StatusValue, string> = {
 export type StatusBadgeProps = {
   status: StatusValue;
   title?: string;
+  /** Overrides the translated status name while keeping the status colour. */
+  label?: string;
 };
 
-export function StatusBadge({ status, title }: StatusBadgeProps) {
+export function StatusBadge({ status, title, label: labelOverride }: StatusBadgeProps) {
   const { t } = useTranslation();
   const className = statusClassMap[status] ?? statusClassMap.deactivated;
-  const label = t(`common.status.${status}`, { defaultValue: status });
+  const label = labelOverride ?? t(`common.status.${status}`, { defaultValue: status });
 
   return (
     <Badge className={cn("gap-1.5", className)} variant="outline" title={title}>

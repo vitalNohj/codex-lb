@@ -119,8 +119,8 @@ export function ClaudeSidecarSettings({ settings, busy, onSave, bare = false }: 
             <SidecarIntegrationCard.DiscoveredModels />
           </SidecarIntegrationCard.Panel>
           <SidecarIntegrationCard.Panel
-            title="Credentials"
-            description="Sign in, upload, refresh, or delete an account. Each card has an enable switch, a tag, weight, priority, and excluded-model chips. Session stickiness is the Session affinity switch in CLIProxyAPI routing, shared by every account. Request routing is unchanged."
+            title="Accounts"
+            description="Every CLIProxyAPI account with its health, quota, prefix, and models. Add a model to codex-lb from any account's model list."
             span="full"
           >
             <CliproxyCredentials enabled={managementKeyConfigured} />
