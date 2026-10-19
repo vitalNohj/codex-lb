@@ -106,6 +106,7 @@ _REAL_CLIPROXY_ROUTE_TESTS = frozenset(
         "test_far_hold_still_answers_429_when_no_credential_prefix_resolves",
         "test_near_hold_then_credential_prefix_resolves_and_the_request_is_served",
         "test_every_claude_auth_paused_without_a_credential_prefix_stays_a_503",
+        "test_responses_tool_session_reaches_cliproxy_append_only_on_one_credential",
     }
 )
 
@@ -2453,3 +2454,79 @@ async def test_every_claude_auth_paused_without_a_credential_prefix_stays_a_503(
     assert fake_sidecar.chat_payloads == []
     logs = await _sidecar_logs()
     assert [log.error_code for log in logs] == ["claude_sidecar_no_enabled_account"]
+
+
+def _responses_tool_turn(turn: int, *, prompt_cache_key: str | None) -> dict:
+    inputs: list[dict] = [{"role": "user", "content": [{"type": "input_text", "text": "list the repo"}]}]
+    if turn >= 1:
+        inputs += [
+            {"type": "function_call", "call_id": "call:1", "name": "bash", "arguments": '{"command":["ls"]}'},
+            {"type": "function_call_output", "call_id": "call:1", "output": "app tests"},
+        ]
+    if turn >= 2:
+        inputs += [
+            {"type": "function_call", "call_id": "call:2", "name": "read_file", "arguments": '{"path":"README"}'},
+            {"type": "function_call_output", "call_id": "call:2", "output": "codex-lb"},
+        ]
+    body: dict = {
+        "model": "claude-sonnet-4-5-20250929",
+        "instructions": "You are a coding agent.",
+        "input": inputs,
+        "tools": [
+            {"type": "function", "name": "bash", "parameters": {"type": "object", "properties": {}}},
+            {"type": "function", "name": "read_file", "parameters": {"type": "object", "properties": {}}},
+        ],
+        "reasoning": {"effort": "high"},
+        "stream": False,
+    }
+    if prompt_cache_key is not None:
+        body["prompt_cache_key"] = prompt_cache_key
+    return body
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("prompt_cache_key", ["pck-client", None])
+async def test_responses_tool_session_reaches_cliproxy_append_only_on_one_credential(
+    async_client,
+    sidecar_enabled,
+    fake_sidecar,
+    _fresh_cliproxy_route_memory,
+    prompt_cache_key,
+):
+    """Each turn CLIProxyAPI receives repeats the previous body and appends to it.
+
+    Both credentials can serve the model, so only the sticky pin keeps the
+    conversation on one prefix. The client's ``prompt_cache_key``, or the key
+    codex-lb derives when there is none, reaches CLIProxyAPI unchanged.
+    """
+
+    await _store_quota_snapshot((_enabled_auth("a.json", "acct-a"), _enabled_auth("b.json", "acct-b")))
+
+    for turn in range(3):
+        response = await async_client.post(
+            "/v1/responses", json=_responses_tool_turn(turn, prompt_cache_key=prompt_cache_key)
+        )
+        assert response.status_code == 200
+
+    forwarded = fake_sidecar.chat_payloads
+    assert len(forwarded) == 3
+    assert len({payload["model"] for payload in forwarded}) == 1
+    assert forwarded[0]["model"] in {"acct-a/claude-sonnet-4-5-20250929", "acct-b/claude-sonnet-4-5-20250929"}
+    keys = {payload.get("prompt_cache_key") for payload in forwarded}
+    assert len(keys) == 1
+    (key,) = keys
+    assert isinstance(key, str) and key
+    if prompt_cache_key is not None:
+        assert key == prompt_cache_key
+
+    def wire(value: object) -> bytes:
+        return json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode()
+
+    for previous, current in zip(forwarded, forwarded[1:]):
+        assert list(current) == list(previous)
+        for field in previous:
+            if field != "messages":
+                assert wire(current[field]) == wire(previous[field]), field
+        assert len(current["messages"]) > len(previous["messages"])
+        assert wire(current["messages"][: len(previous["messages"])]) == wire(previous["messages"])
+    assert [tool["function"]["name"] for tool in forwarded[-1]["tools"]] == ["Bash", "Read"]
