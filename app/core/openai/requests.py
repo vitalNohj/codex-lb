@@ -6,7 +6,15 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from typing import cast
 
-from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ModelWrapValidatorHandler,
+    PrivateAttr,
+    field_validator,
+    model_validator,
+)
 
 from app.core.openai.exceptions import ClientPayloadError
 from app.core.openai.tool_call_safety import is_downstream_side_effect_tool_call_item
@@ -695,6 +703,21 @@ class ResponsesRequest(BaseModel):
     model_config = ConfigDict(extra="allow")
     _codex_lb_client_reasoning_effort: str | None = PrivateAttr(default=None)
     _codex_lb_provider_reasoning_effort_materialized: bool = PrivateAttr(default=False)
+    _codex_lb_client_requested_store: bool = PrivateAttr(default=False)
+
+    @model_validator(mode="wrap")
+    @classmethod
+    def _capture_client_store(
+        cls, data: JsonValue, handler: ModelWrapValidatorHandler[ResponsesRequest]
+    ) -> ResponsesRequest:
+        # ``store`` is forced to false below, so remember what the client sent:
+        # a provider that cannot store responses must refuse ``store: true``
+        # rather than drop it.
+        requested = is_json_mapping(data) and data.get("store") is True
+        request = handler(data)
+        if requested:
+            request._codex_lb_client_requested_store = True
+        return request
 
     @model_validator(mode="before")
     @classmethod
@@ -702,6 +725,12 @@ class ResponsesRequest(BaseModel):
         # Compact requests drop ``text`` before upstream, so only this request
         # type can carry JSON mode and needs its JSON mention kept in input.
         return _normalize_responses_input_instructions(data, forwards_text_format=True)
+
+    @property
+    def client_requested_store(self) -> bool:
+        """Whether the client sent ``store: true`` (``store`` itself is forced false)."""
+
+        return self._codex_lb_client_requested_store
 
     model: str = Field(min_length=1)
     instructions: str

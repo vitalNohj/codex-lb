@@ -1,6 +1,14 @@
 from __future__ import annotations
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ModelWrapValidatorHandler,
+    PrivateAttr,
+    field_validator,
+    model_validator,
+)
 
 from app.core.openai.exceptions import ClientPayloadError
 from app.core.openai.message_coercion import coerce_messages
@@ -12,10 +20,24 @@ from app.core.openai.requests import (
     validate_tool_types,
 )
 from app.core.types import JsonValue
+from app.core.utils.json_guards import is_json_mapping
 
 
 class V1ResponsesRequest(BaseModel):
     model_config = ConfigDict(extra="allow")
+    _codex_lb_client_requested_store: bool = PrivateAttr(default=False)
+
+    @model_validator(mode="wrap")
+    @classmethod
+    def _capture_client_store(
+        cls, data: JsonValue, handler: ModelWrapValidatorHandler[V1ResponsesRequest]
+    ) -> V1ResponsesRequest:
+        # See ``ResponsesRequest._capture_client_store``.
+        requested = is_json_mapping(data) and data.get("store") is True
+        request = handler(data)
+        if requested:
+            request._codex_lb_client_requested_store = True
+        return request
 
     model: str = Field(min_length=1)
     messages: list[JsonValue] | None = None
@@ -94,7 +116,9 @@ class V1ResponsesRequest(BaseModel):
             data["input"] = input_text
         else:
             data["input"] = input_items
-        return ResponsesRequest.model_validate(data)
+        responses = ResponsesRequest.model_validate(data)
+        responses._codex_lb_client_requested_store = self._codex_lb_client_requested_store
+        return responses
 
 
 class V1ResponsesCompactRequest(BaseModel):

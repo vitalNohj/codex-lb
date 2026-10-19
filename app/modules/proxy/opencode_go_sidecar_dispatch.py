@@ -77,10 +77,12 @@ from app.modules.proxy.opencode_go_models import (
     unsupported_model_message,
 )
 from app.modules.proxy.responses_chat_bridge import (
+    ResponsesChatTranslation,
     ResponsesStreamSynthesizer,
     chat_to_responses_result,
-    responses_to_chat_request,
+    translate_responses_to_chat,
 )
+from app.modules.proxy.responses_chat_tools import ChatToolShape
 from app.modules.proxy.sidecar_routing import (
     SidecarRoutingEntry,
     parse_sidecar_full_models,
@@ -496,6 +498,7 @@ async def proxy_responses_to_opencode_go(
     sse_keepalive_interval_seconds: float,
     client: OpenCodeGoSidecarClient,
     wire_model: str | None = None,
+    translation: ResponsesChatTranslation | None = None,
 ) -> Response:
     """Serve an inbound Responses request from OpenCode Go chat completions.
 
@@ -549,8 +552,10 @@ async def proxy_responses_to_opencode_go(
             headers=dict(rate_limit_headers),
         )
 
-    chat_request = responses_to_chat_request(payload, forward_model)
-    chat_body = build_opencode_go_chat_payload(chat_request, forward_model).body
+    # The caller translates before reserving quota so an untranslatable
+    # request is refused with a 400 rather than sent with parts missing.
+    translation = translation or translate_responses_to_chat(payload, forward_model)
+    chat_body = build_opencode_go_chat_payload(translation.chat_request, forward_model).body
     client_headers = dict(request.headers)
 
     if payload.stream:
@@ -564,6 +569,7 @@ async def proxy_responses_to_opencode_go(
                 started_at=requested_at,
                 client=client,
                 client_headers=client_headers,
+                tool_shapes=translation.tool_shapes,
             ),
             abandon=partial(
                 _abandon_unstarted_opencode_go_stream,
@@ -665,7 +671,7 @@ async def proxy_responses_to_opencode_go(
         cost=cost,
     )
     return JSONResponse(
-        content=chat_to_responses_result(response_body, model=effective_model),
+        content=chat_to_responses_result(response_body, model=effective_model, tool_shapes=translation.tool_shapes),
         status_code=200,
         headers=dict(rate_limit_headers),
     )
@@ -680,6 +686,7 @@ async def _opencode_go_responses_stream_iterator(
     started_at: float,
     client: OpenCodeGoSidecarClient,
     client_headers: Mapping[str, str] | None = None,
+    tool_shapes: Mapping[str, ChatToolShape] | None = None,
 ) -> AsyncIterator[bytes]:
     """Relay a Go chat stream as a Responses event stream.
 
@@ -699,7 +706,7 @@ async def _opencode_go_responses_stream_iterator(
             usage = None
             billed_cost = BilledCostAccumulator()
             completed = False
-            synthesizer = ResponsesStreamSynthesizer(model=model)
+            synthesizer = ResponsesStreamSynthesizer(model=model, tool_shapes=tool_shapes)
             try:
                 async with client.stream_chat_completion(payload, client_headers=client_headers) as chunks:
                     decoder = SseJsonDataDecoder()

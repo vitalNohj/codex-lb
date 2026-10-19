@@ -172,7 +172,7 @@ def test_request_translation_carries_tools_and_stream():
     chat = responses_to_chat_request(request, "omniroute/test-chat")
 
     assert chat.stream is True
-    assert chat.tools and chat.tools[0]["name"] == "lookup"
+    assert chat.tools == [{"type": "function", "function": {"name": "lookup", "parameters": {"type": "object"}}}]
 
 
 def test_non_streaming_result_wraps_assistant_text():
@@ -191,7 +191,13 @@ def test_non_streaming_result_wraps_assistant_text():
     assert result["id"] == "resp_chatcmpl-1"
     assert result["output"][0]["type"] == "message"
     assert result["output"][0]["content"][0]["text"] == "hi there"
-    assert result["usage"] == {"input_tokens": 7, "output_tokens": 3, "total_tokens": 10}
+    assert result["usage"] == {
+        "input_tokens": 7,
+        "input_tokens_details": {"cached_tokens": 0, "cache_write_tokens": 0},
+        "output_tokens": 3,
+        "output_tokens_details": {"reasoning_tokens": 0},
+        "total_tokens": 10,
+    }
 
 
 def test_non_streaming_result_maps_tool_calls():
@@ -360,7 +366,13 @@ def test_stream_synthesizer_captures_usage():
     events = synth.feed("[DONE]")
 
     completed = events[-1]["response"]
-    assert completed["usage"] == {"input_tokens": 4, "output_tokens": 1, "total_tokens": 5}
+    assert completed["usage"] == {
+        "input_tokens": 4,
+        "input_tokens_details": {"cached_tokens": 0, "cache_write_tokens": 0},
+        "output_tokens": 1,
+        "output_tokens_details": {"reasoning_tokens": 0},
+        "total_tokens": 5,
+    }
 
 
 # --------------------------------------------------------------------------
