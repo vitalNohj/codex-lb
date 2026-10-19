@@ -390,3 +390,116 @@ async def test_claim_write_failure_cools_requests_and_recovers(monkeypatch: pyte
     assert claim_attempts == 2
     assert len(persisted) == 1
     assert active_claim is None
+
+
+def _resolved_record(price: ModelPrice) -> PriceRecord:
+    now = datetime.now(timezone.utc)
+    return PriceRecord(
+        provider="cliproxy",
+        incoming_model="claude-opus-5-5",
+        raw_incoming_model="claude-opus-5-5",
+        status=ExternalPriceStatus.RESOLVED,
+        catalog_model="anthropic/claude-opus-5-5",
+        catalog_source="openrouter",
+        price=price,
+        resolution_step="exact",
+        detail=None,
+        retrieved_at=now,
+        updated_at=now,
+        attempt_count=1,
+        next_retry_at=None,
+    )
+
+
+@pytest.mark.asyncio
+async def test_catalog_cost_carries_its_cache_write_part_at_the_resolved_rate(monkeypatch) -> None:
+    # A catalog rate unlike the static table's, so the stored part can only
+    # come from the rate that priced the row.
+    record = _resolved_record(ModelPrice(input_per_1m=4.0, output_per_1m=20.0, cached_input_per_1m=0.2))
+
+    async def _read_record(_provider: str, _model: str) -> PriceRecord:
+        return record
+
+    monkeypatch.setattr(external_pricing_service, "_read_record", _read_record)
+
+    usage = UsageTokens(
+        input_tokens=100_000, output_tokens=1_000, cached_input_tokens=60_000, cache_write_input_tokens=30_000
+    )
+    result = await external_request_cost(
+        provider="cliproxy", model="claude-opus-5-5", usage=usage, billed_cost_usd=None, schedule_lookup=False
+    )
+
+    assert result.cost_source == CostSource.CATALOG_CALCULATED.value
+    assert result.cost_usd == pytest.approx(0.04 + 0.012 + 0.24 + 0.02)
+    assert result.cache_write_input_cost_usd == pytest.approx(0.24)
+
+    no_writes = await external_request_cost(
+        provider="cliproxy",
+        model="claude-opus-5-5",
+        usage=UsageTokens(input_tokens=100_000, output_tokens=1_000, cached_input_tokens=60_000),
+        billed_cost_usd=None,
+        schedule_lookup=False,
+    )
+    assert no_writes.cache_write_input_cost_usd is None
+
+
+@pytest.mark.asyncio
+async def test_billed_cost_has_no_known_cache_write_part(monkeypatch) -> None:
+    async def _calculated_cost(**_kwargs):
+        return CalculatedCost(0.75, "vendor/model", "orcarouter", cache_write_input_cost_usd=0.5), (
+            ExternalPriceStatus.RESOLVED
+        )
+
+    monkeypatch.setattr(external_pricing_logging, "calculated_cost_for_request", _calculated_cost)
+
+    result = await external_request_cost(
+        provider="orcarouter", model="vendor/model", usage=None, billed_cost_usd=0.9, schedule_lookup=False
+    )
+
+    assert result.cost_source == CostSource.UPSTREAM_BILLED.value
+    assert result.cache_write_input_cost_usd is None
+
+
+def _participating_log(*, cost_source: str, cache_write_input_cost_usd: float | None) -> RequestLog:
+    return RequestLog(
+        request_id="req-claude-cache-write",
+        request_kind="normal",
+        model="cc/claude-opus-5-5",
+        source="claude_sidecar",
+        status="success",
+        error_code=None,
+        requested_at=datetime.now(timezone.utc),
+        input_tokens=100_000,
+        output_tokens=1_000,
+        cached_input_tokens=60_000,
+        cache_write_input_tokens=30_000,
+        cost_usd=0.312,
+        cache_write_input_cost_usd=cache_write_input_cost_usd,
+        cost_source=cost_source,
+        price_status=ExternalPriceStatus.RESOLVED.value,
+    )
+
+
+def test_a_catalog_priced_row_shows_its_stored_cache_write_part() -> None:
+    entry = to_request_log_entry(
+        include_sensitive_metadata=False,
+        log=_participating_log(cost_source=CostSource.CATALOG_CALCULATED.value, cache_write_input_cost_usd=0.24),
+    )
+
+    assert entry.cache_write_input_tokens == 30_000
+    assert entry.cost_breakdown.total_usd == pytest.approx(0.312)
+    assert entry.cost_breakdown.cache_write_input_usd == pytest.approx(0.24)
+    # The rest of the split was never stored; the static table must not fill it in.
+    assert entry.cost_breakdown.input_usd is None
+    assert entry.cost_breakdown.cached_input_usd is None
+    assert entry.cost_breakdown.output_usd is None
+
+
+def test_a_billed_row_shows_no_cache_write_part_even_if_one_was_stored() -> None:
+    entry = to_request_log_entry(
+        include_sensitive_metadata=False,
+        log=_participating_log(cost_source=CostSource.UPSTREAM_BILLED.value, cache_write_input_cost_usd=0.24),
+    )
+
+    assert entry.cost_breakdown.total_usd == pytest.approx(0.312)
+    assert entry.cost_breakdown.cache_write_input_usd is None

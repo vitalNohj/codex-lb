@@ -63,6 +63,9 @@ class ExternalRequestCost:
     cost_usd: float | None
     cost_source: str | None
     price_status: str | None
+    # The prompt-cache write part of a catalog-calculated ``cost_usd``. Only a
+    # cost codex-lb calculated has a known split; a billed amount does not.
+    cache_write_input_cost_usd: float | None = None
 
 
 _SidecarUsage = TypeVar("_SidecarUsage", bound=SidecarUsageLike)
@@ -141,6 +144,7 @@ async def external_request_cost(
             cost_usd=calculated.cost_usd,
             cost_source=CostSource.CATALOG_CALCULATED.value,
             price_status=status_value,
+            cache_write_input_cost_usd=validated_billed_cost(calculated.cache_write_input_cost_usd),
         )
 
     return ExternalRequestCost(cost_usd=None, cost_source=None, price_status=status_value)

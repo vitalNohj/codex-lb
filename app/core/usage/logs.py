@@ -190,6 +190,25 @@ def _totals_match(left: float | None, right: float | None, *, precision: int | N
     return abs(left - right) < (10 ** (-precision)) / 2
 
 
+def _persisted_cache_write_cost(log: RequestLogLike, *, precision: int | None) -> float | None:
+    """The stored cache-write part of a catalog-calculated cost, if any.
+
+    Read through ``getattr`` because only request-log rows carry the column.
+    A billed or unresolved cost has no known split, so it reports none.
+    """
+
+    if getattr(log, "cost_source", None) != CostSource.CATALOG_CALCULATED.value:
+        return None
+    if not cache_write_input_tokens_from_log(log):
+        return None
+    cost = getattr(log, "cache_write_input_cost_usd", None)
+    if cost is None:
+        return None
+    if precision is None:
+        return float(cost)
+    return round(float(cost), precision)
+
+
 def cost_breakdown_from_log(
     log: RequestLogLike,
     *,
@@ -214,11 +233,14 @@ def cost_breakdown_from_log(
                 output_usd=None,
                 total_usd=None,
             )
+        # The writer stored the cache-write part of a cost it calculated, at
+        # the rates that priced the row; the rest of the split stays unknown.
         return UsageCostBreakdown(
             input_usd=None,
             cached_input_usd=None,
             output_usd=None,
             total_usd=persisted,
+            cache_write_input_usd=_persisted_cache_write_cost(log, precision=precision),
         )
     if log.model:
         resolved = get_pricing_for_model(log.model, None, None)

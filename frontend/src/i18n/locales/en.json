@@ -738,6 +738,7 @@
   "dashboard.requestDetails.copyRequestId": "Copy Request ID",
   "dashboard.requestDetails.copyUserAgent": "Copy User Agent",
   "dashboard.requestDetails.costSegment": "{{count}} {{label}} ({{cost}})",
+  "dashboard.requestDetails.costIncludes": "{{total}}, including {{segments}}",
   "dashboard.requestDetails.description": "Inspect request metadata, latency, token usage, and archive payloads.",
   "dashboard.requestDetails.elapsed": "Elapsed",
   "dashboard.requestDetails.errorCode": "Error Code",

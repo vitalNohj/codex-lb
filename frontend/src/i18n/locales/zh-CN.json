@@ -738,6 +738,7 @@
   "dashboard.requestDetails.copyRequestId": "复制请求 ID",
   "dashboard.requestDetails.copyUserAgent": "复制 User Agent",
   "dashboard.requestDetails.costSegment": "{{count}} {{label}} ({{cost}})",
+  "dashboard.requestDetails.costIncludes": "{{total}}，其中 {{segments}}",
   "dashboard.requestDetails.description": "查看请求元数据、延迟、token 用量和归档 payload。",
   "dashboard.requestDetails.elapsed": "耗时",
   "dashboard.requestDetails.errorCode": "错误码",

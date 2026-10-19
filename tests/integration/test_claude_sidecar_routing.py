@@ -983,6 +983,7 @@ _CLAUDE_CACHE_WRITE_USAGE = {
 # write rate of 2 x $4/1M, 1k output at $20/1M. Counting the writes as plain
 # input instead would have recorded $0.072.
 _CLAUDE_CACHE_WRITE_COST = 0.04 + 0.012 + 0.24 + 0.02
+_CLAUDE_CACHE_WRITE_PART = 0.24
 
 
 @pytest.mark.asyncio
@@ -1010,12 +1011,19 @@ async def test_cache_writes_are_recorded_and_priced_at_the_one_hour_write_rate(
         log = priced[-1]
         assert (log.input_tokens, log.cached_input_tokens, log.cache_write_input_tokens) == (100_000, 60_000, 30_000)
         assert log.cost_usd == pytest.approx(_CLAUDE_CACHE_WRITE_COST)
+        assert log.cache_write_input_cost_usd == pytest.approx(_CLAUDE_CACHE_WRITE_PART)
 
         listed = await async_client.get("/api/request-logs", params={"limit": 10})
         assert listed.status_code == 200
         row = next(item for item in listed.json()["requests"] if item["requestId"] == log.request_id)
         assert row["cacheWriteInputTokens"] == 30_000
         assert row["costUsd"] == pytest.approx(_CLAUDE_CACHE_WRITE_COST)
+        # The dashboard shows the cache-write part of the catalog-priced cost;
+        # the rest of the split is not stored, so it stays unknown.
+        assert row["costBreakdown"]["cacheWriteInputUsd"] == pytest.approx(_CLAUDE_CACHE_WRITE_PART)
+        assert row["costBreakdown"]["totalUsd"] == pytest.approx(_CLAUDE_CACHE_WRITE_COST)
+        assert row["costBreakdown"]["inputUsd"] is None
+        assert row["costBreakdown"]["outputUsd"] is None
     finally:
         reset_serving_context_loaders()
 
@@ -1059,6 +1067,7 @@ async def test_streamed_cache_writes_are_recorded_and_priced_at_the_one_hour_wri
         assert log.status == "success"
         assert (log.input_tokens, log.cached_input_tokens, log.cache_write_input_tokens) == (100_000, 60_000, 30_000)
         assert log.cost_usd == pytest.approx(_CLAUDE_CACHE_WRITE_COST)
+        assert log.cache_write_input_cost_usd == pytest.approx(_CLAUDE_CACHE_WRITE_PART)
     finally:
         reset_serving_context_loaders()
 

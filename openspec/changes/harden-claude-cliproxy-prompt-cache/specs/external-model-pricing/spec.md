@@ -28,6 +28,14 @@ The calculated cost MUST price written tokens at twice the input token rate, whi
 - **WHEN** its cost is calculated
 - **THEN** 29,990 tokens are charged at twice the input rate and 10 tokens at the input rate
 
+#### Scenario: Request details show the cache-write part of a catalog-priced cost
+
+- **GIVEN** a CLIProxyAPI Claude request priced from its resolved catalog rate, with cache writes
+- **WHEN** it is logged and its details are listed
+- **THEN** the request log stores the cache-write part of the cost as `cache_write_input_cost_usd`, at the rate that priced it
+- **AND** the cost breakdown reports that part with the total, leaving the parts that were not stored unknown
+- **AND** a billed cost reports no cache-write part
+
 #### Scenario: Requests without writes keep their cost
 
 - **GIVEN** a request whose usage reports no cache write

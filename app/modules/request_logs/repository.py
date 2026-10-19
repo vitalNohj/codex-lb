@@ -1060,6 +1060,7 @@ class RequestLogsRepository:
         cost_usd: float | None = None,
         cost_source: str | None = None,
         price_status: str | None = None,
+        cache_write_input_cost_usd: float | None = None,
         reference_cost_usd: float | None = None,
         archive_request_id: str | None = None,
         upstream_model: str | None = None,
@@ -1154,6 +1155,9 @@ class RequestLogsRepository:
             if cost_source is not None:
                 log.cost_usd = cost_usd
                 log.cost_source = cost_source
+                # Only a cost codex-lb calculated has a known cache-write part.
+                if cost_source == CostSource.CATALOG_CALCULATED.value and cost_usd is not None:
+                    log.cache_write_input_cost_usd = cache_write_input_cost_usd
             elif model_source_id is not None:
                 # A model source prices its own traffic from operator-configured
                 # rates, whether or not this particular row had usage to price.

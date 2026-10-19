@@ -323,6 +323,21 @@ function formatRequestCostSummary(request: RequestLog | null, t: ReturnType<type
     return segments.join(" + ");
   }
 
+  // An externally priced row stores only its total and the cache-write part,
+  // so the segments name part of the total rather than sum to it.
+  const breakdown = request.costBreakdown;
+  const onlyCacheWriteIsKnown =
+    breakdown?.cacheWriteInputUsd != null &&
+    breakdown.inputUsd == null &&
+    breakdown.cachedInputUsd == null &&
+    breakdown.outputUsd == null;
+  if (onlyCacheWriteIsKnown) {
+    return t("dashboard.requestDetails.costIncludes", {
+      total: formatCurrency(totalUsd),
+      segments: segments.join(" + "),
+    });
+  }
+
   return `${formatCurrency(totalUsd)} = ${segments.join(" + ")}`;
 }
 

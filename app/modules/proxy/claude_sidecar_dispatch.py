@@ -2274,6 +2274,7 @@ async def _log_sidecar_request(
                 cost_usd=cost.cost_usd,
                 cost_source=cost.cost_source,
                 price_status=cost.price_status,
+                cache_write_input_cost_usd=cost.cache_write_input_cost_usd,
             )
     except Exception:
         logger.warning(

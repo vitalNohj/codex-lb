@@ -5088,19 +5088,20 @@ async def test_cache_write_tokens_migration_keeps_existing_rows_and_reverses(tmp
             row = (
                 await conn.execute(
                     text(
-                        "SELECT input_tokens, cached_input_tokens, cache_write_input_tokens, cost_usd "
-                        "FROM request_logs WHERE request_id = 'req-before'"
+                        "SELECT input_tokens, cached_input_tokens, cache_write_input_tokens, "
+                        "cache_write_input_cost_usd, cost_usd FROM request_logs WHERE request_id = 'req-before'"
                     )
                 )
             ).one()
         # Old rows never had their writes reported, so they stay NULL and keep
         # the cost they were recorded with.
-        assert tuple(row) == (100, 60, None, 0.5)
+        assert tuple(row) == (100, 60, None, None, 0.5)
 
         await to_thread.run_sync(lambda: command.downgrade(_build_alembic_config(db_url), parent_revision))
         async with engine.connect() as conn:
             columns = {row[1] for row in (await conn.execute(text("PRAGMA table_info(request_logs)"))).fetchall()}
         assert "cache_write_input_tokens" not in columns
+        assert "cache_write_input_cost_usd" not in columns
         assert "cached_input_tokens" in columns
     finally:
         await engine.dispose()
