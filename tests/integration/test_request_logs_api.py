@@ -6,12 +6,15 @@ import pytest
 
 from app.core.auth.dashboard_access import guest_principal
 from app.core.auth.dependencies import validate_dashboard_session
+from app.core.config.settings_cache import get_settings_cache
 from app.core.crypto import TokenEncryptor
 from app.core.utils.time import utcnow
 from app.db.models import Account, AccountStatus, ApiKey, ClaudeSidecarUsageEvent, ModelSource, RequestLog
 from app.db.session import SessionLocal
 from app.modules.accounts.repository import AccountsRepository
+from app.modules.claude_sidecar.quota import SidecarAuthQuota, SidecarQuotaSnapshot, snapshot_to_json
 from app.modules.request_logs.repository import RequestLogsRepository
+from app.modules.settings.repository import SettingsRepository
 
 pytestmark = pytest.mark.integration
 
@@ -230,8 +233,113 @@ async def test_request_logs_api_returns_claude_sidecar_account_label(async_clien
     assert latest["sidecarAuthIndex"] is None
 
 
+def _cliproxy_snapshot_json() -> str:
+    account = SidecarAuthQuota(
+        name="claude-alice.json",
+        auth_index="ca51a540a688",
+        email="alice@example.com",
+        status="active",
+        status_message=None,
+        disabled=False,
+        unavailable=False,
+        quota_exceeded=False,
+        next_recover_at=None,
+        model_states=(),
+        success=0,
+        failed=0,
+        last_refresh=None,
+        provider="claude",
+    )
+    return snapshot_to_json(
+        SidecarQuotaSnapshot(checked_at=utcnow(), status="healthy", message=None, accounts=(account,))
+    )
+
+
 @pytest.mark.asyncio
-async def test_request_logs_api_prefers_dispatch_credential_over_usage_event(async_client, db_setup):
+async def test_request_logs_api_shows_cliproxy_account_email_for_dispatch_credential(async_client, db_setup):
+    now = utcnow()
+    async with SessionLocal() as session:
+        await SettingsRepository(session).update(claude_sidecar_quota_state_json=_cliproxy_snapshot_json())
+        logs_repo = RequestLogsRepository(session)
+        await logs_repo.add_log(
+            account_id=None,
+            request_id="codexlb-uuid-dispatch-email",
+            model="claude-sonnet",
+            input_tokens=10,
+            output_tokens=5,
+            latency_ms=100,
+            status="success",
+            error_code=None,
+            requested_at=now,
+            transport="http",
+            source="claude_sidecar",
+            sidecar_provider="claude",
+            sidecar_auth_index="ca51a540a688",
+            sidecar_route="sticky",
+        )
+        session.add(
+            ClaudeSidecarUsageEvent(
+                request_id="cpa-other-email",
+                timestamp=now + timedelta(seconds=1),
+                auth_index="0",
+                source="someone-else@example.com",
+                total_tokens=15,
+                input_tokens=10,
+                output_tokens=5,
+            )
+        )
+        await session.commit()
+    await get_settings_cache().invalidate()
+
+    response = await async_client.get("/api/request-logs?limit=1")
+    assert response.status_code == 200
+    latest = response.json()["requests"][0]
+    assert latest["sidecarAccountLabel"] == "alice@example.com"
+    assert latest["sidecarAuthIndex"] == "ca51a540a688"
+    assert latest["sidecarRoute"] == "sticky"
+
+
+@pytest.mark.asyncio
+async def test_request_logs_api_prefers_usage_event_label_over_unknown_credential(async_client, db_setup):
+    now = utcnow()
+    async with SessionLocal() as session:
+        logs_repo = RequestLogsRepository(session)
+        await logs_repo.add_log(
+            account_id=None,
+            request_id="codexlb-uuid-unknown-credential",
+            model="claude-sonnet",
+            input_tokens=10,
+            output_tokens=5,
+            latency_ms=100,
+            status="success",
+            error_code=None,
+            requested_at=now,
+            transport="http",
+            source="claude_sidecar",
+            sidecar_provider="claude",
+            sidecar_auth_index="unknown-idx",
+        )
+        session.add(
+            ClaudeSidecarUsageEvent(
+                request_id="cpa-correlated",
+                timestamp=now + timedelta(seconds=1),
+                auth_index="unknown-idx",
+                source="claude@example.com",
+                total_tokens=15,
+                input_tokens=10,
+                output_tokens=5,
+            )
+        )
+        await session.commit()
+
+    response = await async_client.get("/api/request-logs?limit=1")
+    assert response.status_code == 200
+    latest = response.json()["requests"][0]
+    assert latest["sidecarAccountLabel"] == "claude@example.com"
+
+
+@pytest.mark.asyncio
+async def test_request_logs_api_falls_back_to_dispatch_credential_when_identity_unknown(async_client, db_setup):
     now = utcnow()
     async with SessionLocal() as session:
         logs_repo = RequestLogsRepository(session)
@@ -249,17 +357,7 @@ async def test_request_logs_api_prefers_dispatch_credential_over_usage_event(asy
             source="claude_sidecar",
             sidecar_provider="xai",
             sidecar_auth_index="idx-2",
-        )
-        session.add(
-            ClaudeSidecarUsageEvent(
-                request_id="cpa-other",
-                timestamp=now + timedelta(seconds=1),
-                auth_index="0",
-                source="claude@example.com",
-                total_tokens=15,
-                input_tokens=10,
-                output_tokens=5,
-            )
+            sidecar_route="sticky",
         )
         await session.commit()
 

@@ -117,6 +117,24 @@ function credentialFacet(request: RequestLog | null | undefined): string | null 
   return provider || authIndex || null;
 }
 
+const CREDENTIAL_ROUTES = new Set(["sticky", "rebind", "selected"]);
+
+// Drawer-only detail: the dispatch credential and how the router picked it.
+function credentialDetail(request: RequestLog | null | undefined): string | null {
+  const facet = credentialFacet(request);
+  const route = request?.sidecarRoute?.trim() ?? "";
+  if (facet && CREDENTIAL_ROUTES.has(route)) {
+    return `${facet} · ${route}`;
+  }
+  return facet;
+}
+
+// The account column names the account (email or API-key account name) the
+// backend resolved; the opaque credential is only a fallback.
+function sidecarIdentityLabel(request: RequestLog): string | null {
+  return request.sidecarAccountLabel?.trim() || credentialFacet(request);
+}
+
 function sidecarAccountLabel(request: RequestLog): string | null {
   const source = request.source;
   if (!source || isDisabledCapabilityRequestSource(source)) {
@@ -129,12 +147,9 @@ function sidecarAccountLabel(request: RequestLog): string | null {
   if (!providerLabel) {
     return null;
   }
-  const facet = credentialFacet(request);
-  if (source === "claude_sidecar" && facet) {
-    return `${providerLabel}: ${facet}`;
-  }
-  if (source === "claude_sidecar" && request.sidecarAccountLabel) {
-    return `${providerLabel}: ${request.sidecarAccountLabel}`;
+  const identity = source === "claude_sidecar" ? sidecarIdentityLabel(request) : null;
+  if (identity) {
+    return `${providerLabel}: ${identity}`;
   }
   return providerLabel;
 }
@@ -431,9 +446,7 @@ export function RecentRequestsTable({
               const time = formatTimeLong(request.requestedAt);
               const sidecarLabel = sidecarAccountLabel(request);
               const sidecarIdentity =
-                request.source === "claude_sidecar"
-                  ? credentialFacet(request) ?? request.sidecarAccountLabel
-                  : null;
+                request.source === "claude_sidecar" ? sidecarIdentityLabel(request) : null;
               const accountLabel = sidecarLabel
                 ? sidecarLabel
                 : request.accountId
@@ -703,8 +716,8 @@ export function RecentRequestsTable({
               <div className="grid gap-3 sm:grid-cols-3">
                 <RequestDetailField label={t("dashboard.requests.columns.transport")} value={selectedRequest?.transport ? (TRANSPORT_LABELS[selectedRequest.transport] ?? selectedRequest.transport) : "—"} />
                 <RequestDetailField label="Source" value={sidecarSourceDisplay(selectedRequest?.source, selectedRequest?.sidecarAccountLabel) ?? "—"} />
-                {credentialFacet(selectedRequest) ? (
-                  <RequestDetailField label="Credential" value={credentialFacet(selectedRequest) ?? ""} mono />
+                {credentialDetail(selectedRequest) ? (
+                  <RequestDetailField label="Credential" value={credentialDetail(selectedRequest) ?? ""} mono />
                 ) : null}
                 <RequestDetailField label={t("dashboard.requests.columns.time")} value={selectedRequest ? formatDateTimeInline(selectedRequest.requestedAt) : "—"} />
                 <RequestDetailField label={t("dashboard.requestDetails.errorCode")} value={selectedRequestError.errorCode ?? "—"} mono />

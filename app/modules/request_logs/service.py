@@ -7,6 +7,7 @@ from app.core.config.settings_cache import get_settings_cache
 from app.core.usage.external_pricing.providers import external_priced_provider_for_log_source
 from app.core.usage.external_pricing.store import normalize_lookup_key
 from app.modules.openai_compat.endpoints import is_openai_compat_log_source, parse_openai_compat_endpoints
+from app.modules.request_logs.cliproxy_identity import get_cliproxy_identity_resolver
 from app.modules.request_logs.mappers import (
     QUOTA_CODES,
     RATE_LIMIT_CODES,
@@ -145,16 +146,23 @@ class RequestLogsService:
             claude_sidecar_logs
         )
         openai_compat_label_by_source: dict[str, str] = {}
-        if any(is_openai_compat_log_source(log.source) for log in logs):
+        cliproxy_identity_by_auth_index: dict[str, str] = {}
+        auth_indexes = [log.sidecar_auth_index for log in logs if log.sidecar_auth_index]
+        has_openai_compat = any(is_openai_compat_log_source(log.source) for log in logs)
+        if auth_indexes or has_openai_compat:
             try:
                 settings = await get_settings_cache().get()
             except Exception:
                 settings = None
-            if settings is not None:
+            if settings is not None and has_openai_compat:
                 openai_compat_label_by_source = {
                     endpoint.provider_id: endpoint.name
                     for endpoint in parse_openai_compat_endpoints(settings.openai_compat_endpoints_json)
                 }
+            if settings is not None and auth_indexes:
+                cliproxy_identity_by_auth_index = await get_cliproxy_identity_resolver().labels_for(
+                    settings, auth_indexes
+                )
         price_key_by_log_id = {
             log.id: normalize_lookup_key(provider, log.model)
             for log in logs
@@ -166,9 +174,10 @@ class RequestLogsService:
                 log,
                 api_key_name=api_key_name_by_id.get(log.api_key_id or ""),
                 sidecar_account_label=(
-                    cliproxy_credential_label(log.sidecar_provider, log.sidecar_auth_index, log.sidecar_route)
+                    cliproxy_identity_by_auth_index.get((log.sidecar_auth_index or "").strip())
                     or sidecar_account_label_by_request_id.get(log.request_id)
                     or openai_compat_label_by_source.get(log.source or "")
+                    or cliproxy_credential_label(log.sidecar_provider, log.sidecar_auth_index)
                 ),
                 display_price_status=(
                     current_status.value

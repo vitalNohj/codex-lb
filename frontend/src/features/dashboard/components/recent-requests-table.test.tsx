@@ -590,7 +590,7 @@ describe("RecentRequestsTable", () => {
     expect(bareCell.querySelector(".privacy-blur")).toBeNull();
   });
 
-  it("shows the dispatch credential instead of the usage-event label", () => {
+  it("shows the account email in the column and the dispatch credential in the drawer", () => {
     render(
       <RecentRequestsTable
         {...PAGINATION_PROPS}
@@ -607,6 +607,7 @@ describe("RecentRequestsTable", () => {
             sidecarAccountLabel: "claude@example.com",
             sidecarProvider: "xai",
             sidecarAuthIndex: "idx-2",
+            sidecarRoute: "sticky",
             apiKeyName: "xAI Key",
           },
         ]}
@@ -615,12 +616,41 @@ describe("RecentRequestsTable", () => {
 
     const row = screen.getByText("grok-4").closest("tr");
     expect(row).not.toBeNull();
-    expect(within(row as HTMLElement).getAllByRole("cell")[1]).toHaveTextContent("CLIProxyAPI: xai/idx-2");
-    expect(within(row as HTMLElement).getAllByRole("cell")[1]).not.toHaveTextContent("claude@example.com");
+    const accountCell = within(row as HTMLElement).getAllByRole("cell")[1];
+    expect(accountCell).toHaveTextContent("CLIProxyAPI: claude@example.com");
+    expect(accountCell).not.toHaveTextContent("idx-2");
 
     const dialog = openRequestDetails();
     expect(within(dialog).getByText("Credential")).toBeInTheDocument();
-    expect(within(dialog).getByText("xai/idx-2")).toBeInTheDocument();
+    expect(within(dialog).getByText("xai/idx-2 · sticky")).toBeInTheDocument();
+  });
+
+  it("falls back to the dispatch credential when the account is unknown", () => {
+    render(
+      <RecentRequestsTable
+        {...PAGINATION_PROPS}
+        total={1}
+        accounts={[]}
+        requests={[
+          {
+            ...VIEW_MODE_REQUEST,
+            accountId: null,
+            planType: null,
+            requestId: "req-unknown-credential",
+            model: "grok-4",
+            source: "claude_sidecar",
+            sidecarAccountLabel: null,
+            sidecarProvider: "xai",
+            sidecarAuthIndex: "idx-9",
+            apiKeyName: "xAI Key",
+          },
+        ]}
+      />,
+    );
+
+    const row = screen.getByText("grok-4").closest("tr");
+    expect(row).not.toBeNull();
+    expect(within(row as HTMLElement).getAllByRole("cell")[1]).toHaveTextContent("CLIProxyAPI: xai/idx-9");
   });
 
   it("shows TTFT and output-token TPS beside tokens", () => {
