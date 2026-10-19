@@ -582,6 +582,17 @@ def test_t8_upstream_error_ends_the_stream_with_response_failed():
     assert synth.finish() == []
 
 
+def test_t8_error_chunk_fed_to_the_synthesizer_fails_the_response():
+    # OmniRoute and OpenCode Go feed every decoded chunk, error chunks included.
+    synth = _Synth(model=_MODEL)
+    events = synth.feed({"choices": [{"delta": {"content": "par"}}]})
+    events += synth.feed({"error": {"code": "rate_limit_exceeded", "message": "slow"}})
+    events += synth.feed("[DONE]")
+
+    assert [event["type"] for event in events][-1] == "response.failed"
+    assert sum(event["type"].startswith("response.") and "response" in event for event in events[-1:]) == 1
+
+
 def test_t8_upstream_error_code_outside_the_responses_set_is_a_server_error():
     synth = _Synth(model=_MODEL)
     events = synth.fail({"code": "sidecar_error", "message": "boom"})

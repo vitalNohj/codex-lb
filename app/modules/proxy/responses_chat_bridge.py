@@ -877,6 +877,10 @@ class ResponsesStreamSynthesizer:
             return self._finish()
         if not is_json_mapping(event) or self._completed:
             return []
+        if "error" in event and "choices" not in event:
+            # A chat provider reports a mid-stream failure as a bare error
+            # chunk; finishing normally afterwards would call it completed.
+            return self.fail(event.get("error"))
         out: list[_Json] = []
         self._ensure_created(out)
         mapped_usage = _usage_to_responses_usage(event.get("usage"))
