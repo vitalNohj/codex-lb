@@ -80,7 +80,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.balancer.logic import AccountState, RoutingStrategy
+from app.core.balancer.logic import AccountState, RoutingStrategy, select_account
 from app.core.clients.claude_sidecar import ClaudeSidecarClient
 from app.core.config.settings import get_settings
 from app.core.config.settings_cache import get_settings_cache
@@ -1025,16 +1025,26 @@ def _without_cooling(
     *,
     keep: str | None = None,
 ) -> list[CliproxyCandidate]:
-    """Skip cooling credentials unless no other credential serves ``model``.
+    """Skip cooling credentials unless no other credential can take ``model``.
 
-    ``keep`` names the conversation's pin, which stays eligible.
+    ``keep`` names the conversation's pin, which stays eligible. A spare
+    counts only if the balancer would select it: one that is paused,
+    exhausted or needs re-auth leaves the cooling credential as the last
+    resort instead of failing the request open.
     """
 
     cooling = _cooling_ids() - {keep}
     if not cooling:
         return candidates
     remaining = [item for item in candidates if item.account_id not in cooling]
-    return remaining if _serving_candidates(remaining, model) else candidates
+    return remaining if _selectable(remaining, model) else candidates
+
+
+def _selectable(candidates: Sequence[CliproxyCandidate], model: str) -> bool:
+    """Whether the shared selection would pick any of ``candidates`` for ``model``."""
+
+    states = [_ranked_state(item) for item in _serving_candidates(candidates, model)]
+    return bool(states) and select_account(states).account is not None
 
 
 def _serving_candidates(candidates: Sequence[CliproxyCandidate], model: str) -> list[CliproxyCandidate]:

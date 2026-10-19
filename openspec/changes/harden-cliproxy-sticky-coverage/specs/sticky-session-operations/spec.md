@@ -60,7 +60,13 @@ The Responses-to-chat bridge MUST forward the client's `prompt_cache_key`. If th
 
 ### Requirement: A transient credential failure keeps the warm pin
 
-A 429, 401 or 403 from a credential whose pin has already served the conversation MUST put that credential in a short in-process cooldown. The request MUST be served from a fallback pin for the same conversation, and the original pin MUST NOT change. Later turns MUST use the same fallback credential during the cooldown and MUST return to the original credential after it. Fallback pins MUST live in an internal key namespace that no client identity can resolve to, so one conversation cannot read or move another conversation's fallback.
+A 429, 401 or 403 from a credential whose pin has already served the conversation MUST put that credential in a short in-process cooldown. The request MUST be served from a fallback pin for the same conversation, and the original pin MUST NOT change. Later turns MUST use the same fallback credential during the cooldown and MUST return to the original credential after it. Fallback pins MUST live in an internal key namespace that no client identity can resolve to, so one conversation cannot read or move another conversation's fallback. New conversations MUST skip cooling credentials only while another credential is selectable under the balancer's availability rules. A credential that is paused, quota-exhausted or needs re-auth is not selectable. When only cooling credentials are selectable, the router MUST still route to a cooling credential and MUST NOT fail open.
+
+#### Scenario: A cooling credential is the last resort
+
+- **GIVEN** credential A is cooling down and the only other credential B is paused
+- **WHEN** a request for the model arrives
+- **THEN** it is routed to A
 
 #### Scenario: Conversation returns to its warm credential after a 429
 

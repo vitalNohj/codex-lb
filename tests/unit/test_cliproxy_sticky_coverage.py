@@ -579,6 +579,40 @@ async def test_s5_a_cooling_pin_that_runs_out_of_quota_moves(db_setup: bool, mon
     assert (await _pins())["cliproxy:session:s5"] == f"cliproxy:claude:{moved}"
 
 
+@pytest.mark.parametrize(
+    "status",
+    [AccountStatus.PAUSED, AccountStatus.QUOTA_EXCEEDED, AccountStatus.REAUTH_REQUIRED, AccountStatus.DEACTIVATED],
+)
+def test_s5_cooling_is_skipped_only_for_a_selectable_spare(status: AccountStatus) -> None:
+    """Kody: a spare the balancer would refuse does not displace the cooling credential."""
+
+    cooling = _candidate("a", used=10.0)
+    spare = _candidate("b", used=40.0, status=status)
+    routing._start_cooldown(cooling.account_id)
+    assert routing._without_cooling([cooling, spare], MODEL) == [cooling, spare]
+    healthy = _candidate("c", used=50.0)
+    assert routing._without_cooling([cooling, spare, healthy], MODEL) == [spare, healthy]
+
+
+async def test_s5_cooling_last_resort_serves_when_the_spare_is_paused(
+    db_setup: bool, monkeypatch: pytest.MonkeyPatch, _outcomes: _Counter
+) -> None:
+    del db_setup
+    _install(monkeypatch, [_candidate("a", used=10.0), _candidate("b", used=40.0, status=AccountStatus.PAUSED)])
+    routing._start_cooldown("cliproxy:claude:a")
+    # Pinned (session header) and unpinned (derivation off) paths both keep serving.
+    choice = await _route(_chat(_conversation(1)), headers={"X-Session-Id": "s5-last"})
+    assert choice is not None and choice.account_id == "cliproxy:claude:a"
+    _install(
+        monkeypatch,
+        [_candidate("a", used=10.0), _candidate("b", used=40.0, status=AccountStatus.PAUSED)],
+        sticky_threads_enabled=False,
+    )
+    choice = await _route(_chat(_conversation(1)))
+    assert choice is not None and choice.account_id == "cliproxy:claude:a"
+    assert not any(outcome in {"fail_open", "no_candidate"} for outcome, _source in _outcomes.values)
+
+
 @pytest.mark.parametrize("status", [AccountStatus.REAUTH_REQUIRED, AccountStatus.PAUSED, AccountStatus.DEACTIVATED])
 def test_s5_unusable_cooling_pins_are_not_kept(status: AccountStatus) -> None:
     pool = [_candidate("a", used=10.0, status=status), _candidate("b", used=40.0)]
