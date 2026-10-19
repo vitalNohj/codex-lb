@@ -61,7 +61,6 @@ from app.modules.proxy.responses_chat_bridge import (
     chat_to_responses_result,
     translate_responses_to_chat,
 )
-from app.modules.proxy.responses_chat_tools import ChatToolShape
 from app.modules.proxy.sidecar_model_profiles import read_reasoning_effort, set_reasoning_effort_override
 from app.modules.proxy.sidecar_routing import (
     SidecarRoutingEntry,
@@ -587,7 +586,7 @@ async def proxy_responses_to_omniroute(
                 client=client,
                 reasoning_effort=effective_reasoning_effort,
                 requested_reasoning_effort=requested_reasoning_effort,
-                tool_shapes=translation.tool_shapes,
+                translation=translation,
             ),
             abandon=partial(
                 _abandon_unstarted_omniroute_stream,
@@ -673,7 +672,7 @@ async def proxy_responses_to_omniroute(
         reasoning_effort=effective_reasoning_effort,
         requested_reasoning_effort=requested_reasoning_effort,
     )
-    result = chat_to_responses_result(response_body, model=effective_model, tool_shapes=translation.tool_shapes)
+    result = chat_to_responses_result(response_body, model=effective_model, translation=translation)
     return JSONResponse(content=result, status_code=200, headers=dict(rate_limit_headers))
 
 
@@ -687,12 +686,12 @@ async def _omniroute_responses_stream_iterator(
     client: OmniRouteSidecarClient,
     reasoning_effort: str | None = None,
     requested_reasoning_effort: str | None = None,
-    tool_shapes: Mapping[str, ChatToolShape] | None = None,
+    translation: ResponsesChatTranslation | None = None,
 ) -> AsyncIterator[bytes]:
     usage: SidecarUsage | None = None
     completed = False
     settled = False
-    synthesizer = ResponsesStreamSynthesizer(model=model, tool_shapes=tool_shapes)
+    synthesizer = ResponsesStreamSynthesizer(model=model, translation=translation)
     try:
         async with client.stream_chat_completion(payload) as chunks:
             decoder = SseJsonDataDecoder()

@@ -44,10 +44,10 @@ from app.modules.proxy.openrouter_sidecar_dispatch import proxy_chat_to_openrout
 from app.modules.proxy.orcarouter_sidecar_dispatch import proxy_chat_to_orcarouter
 from app.modules.proxy.request_policy import resolve_model_alias
 from app.modules.proxy.responses_chat_bridge import (
+    ResponsesChatTranslation,
     ResponsesStreamSynthesizer,
     chat_to_responses_result,
 )
-from app.modules.proxy.responses_chat_tools import ChatToolShape
 from app.modules.proxy.sidecar_routing import SidecarRoutingEntry, resolve_sidecar_route
 
 _HEADER_HOP_BY_HOP = frozenset({"content-length", "content-type"})
@@ -137,7 +137,7 @@ async def dispatch_responses_via_chat_provider(
     sse_keepalive_interval_seconds: float,
     cursor_compat: bool,
     client: object,
-    tool_shapes: Mapping[str, ChatToolShape] | None = None,
+    translation: ResponsesChatTranslation | None = None,
 ) -> Response:
     """Dispatch one Responses request through the chat provider that owns it.
 
@@ -163,14 +163,14 @@ async def dispatch_responses_via_chat_provider(
         cursor_compat=cursor_compat,
         client=client,
     )
-    return translate_chat_response_to_responses(chat_response, model=effective_model, tool_shapes=tool_shapes)
+    return translate_chat_response_to_responses(chat_response, model=effective_model, translation=translation)
 
 
 def translate_chat_response_to_responses(
     response: Response,
     *,
     model: str,
-    tool_shapes: Mapping[str, ChatToolShape] | None = None,
+    translation: ResponsesChatTranslation | None = None,
 ) -> Response:
     """Rewrite a chat dispatcher response into Responses output.
 
@@ -182,7 +182,7 @@ def translate_chat_response_to_responses(
     if isinstance(response, StreamingResponse):
         settling = response._settling if isinstance(response, ClosingStreamingResponse) else None
         return ClosingStreamingResponse(
-            _translate_chat_sse(response.body_iterator, model=model, tool_shapes=tool_shapes),
+            _translate_chat_sse(response.body_iterator, model=model, translation=translation),
             status_code=response.status_code,
             headers=_passthrough_headers(response),
             media_type="text/event-stream",
@@ -191,7 +191,7 @@ def translate_chat_response_to_responses(
     parsed = _json_body(response)
     if response.status_code == 200 and _is_chat_completion(parsed):
         return JSONResponse(
-            content=chat_to_responses_result(parsed, model=model, tool_shapes=tool_shapes),
+            content=chat_to_responses_result(parsed, model=model, translation=translation),
             status_code=200,
             headers=_passthrough_headers(response),
         )
@@ -312,10 +312,10 @@ async def _translate_chat_sse(
     chunks: AsyncIterable[object],
     *,
     model: str,
-    tool_shapes: Mapping[str, ChatToolShape] | None = None,
+    translation: ResponsesChatTranslation | None = None,
 ) -> AsyncIterator[bytes]:
     decoder = SseJsonDataDecoder()
-    synthesizer = ResponsesStreamSynthesizer(model=model, tool_shapes=tool_shapes)
+    synthesizer = ResponsesStreamSynthesizer(model=model, translation=translation)
     state = _SseTranslateState()
     try:
         async for raw_chunk in chunks:

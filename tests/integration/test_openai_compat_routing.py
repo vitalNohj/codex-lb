@@ -809,3 +809,150 @@ async def test_openai_compat_stream_provider_error_then_done_is_logged_as_error(
     assert sidecar_logs[-1].status == "error"
     assert sidecar_logs[-1].error_code == "upstream_error"
     assert sidecar_logs[-1].error_message == "compat overloaded"
+
+
+# -- Responses -> chat translation fidelity (audit PR-B) ------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["/v1/responses", "/backend-api/codex/responses"])
+async def test_responses_openai_compat_sends_chat_shaped_tools_and_sampling(async_client, fake_openai_compat, path):
+    response = await async_client.post(
+        path,
+        json={
+            "model": MODEL,
+            "instructions": "be brief",
+            "input": "weather?",
+            "tools": [
+                {"type": "function", "name": "lookup", "parameters": {"type": "object"}},
+                {"type": "custom", "name": "apply_patch"},
+                {"type": "web_search", "external_web_access": False},
+            ],
+            "reasoning": {"effort": "low"},
+            "max_output_tokens": 256,
+            "temperature": 0.3,
+            "top_p": 0.8,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    sent = fake_openai_compat.chat_payloads[0]
+    assert [tool["function"]["name"] for tool in sent["tools"]] == ["lookup", "apply_patch"]
+    assert all(tool["type"] == "function" and "name" not in tool for tool in sent["tools"])
+    assert sent["max_tokens"] == 256
+    assert sent["temperature"] == 0.3
+    assert sent["top_p"] == 0.8
+    assert sent["reasoning_effort"] == "low"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("extra", "param"),
+    [
+        ({"previous_response_id": "resp_1"}, "previous_response_id"),
+        ({"store": True}, "store"),
+        ({"tools": [{"type": "file_search", "vector_store_ids": ["vs_1"]}]}, "tools[0]"),
+        ({"input": [{"type": "item_reference", "id": "msg_1"}]}, "input[0]"),
+    ],
+)
+async def test_responses_openai_compat_rejects_untranslatable_requests_before_reserving(
+    async_client,
+    fake_openai_compat,
+    extra,
+    param,
+):
+    await _enable_api_key_auth(async_client)
+    key = await _create_api_key(
+        f"compat-reject-{param}",
+        allowed_models=[MODEL],
+        limits=[LimitRuleInput(limit_type="total_tokens", limit_window="weekly", max_value=1000)],
+    )
+
+    response = await async_client.post(
+        "/v1/responses",
+        headers={"Authorization": f"Bearer {key.key}"},
+        json={"model": MODEL, "input": "hi", **extra},
+    )
+
+    assert response.status_code == 400, response.text
+    error = response.json()["error"]
+    assert error["param"] == param
+    assert error["type"] == "invalid_request_error"
+    assert MODEL in error["message"] or param in error["message"]
+    assert fake_openai_compat.chat_payloads == []
+    assert fake_openai_compat.stream_payloads == []
+    assert await _reservation_statuses() == []
+
+
+@pytest.mark.asyncio
+async def test_responses_openai_compat_usage_carries_cache_and_reasoning_details(async_client, fake_openai_compat):
+    async def _chat_completion(payload):
+        fake_openai_compat.chat_payloads.append(dict(payload))
+        return {
+            "id": "chatcmpl-cache",
+            "object": "chat.completion",
+            "model": payload["model"],
+            "choices": [{"index": 0, "message": {"role": "assistant", "content": "hi"}, "finish_reason": "stop"}],
+            "usage": {
+                "prompt_tokens": 2000,
+                "completion_tokens": 40,
+                "total_tokens": 2040,
+                "prompt_tokens_details": {"cached_tokens": 1792},
+                "completion_tokens_details": {"reasoning_tokens": 12},
+            },
+        }
+
+    fake_openai_compat.chat_completion = _chat_completion
+
+    response = await async_client.post("/v1/responses", json={"model": MODEL, "input": "hi"})
+
+    assert response.status_code == 200, response.text
+    usage = response.json()["usage"]
+    assert usage["input_tokens_details"]["cached_tokens"] == 1792
+    assert usage["output_tokens_details"]["reasoning_tokens"] == 12
+
+
+@pytest.mark.asyncio
+async def test_responses_openai_compat_stream_is_accepted_by_the_openai_sdk(async_client, fake_openai_compat):
+    from openai import omit
+    from openai.lib.streaming.responses._responses import ResponseStreamState
+    from openai.types.responses import ResponseStreamEvent
+    from pydantic import TypeAdapter
+
+    async with async_client.stream(
+        "POST", "/v1/responses", json={"model": MODEL, "input": "hi", "stream": True}
+    ) as response:
+        body = await response.aread()
+
+    assert response.status_code == 200, body
+    adapter: TypeAdapter[ResponseStreamEvent] = TypeAdapter(ResponseStreamEvent)
+    state = ResponseStreamState(input_tools=[], text_format=omit)
+    types = []
+    for line in body.decode().splitlines():
+        if not line.startswith("data: ") or line == "data: [DONE]":
+            continue
+        event = adapter.validate_python(json.loads(line[len("data: ") :]))
+        types.append(event.type)
+        state.handle_event(event)
+    assert "response.content_part.added" in types
+    assert "response.output_text.done" in types
+    assert types[-1] == "response.completed"
+
+
+@pytest.mark.asyncio
+async def test_responses_openai_compat_stream_error_ends_with_response_failed(async_client, fake_openai_compat):
+    fake_openai_compat.stream_provider_error = True
+
+    async with async_client.stream(
+        "POST", "/v1/responses", json={"model": MODEL, "input": "hi", "stream": True}
+    ) as response:
+        body = await response.aread()
+
+    events = [
+        json.loads(line[len("data: ") :])
+        for line in body.decode().splitlines()
+        if line.startswith("data: ") and line != "data: [DONE]"
+    ]
+    assert events[-1]["type"] == "response.failed"
+    assert events[-1]["response"]["error"]["code"] == "server_error"
+    assert body.count(b"data: [DONE]") == 1

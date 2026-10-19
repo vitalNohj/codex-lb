@@ -79,11 +79,14 @@ class ResponsesChatTranslation:
 
     ``tool_shapes`` maps each chat function name back to the Responses tool it
     stands for, so the answer's tool calls can be returned in their original
-    shape.
+    shape. ``response_echo`` holds the request parameters a Responses object
+    repeats back (``tools``, ``tool_choice``, ``parallel_tool_calls`` ...); the
+    OpenAI SDK's ``Response`` model requires the first three.
     """
 
     chat_request: ChatCompletionsRequest
-    tool_shapes: Mapping[str, ChatToolShape]
+    tool_shapes: Mapping[str, ChatToolShape] = field(default_factory=dict)
+    response_echo: Mapping[str, JsonValue] = field(default_factory=dict)
 
 
 def translate_responses_to_chat(
@@ -142,7 +145,37 @@ def translate_responses_to_chat(
             param=None,
             code="invalid_request_error",
         ) from exc
-    return ResponsesChatTranslation(chat_request=chat_request, tool_shapes=dict(tools.shapes))
+    return ResponsesChatTranslation(
+        chat_request=chat_request,
+        tool_shapes=dict(tools.shapes),
+        response_echo=_response_echo(payload),
+    )
+
+
+def _response_echo(payload: ResponsesRequest) -> _Json:
+    """Request parameters a Responses object repeats back, as the API does."""
+
+    echo: _Json = {
+        "tools": list(payload.tools),
+        "tool_choice": payload.tool_choice if payload.tool_choice is not None else "auto",
+        "parallel_tool_calls": payload.parallel_tool_calls if payload.parallel_tool_calls is not None else True,
+        "store": False,
+    }
+    if isinstance(payload.instructions, str) and payload.instructions:
+        echo["instructions"] = payload.instructions
+    extra = payload.model_extra or {}
+    for name in ("temperature", "top_p", "max_output_tokens"):
+        value = extra.get(name)
+        if value is not None:
+            echo[name] = value
+    if payload.text is not None:
+        echo["text"] = payload.text.model_dump(mode="json", by_alias=True, exclude_none=True)
+    if payload.reasoning is not None:
+        echo["reasoning"] = payload.reasoning.model_dump(mode="json", exclude_none=True)
+    return echo
+
+
+_DEFAULT_RESPONSE_ECHO: Mapping[str, JsonValue] = {"tools": [], "tool_choice": "auto", "parallel_tool_calls": True}
 
 
 def responses_to_chat_request(
@@ -535,11 +568,16 @@ def chat_to_responses_result(
     chat_body: JsonValue,
     *,
     model: str,
-    tool_shapes: Mapping[str, ChatToolShape] | None = None,
+    translation: ResponsesChatTranslation | None = None,
 ) -> _Json:
-    """Wrap a chat-completion JSON body in a Responses result."""
+    """Wrap a chat-completion JSON body in a Responses result.
 
-    shapes = tool_shapes or {}
+    ``translation`` is the request translation the answer belongs to; it maps
+    tool calls back to their Responses shape and supplies the echoed request
+    parameters.
+    """
+
+    shapes = translation.tool_shapes if translation is not None else {}
     choice = _first_choice(chat_body)
     message = choice.get("message") if choice is not None else None
     output: list[JsonValue] = []
@@ -569,11 +607,18 @@ def chat_to_responses_result(
         "output": output,
         "incomplete_details": {"reason": incomplete_reason} if incomplete_reason else None,
         "error": None,
+        **_echo(translation),
     }
     usage = _usage_to_responses_usage(chat_body.get("usage")) if is_json_mapping(chat_body) else None
     if usage is not None:
         result["usage"] = usage
     return result
+
+
+def _echo(translation: ResponsesChatTranslation | None) -> Mapping[str, JsonValue]:
+    if translation is None or not translation.response_echo:
+        return _DEFAULT_RESPONSE_ECHO
+    return translation.response_echo
 
 
 def _message_output_parts(message: Mapping[str, JsonValue]) -> list[JsonValue]:
@@ -812,9 +857,10 @@ class ResponsesStreamSynthesizer:
     Every event carries a ``sequence_number`` counting from zero.
     """
 
-    def __init__(self, *, model: str, tool_shapes: Mapping[str, ChatToolShape] | None = None) -> None:
+    def __init__(self, *, model: str, translation: ResponsesChatTranslation | None = None) -> None:
         self._model = model
-        self._tool_shapes: Mapping[str, ChatToolShape] = tool_shapes or {}
+        self._tool_shapes: Mapping[str, ChatToolShape] = translation.tool_shapes if translation is not None else {}
+        self._echo = _echo(translation)
         self._response_id = f"resp_{uuid.uuid4().hex}"
         self._created_at = int(time.time())
         self._sequence_number = 0
@@ -1172,6 +1218,7 @@ class ResponsesStreamSynthesizer:
             "output": self._output_items() if status != "in_progress" else [],
             "incomplete_details": None,
             "error": None,
+            **self._echo,
         }
         if self._usage is not None and status != "in_progress":
             response["usage"] = self._usage
@@ -1209,17 +1256,28 @@ def _message_item(message: _StreamMessage) -> _Json:
     }
 
 
+# ``response.error.code`` is a closed set in the Responses API (the OpenAI SDK
+# rejects anything else). An upstream rate limit keeps its meaning; every other
+# upstream failure is a server error from the client's point of view.
+_RATE_LIMIT_ERROR_CODES = frozenset({"rate_limit_exceeded", "rate_limited", "rate_limit_error", "too_many_requests"})
+
+
 def _response_error(error: JsonValue) -> _Json:
+    upstream_code: str | None = None
+    message = "Upstream provider error"
     if is_json_mapping(error):
-        code = error.get("code")
-        message = error.get("message")
-        return {
-            "code": code if isinstance(code, str) and code else "upstream_error",
-            "message": message if isinstance(message, str) and message else "Upstream provider error",
-        }
-    if isinstance(error, str) and error:
-        return {"code": "upstream_error", "message": error}
-    return {"code": "upstream_error", "message": "Upstream provider error"}
+        code = error.get("code") or error.get("type")
+        upstream_code = code if isinstance(code, str) and code else None
+        raw_message = error.get("message")
+        if isinstance(raw_message, str) and raw_message:
+            message = raw_message
+    elif isinstance(error, str) and error:
+        message = error
+    if upstream_code is not None and upstream_code in _RATE_LIMIT_ERROR_CODES:
+        return {"code": "rate_limit_exceeded", "message": message}
+    if upstream_code is not None:
+        message = f"{message} ({upstream_code})"
+    return {"code": "server_error", "message": message}
 
 
 def _tool_call_id(call: Mapping[str, JsonValue]) -> str | None:

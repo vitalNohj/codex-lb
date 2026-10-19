@@ -1395,7 +1395,7 @@ async def _chat_provider_responses_dispatch_or_none(
     return await dispatch_responses_via_chat_provider(
         request,
         translation.chat_request,
-        tool_shapes=translation.tool_shapes,
+        translation=translation,
         provider=decision.provider,
         effective_model=effective_model,
         wire_model=decision.wire_model,
