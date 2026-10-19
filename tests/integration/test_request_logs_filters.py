@@ -652,6 +652,7 @@ async def test_request_logs_partial_rows_keep_nullable_cost_breakdown_shape(asyn
         "cachedInputUsd": pytest.approx(round((100 / 1_000_000) * 0.125, 6)),
         "outputUsd": None,
         "totalUsd": None,
+        "cacheWriteInputUsd": None,
     }
 
 
