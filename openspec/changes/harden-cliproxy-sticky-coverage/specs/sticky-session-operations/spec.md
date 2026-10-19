@@ -43,7 +43,13 @@ The router MUST compute the content-derived key with the same recipe as the Code
 
 ### Requirement: The Responses chat bridge preserves the prompt cache key
 
-The Responses-to-chat bridge MUST forward the client's `prompt_cache_key`. If the client sent none and prompt-cache-key derivation is enabled, the bridge MUST derive one before translation.
+The Responses-to-chat bridge MUST forward the client's `prompt_cache_key`. If the client sent none and prompt-cache-key derivation is enabled, the bridge MUST derive one before translation. The router MUST read the Responses body session ids (`session_id`, `sessionId`, `metadata.session_id`) before translation, because the chat request does not carry them. A body session id MUST outrank a key the bridge derived.
+
+#### Scenario: Responses body session id outranks a derived key
+
+- **GIVEN** a `/v1/responses` request with `metadata.session_id` and no client `prompt_cache_key`
+- **WHEN** the bridge derives a key and routes the request
+- **THEN** the conversation is pinned by the body session id
 
 #### Scenario: Responses prompt_cache_key survives the chat bridge
 
@@ -54,7 +60,7 @@ The Responses-to-chat bridge MUST forward the client's `prompt_cache_key`. If th
 
 ### Requirement: A transient credential failure keeps the warm pin
 
-A 429, 401 or 403 from a credential whose pin has already served the conversation MUST put that credential in a short in-process cooldown. The request MUST be served from a fallback pin for the same conversation, and the original pin MUST NOT change. Later turns MUST use the same fallback credential during the cooldown and MUST return to the original credential after it.
+A 429, 401 or 403 from a credential whose pin has already served the conversation MUST put that credential in a short in-process cooldown. The request MUST be served from a fallback pin for the same conversation, and the original pin MUST NOT change. Later turns MUST use the same fallback credential during the cooldown and MUST return to the original credential after it. Fallback pins MUST live in an internal key namespace that no client identity can resolve to, so one conversation cannot read or move another conversation's fallback.
 
 #### Scenario: Conversation returns to its warm credential after a 429
 
@@ -66,7 +72,13 @@ A 429, 401 or 403 from a credential whose pin has already served the conversatio
 
 ### Requirement: An unusable or cold credential moves the pin
 
-If the failing request created the pin itself, or the pinned credential is quota-exhausted or otherwise unavailable, the router MUST move the pin to the replacement credential.
+If the failing request created the pin itself, or the pinned credential is quota-exhausted or otherwise unavailable, the router MUST move the pin to the replacement credential. This also applies while the credential is still cooling down: a cooling pin is kept only while its credential can still serve the model.
+
+#### Scenario: A cooling pin that runs out of quota moves
+
+- **GIVEN** a conversation whose pinned credential A is cooling down after a 429
+- **WHEN** credential A is reported quota-exhausted before the cooldown ends
+- **THEN** the conversation is pinned to the credential that serves it
 
 #### Scenario: Quota exhaustion moves the pin
 

@@ -49,8 +49,8 @@ default sticky key is the same kind of first-messages hash.
 
 A transient 401, 403 or 429 on a pinned credential keeps the pin. The
 failed credential cools down in this process, and the conversation is served
-by a second pin stored under ``<key>#fallback`` so it stays on one spare
-account. Once the cooldown ends the conversation returns to its warm pin.
+by a second pin in the ``cliproxy:fallback:`` namespace so it stays on one
+spare account. Once the cooldown ends the conversation returns to its warm pin.
 LiteLLM >= 1.97 keeps the session pin the same way while the deployment is in
 cooldown, and OpenRouter does not update the sticky provider on an error.
 A pin created by the failing request itself has no warm cache and moves.
@@ -86,6 +86,7 @@ from app.core.config.settings import get_settings
 from app.core.config.settings_cache import get_settings_cache
 from app.core.metrics.prometheus import cliproxy_route_outcome_total
 from app.core.openai.chat_requests import ChatCompletionsRequest
+from app.core.openai.requests import ResponsesRequest
 from app.core.types import JsonValue
 from app.core.utils.time import to_utc_naive, utcnow
 from app.db.models import AccountStatus, CliproxyStickySession, DashboardSettings, StickySessionKind
@@ -138,7 +139,19 @@ _UNKNOWN_USED_PERCENT = 50.0
 # through while the deployment cools down).
 _COOLDOWN_SECONDS = 60.0
 _COOLING: dict[str, float] = {}
-_FALLBACK_KEY_SUFFIX = "#fallback"
+# Fallback pins live in their own namespace. No client identity resolves to
+# it (see ``_resolve_sticky_identity``), and the primary key is hashed, so a
+# client session id cannot address another conversation's fallback row.
+_FALLBACK_KEY_PREFIX = "cliproxy:fallback:"
+# Pin states the shared selection moves away from rather than waiting out.
+_UNUSABLE_PIN_STATUSES = frozenset(
+    {
+        AccountStatus.QUOTA_EXCEEDED,
+        AccountStatus.REAUTH_REQUIRED,
+        AccountStatus.PAUSED,
+        AccountStatus.DEACTIVATED,
+    }
+)
 # One compare-and-set write plus up to two retries after losing a race.
 _CLAIM_ATTEMPTS = 3
 _IDENTITY_MAX_CHARS = 256
@@ -193,8 +206,8 @@ class CliproxyDispatchChoice:
     sticky_key: str | None
     sticky_kind: StickySessionKind | None
     key_source: CliproxyKeySource = "none"
-    # True when this request is served by the conversation's ``#fallback``
-    # pin while its own pin cools down.
+    # True when this request is served by the conversation's fallback pin
+    # while its own pin cools down.
     fallback: bool = False
 
 
@@ -492,27 +505,13 @@ async def rebind_cliproxy_account_route(
     return rebound
 
 
-def cliproxy_sticky_hints(
-    payload: ChatCompletionsRequest,
-    *,
-    api_key_id: str | None,
-    prompt_cache_key_derived: bool = False,
-) -> CliproxyStickyHints:
-    """Read the conversation identity from the client's chat request.
-
-    ``prompt_cache_key_derived`` marks a key the Responses bridge derived
-    itself. It still pins the conversation, but below the client's session
-    headers, the way a derived key ranks below explicit ids in CLIProxyAPI.
-    """
+def cliproxy_sticky_hints(payload: ChatCompletionsRequest, *, api_key_id: str | None) -> CliproxyStickyHints:
+    """Read the conversation identity from the client's chat request."""
 
     extra: Mapping[str, object] = payload.model_extra or {}
-    cache_key = _text_or_none(extra.get("prompt_cache_key")) or _text_or_none(extra.get("promptCacheKey"))
-    body_session_id = _body_session_id(extra)
-    if prompt_cache_key_derived:
-        return CliproxyStickyHints(body_session_id=body_session_id, derived_key=cache_key)
     return CliproxyStickyHints(
-        prompt_cache_key=cache_key,
-        body_session_id=body_session_id,
+        prompt_cache_key=_text_or_none(extra.get("prompt_cache_key")) or _text_or_none(extra.get("promptCacheKey")),
+        body_session_id=_body_session_id(extra),
         derived_key=_derived_chat_key(
             model=payload.model,
             instructions=payload.instructions,
@@ -520,6 +519,27 @@ def cliproxy_sticky_hints(
             api_key_id=api_key_id,
         ),
     )
+
+
+def cliproxy_responses_sticky_hints(
+    payload: ResponsesRequest,
+    *,
+    prompt_cache_key_derived: bool,
+) -> CliproxyStickyHints:
+    """Read the conversation identity from a Responses request before the chat bridge.
+
+    The chat translation keeps only ``prompt_cache_key``, so the body session
+    ids are read here. ``prompt_cache_key_derived`` marks a key the API layer
+    derived itself: it still pins the conversation, but below the client's
+    session headers and body ids, the way a derived key ranks below explicit
+    ids in CLIProxyAPI.
+    """
+
+    cache_key = _text_or_none(payload.prompt_cache_key)
+    body_session_id = _body_session_id(payload.model_extra or {})
+    if prompt_cache_key_derived:
+        return CliproxyStickyHints(body_session_id=body_session_id, derived_key=cache_key)
+    return CliproxyStickyHints(prompt_cache_key=cache_key, body_session_id=body_session_id)
 
 
 def cliproxy_sticky_hints_from_body(body: Mapping[str, JsonValue]) -> CliproxyStickyHints:
@@ -718,7 +738,7 @@ async def _route_pinned(
     assert identity.key is not None and identity.kind is not None
     key, kind = identity.key, identity.kind
     existing_id, _deadline = await repo.lookup(key, kind=kind, max_age_seconds=params.max_age)
-    if existing_id is not None and existing_id in _cooling_ids():
+    if existing_id is not None and existing_id in _cooling_ids() and _pin_still_usable(candidates, existing_id, model):
         fallback = await _route_fallback(
             repo, usable, model=model, identity=identity, params=params, pinned=existing_id
         )
@@ -969,7 +989,19 @@ def _bounded_identity(value: str) -> str:
 
 
 def _fallback_key(key: str) -> str:
-    return f"{key}{_FALLBACK_KEY_SUFFIX}"
+    return _FALLBACK_KEY_PREFIX + hashlib.sha256(key.encode()).hexdigest()
+
+
+def _pin_still_usable(candidates: Sequence[CliproxyCandidate], account_id: str, model: str) -> bool:
+    """Whether a cooling pin is worth keeping until its cooldown ends.
+
+    A pin that no longer serves the model, or whose credential is
+    quota-exhausted, paused or needs re-auth, has nothing to return to. The
+    normal selection moves it instead.
+    """
+
+    pinned = next((item for item in _serving_candidates(candidates, model) if item.account_id == account_id), None)
+    return pinned is not None and pinned.state.status not in _UNUSABLE_PIN_STATUSES
 
 
 def _start_cooldown(account_id: str) -> None:

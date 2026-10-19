@@ -27,7 +27,7 @@ On main `ddc34b715`, against a real CLIProxyAPI v8 binary and a cache-simulating
 - **Observability (S3).** Every route decision increments `codex_lb_cliproxy_route_outcome_total{outcome,key_source}` and logs `cliproxy_route_outcome outcome=… key_source=…`. Outcomes are `selected`, `sticky`, `rebind`, `unpinned_no_key`, `fail_open` and `no_candidate`. The Helm Grafana overview charts them.
 - **Transient failure (S5).** A 429/401/403 on a pin that has served the conversation:
   - cools that credential for 60 s;
-  - serves the request from a fallback pin (`<key>#fallback`), so the detour stays on one spare;
+  - serves the request from a fallback pin in an internal `cliproxy:fallback:` namespace keyed by a digest of the primary key, so the detour stays on one spare and no client id can address it;
   - leaves the original pin in place, so the conversation returns to its warm credential after the cooldown.
 
   Quota exhaustion and a pin created by the failing request itself still move the pin.

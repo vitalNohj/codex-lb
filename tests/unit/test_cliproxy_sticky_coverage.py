@@ -27,13 +27,14 @@ from app.db.models import AccountStatus, CliproxyStickySession, DashboardSetting
 from app.db.session import get_background_session
 from app.modules.api_keys.service import ApiKeyData
 from app.modules.proxy import api as proxy_api
-from app.modules.proxy import claude_sidecar_dispatch
+from app.modules.proxy import claude_sidecar_dispatch, responses_provider_dispatch
 from app.modules.proxy import cliproxy_account_routing as routing
 from app.modules.proxy.affinity import derive_content_prompt_cache_key
 from app.modules.proxy.cliproxy_account_routing import (
     CliproxyCandidate,
     CliproxyStickyHints,
     apply_cliproxy_account_route,
+    cliproxy_responses_sticky_hints,
     cliproxy_sticky_hints,
 )
 from app.modules.proxy.responses_chat_bridge import responses_to_chat_request
@@ -130,7 +131,9 @@ async def _route(
     derived: bool = False,
 ) -> routing.CliproxyDispatchChoice | None:
     body: dict[str, JsonValue] = {"model": payload.model}
-    hints = cliproxy_sticky_hints(payload, api_key_id=api_key_id, prompt_cache_key_derived=derived)
+    hints = cliproxy_sticky_hints(payload, api_key_id=api_key_id)
+    if derived:
+        hints = CliproxyStickyHints(body_session_id=hints.body_session_id, derived_key=hints.prompt_cache_key)
     return await apply_cliproxy_account_route(body, headers=headers or {}, client=None, hints=hints)
 
 
@@ -278,12 +281,66 @@ def test_s1_identity_order_matches_cliproxyapi() -> None:
 
 
 def test_s1_a_bridge_derived_key_ranks_below_session_headers() -> None:
-    payload = _chat(_conversation(1), prompt_cache_key="bridge-derived")
-    hints = cliproxy_sticky_hints(payload, api_key_id="key-1", prompt_cache_key_derived=True)
+    payload = _responses(prompt_cache_key="bridge-derived")
+    hints = cliproxy_responses_sticky_hints(payload, prompt_cache_key_derived=True)
     assert hints.prompt_cache_key is None
     assert hints.derived_key == "bridge-derived"
     identity = routing._resolve_sticky_identity(hints, {"X-Session-Id": "sess"}, sticky_enabled=True)
     assert identity.source == "session_header"
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [{"session_id": "resp-sess"}, {"sessionId": "resp-sess"}, {"metadata": {"session_id": "resp-sess"}}],
+)
+def test_s1_responses_body_session_id_outranks_a_bridge_derived_key(extra: dict[str, object]) -> None:
+    """The chat translation keeps only prompt_cache_key; body session ids are read before it."""
+
+    payload = _responses(prompt_cache_key="bridge-derived", **extra)
+    hints = cliproxy_responses_sticky_hints(payload, prompt_cache_key_derived=True)
+    identity = routing._resolve_sticky_identity(hints, {}, sticky_enabled=True)
+    assert identity.source == "body_session_id"
+    assert identity.key == "cliproxy:session:resp-sess"
+
+
+def test_s1_responses_client_key_keeps_its_rank() -> None:
+    payload = _responses(prompt_cache_key="client-key", session_id="resp-sess")
+    hints = cliproxy_responses_sticky_hints(payload, prompt_cache_key_derived=False)
+    assert routing._resolve_sticky_identity(hints, {}, sticky_enabled=True).source == "prompt_cache_key"
+
+
+async def test_s1_responses_bridge_routes_on_the_hints_read_before_translation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """End to end through the bridge: the sidecar route sees the Responses session id."""
+
+    seen: list[CliproxyStickyHints | None] = []
+
+    async def fake_sidecar(request: object, payload: ChatCompletionsRequest, **kwargs: Any) -> object:
+        del request, payload
+        seen.append(kwargs.get("sticky_hints"))
+        raise RuntimeError("stop")
+
+    monkeypatch.setattr(responses_provider_dispatch, "proxy_chat_to_sidecar", fake_sidecar)
+    payload = _responses(metadata={"session_id": "resp-sess"})
+    hints = cliproxy_responses_sticky_hints(payload, prompt_cache_key_derived=False)
+    with pytest.raises(RuntimeError, match="stop"):
+        await responses_provider_dispatch.dispatch_responses_via_chat_provider(
+            cast(Any, None),
+            responses_to_chat_request(payload, MODEL),
+            provider="claude",
+            effective_model=MODEL,
+            wire_model=MODEL,
+            api_key=None,
+            reservation=None,
+            rate_limit_headers={},
+            sse_keepalive_interval_seconds=1.0,
+            cursor_compat=False,
+            client=object(),
+            sticky_hints=hints,
+        )
+    assert seen == [hints]
+    assert seen[0] is not None and seen[0].body_session_id == "resp-sess"
 
 
 def test_s1_client_request_id_is_not_a_session() -> None:
@@ -469,7 +526,7 @@ async def test_s5_transient_failure_returns_to_the_warm_account(
     assert detour != warm
     pins = await _pins()
     assert pins["cliproxy:session:s5"] == "cliproxy:claude:a"
-    assert pins["cliproxy:session:s5#fallback"] == f"cliproxy:claude:{detour}"
+    assert pins[routing._fallback_key("cliproxy:session:s5")] == f"cliproxy:claude:{detour}"
 
     # While the warm account cools down the conversation stays on the same spare.
     assert await _turn(client, 3) == detour
@@ -499,6 +556,55 @@ async def test_s5_quota_exhaustion_still_moves_the_pin(db_setup: bool, monkeypat
     pool[0] = _candidate("a", used=100.0, status=AccountStatus.QUOTA_EXCEEDED)
     assert await _turn(client, 2) == "b"
     assert (await _pins())["cliproxy:session:s5"] == "cliproxy:claude:b"
+
+
+async def test_s5_a_cooling_pin_that_runs_out_of_quota_moves(db_setup: bool, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Kody: a cooling pin is kept only while its credential can still serve."""
+
+    del db_setup
+    pool = [_candidate("a", used=10.0), _candidate("b", used=40.0), _candidate("c", used=50.0)]
+    _install(monkeypatch, pool)
+    client = _FailOnce("never", 0)
+    assert await _turn(client, 1) == "a"
+    client.failing_prefix, client.status = "a", 429
+    detour = await _turn(client, 2)
+    assert detour != "a"
+    assert (await _pins())["cliproxy:session:s5"] == "cliproxy:claude:a"
+
+    # Still cooling, but now quota-exhausted: the pin moves instead of waiting.
+    pool[0] = _candidate("a", used=100.0, status=AccountStatus.QUOTA_EXCEEDED)
+    client.failing_prefix = "never"
+    moved = await _turn(client, 3)
+    assert moved != "a"
+    assert (await _pins())["cliproxy:session:s5"] == f"cliproxy:claude:{moved}"
+
+
+@pytest.mark.parametrize("status", [AccountStatus.REAUTH_REQUIRED, AccountStatus.PAUSED, AccountStatus.DEACTIVATED])
+def test_s5_unusable_cooling_pins_are_not_kept(status: AccountStatus) -> None:
+    pool = [_candidate("a", used=10.0, status=status), _candidate("b", used=40.0)]
+    assert routing._pin_still_usable(pool, "cliproxy:claude:a", MODEL) is False
+    assert routing._pin_still_usable(pool, "cliproxy:claude:b", MODEL) is True
+    assert routing._pin_still_usable(pool, "cliproxy:claude:gone", MODEL) is False
+
+
+def test_s5_fallback_keys_cannot_collide_with_client_identities() -> None:
+    """nohjbot F1: no client session id resolves to another conversation's fallback row."""
+
+    primary = routing._resolve_sticky_identity(CliproxyStickyHints(), {"X-Session-Id": "s"}, sticky_enabled=True)
+    assert primary.key is not None
+    fallback = routing._fallback_key(primary.key)
+    assert fallback.startswith("cliproxy:fallback:")
+    for crafted in ("s#fallback", fallback, fallback.split(":", 2)[2]):
+        for hints, headers in (
+            (CliproxyStickyHints(), {"X-Session-Id": crafted}),
+            (CliproxyStickyHints(prompt_cache_key=crafted), {}),
+            (CliproxyStickyHints(body_session_id=crafted), {}),
+            (CliproxyStickyHints(derived_key=crafted), {}),
+        ):
+            identity = routing._resolve_sticky_identity(hints, headers, sticky_enabled=True)
+            assert identity.key != fallback
+            assert identity.key is not None and not identity.key.startswith("cliproxy:fallback:")
+    assert routing._fallback_key("cliproxy:session:t") != fallback
 
 
 # --- S6: atomic first pin --------------------------------------------------------

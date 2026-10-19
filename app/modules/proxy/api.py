@@ -264,6 +264,7 @@ from app.modules.proxy.claude_sidecar_dispatch import (
     load_sidecar_config,
     proxy_chat_to_sidecar,
 )
+from app.modules.proxy.cliproxy_account_routing import cliproxy_responses_sticky_hints
 from app.modules.proxy.cursor_chat_compat import (
     apply_cursor_usage_fallback,
     cursor_context_limit_responses_completion,
@@ -1406,7 +1407,10 @@ async def _chat_provider_responses_dispatch_or_none(
         sse_keepalive_interval_seconds=settings.sse_keepalive_interval_seconds,
         cursor_compat=is_cursor_compat_client(request, api_key),
         client=client,
-        prompt_cache_key_derived=prompt_cache_key_derived,
+        sticky_hints=cliproxy_responses_sticky_hints(
+            responses_payload,
+            prompt_cache_key_derived=prompt_cache_key_derived,
+        ),
     )
 
 

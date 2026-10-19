@@ -46,6 +46,7 @@ from app.modules.claude_sidecar.capacity_hold import (
 )
 from app.modules.claude_sidecar.quota import SidecarQuotaSnapshot
 from app.modules.proxy.cliproxy_account_routing import (
+    CliproxyStickyHints,
     apply_cliproxy_account_route,
     cliproxy_log_attribution,
     cliproxy_sticky_hints,
@@ -1335,22 +1336,19 @@ async def proxy_chat_to_sidecar(
     client: ClaudeSidecarClient,
     cursor_compat: bool = False,
     wire_model: str | None = None,
-    prompt_cache_key_derived: bool = False,
+    sticky_hints: CliproxyStickyHints | None = None,
 ) -> Response:
     # ``effective_model`` is used for reservations/logging; ``wire_model`` (the
     # resolver's stripped model) shapes the forwarded payload.
     sidecar_payload = build_sidecar_chat_payload(payload, wire_model or effective_model, client.config)
     # Read the conversation identity from the client request: the sidecar body
-    # has already lost ``metadata``.
+    # has already lost ``metadata``. The Responses bridge passes the hints it
+    # read before translation.
     await apply_cliproxy_account_route(
         sidecar_payload.body,
         headers=request.headers,
         client=client,
-        hints=cliproxy_sticky_hints(
-            payload,
-            api_key_id=api_key.id if api_key else None,
-            prompt_cache_key_derived=prompt_cache_key_derived,
-        ),
+        hints=sticky_hints or cliproxy_sticky_hints(payload, api_key_id=api_key.id if api_key else None),
     )
     deepseek_scope = deepseek_resolve_scope(
         effective_model=effective_model,
