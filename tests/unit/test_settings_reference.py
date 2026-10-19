@@ -75,7 +75,14 @@ ENV_EXAMPLE_PATH = REPO_ROOT / ".env.example"
 # dashboard settings row on first start) and its proxy/bridge tuning, so the
 # test had been red on main. Set to the current count so it ratchets again
 # from here; lower it when fields are removed.
-MAX_SETTINGS_FIELDS = 180
+# 180 -> 181: proxy_continuity_owner_hold_seconds (#130) landed without raising
+# the cap or regenerating the reference, which left this test red on main.
+# 181 -> 182: cliproxy_xai_native_responses_enabled. A rollback switch, not a
+# tuning knob: xAI Responses requests now take CLIProxyAPI's native
+# /v1/responses instead of the chat bridge, and an operator must be able to
+# put xAI back on the bridge with one environment change if CLIProxyAPI's
+# native xAI path misbehaves, without a release.
+MAX_SETTINGS_FIELDS = 182
 
 
 def test_generated_settings_reference_matches_code() -> None:
