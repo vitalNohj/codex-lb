@@ -348,11 +348,7 @@ def test_stream_synthesizer_appends_argument_fragments_that_share_a_prefix():
         }
     )
     events = repeated_prefix.feed(
-        {
-            "choices": [
-                {"delta": {"tool_calls": [{"index": 0, "function": {"arguments": '{"a":1}}'}}]}}
-            ]
-        }
+        {"choices": [{"delta": {"tool_calls": [{"index": 0, "function": {"arguments": '{"a":1}}'}}]}}]}
     )
     deltas = [event["delta"] for event in events if event["type"] == "response.function_call_arguments.delta"]
     assert deltas == ['{"a":1}}']
