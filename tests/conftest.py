@@ -412,6 +412,12 @@ def _reset_global_state() -> None:
     except Exception:
         pass
     try:
+        from app.modules.request_logs.cliproxy_identity import get_cliproxy_identity_resolver
+
+        get_cliproxy_identity_resolver().clear()
+    except Exception:
+        pass
+    try:
         # Pending workspace-less plan-downgrade confirmations live in a
         # process-global fallback store when persistence is disabled, so a test
         # that leaves one behind would otherwise give the next test a head start
