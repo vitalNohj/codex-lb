@@ -435,10 +435,60 @@ async def test_s3_unpinned_and_fail_open_are_visible(
         raise RuntimeError("store down")
 
     monkeypatch.setattr(routing, "_select_dispatch", _boom)
-    body: dict[str, JsonValue] = {"model": MODEL}
+    body: dict[str, JsonValue] = {"model": "gemini-2.5-pro"}
     assert await apply_cliproxy_account_route(body, headers={}, client=None) is None
-    assert body["model"] == MODEL
+    assert body["model"] == "gemini-2.5-pro"
     assert _outcomes.values[("fail_open", "disabled")] == 1
+
+
+async def test_r2_claude_selection_failure_refuses_instead_of_sending_the_plain_name(
+    db_setup: bool, monkeypatch: pytest.MonkeyPatch, _outcomes: _Counter
+) -> None:
+    del db_setup
+    _install(monkeypatch, [_candidate("a", used=None)])
+
+    async def _boom(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("store down")
+
+    monkeypatch.setattr(routing, "_select_dispatch", _boom)
+    body: dict[str, JsonValue] = {"model": MODEL}
+    with pytest.raises(routing.CliproxyClaudeRouteRefused, match="credential selection failed"):
+        await apply_cliproxy_account_route(body, headers={}, client=None)
+    assert body["model"] == MODEL
+    assert _outcomes.values == {("refused", "none"): 1}
+
+
+async def test_r2_claude_with_capacity_routing_off_is_refused(
+    db_setup: bool, monkeypatch: pytest.MonkeyPatch, _outcomes: _Counter
+) -> None:
+    del db_setup
+    _install(monkeypatch, [_candidate("a", used=None)], cliproxy_capacity_routing_enabled=False)
+    body: dict[str, JsonValue] = {"model": MODEL}
+    with pytest.raises(routing.CliproxyClaudeRouteRefused, match="capacity routing is off"):
+        await apply_cliproxy_account_route(body, headers={}, client=None)
+    assert body["model"] == MODEL
+    assert _outcomes.values == {("refused", "disabled"): 1}
+
+    other: dict[str, JsonValue] = {"model": "gemini-2.5-pro"}
+    assert await apply_cliproxy_account_route(other, headers={}, client=None) is None
+    assert other["model"] == "gemini-2.5-pro"
+
+
+@pytest.mark.parametrize(
+    ("model", "required"),
+    [
+        ("claude-sonnet-4-5", True),
+        ("claude-opus-4-7-thinking-high", True),
+        ("cc/claude-opus-5-5", True),
+        ("cp-claude-sonnet", True),
+        ("team/Claude-Fable-5", True),
+        ("gemini-2.5-pro", False),
+        ("gpt-5.1-codex", False),
+        ("claude/gemini-2.5-pro", False),
+    ],
+)
+def test_r2_claude_models_require_a_credential_prefix(model: str, required: bool) -> None:
+    assert routing.requires_cliproxy_credential_prefix(model) is required
 
 
 # --- S4: neutral unknown capacity and missing prefixes -------------------------
@@ -472,10 +522,23 @@ async def test_s4_no_prefixed_candidate_warns_once(
     monkeypatch.setattr(routing, "_fill_empty_prefixes", _no_fill)
     caplog.set_level(logging.WARNING, logger=routing.__name__)
     for _ in range(3):
-        assert await _route(_chat(_conversation(1)), headers={"X-Session-Id": "s4"}) is None
+        with pytest.raises(routing.CliproxyClaudeRouteRefused, match="no prefixed CLIProxyAPI credential"):
+            await _route(_chat(_conversation(1)), headers={"X-Session-Id": "s4"})
     warnings = [r for r in caplog.records if "found no prefixed credential" in r.getMessage()]
     assert len(warnings) == 1
-    assert _outcomes.values == {("no_candidate", "session_header"): 3}
+    assert "the request is refused" in warnings[0].getMessage()
+    assert _outcomes.values == {("refused", "session_header"): 3}
+
+
+async def test_s4_non_claude_model_without_a_prefixed_candidate_keeps_its_name(
+    db_setup: bool, monkeypatch: pytest.MonkeyPatch, _outcomes: _Counter
+) -> None:
+    del db_setup
+    _install(monkeypatch, [_candidate("a", used=None)])
+    body: dict[str, JsonValue] = {"model": "gemini-2.5-pro"}
+    assert await apply_cliproxy_account_route(body, headers={"X-Session-Id": "s4"}, client=None) is None
+    assert body["model"] == "gemini-2.5-pro"
+    assert _outcomes.values == {("no_candidate", "session_header"): 1}
 
 
 # --- S5: transient failure keeps the warm pin -------------------------------------

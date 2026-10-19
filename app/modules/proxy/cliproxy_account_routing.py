@@ -121,7 +121,15 @@ from app.modules.proxy.sticky_repository import (
 logger = logging.getLogger(__name__)
 
 CliproxyRouteKind = Literal["sticky", "rebind", "selected"]
-CliproxyRouteOutcome = Literal["selected", "sticky", "rebind", "unpinned_no_key", "fail_open", "no_candidate"]
+CliproxyRouteOutcome = Literal[
+    "selected",
+    "sticky",
+    "rebind",
+    "unpinned_no_key",
+    "fail_open",
+    "no_candidate",
+    "refused",
+]
 CliproxyKeySource = Literal[
     "prompt_cache_key",
     "turn_state",
@@ -425,6 +433,35 @@ async def choose_cliproxy_route(
     return choice, outcome.mutation if use_sticky else None
 
 
+class CliproxyClaudeRouteRefused(Exception):
+    """No CLIProxyAPI credential prefix could be named for a Claude request.
+
+    A plain Claude model name lets CLIProxyAPI pick the credential itself, and
+    with its session affinity off it rotates credentials on every request. Each
+    rotation lands on an account whose prompt cache is cold, so the whole
+    prompt is written to the cache again at twice the input rate. A Claude
+    request is refused instead of being sent without its credential prefix.
+    """
+
+    def __init__(self, model: str, reason: str) -> None:
+        super().__init__(f"no CLIProxyAPI credential prefix for {model}: {reason}")
+        self.model = model
+        self.reason = reason
+
+
+def requires_cliproxy_credential_prefix(model: str) -> bool:
+    """Whether a request for ``model`` must name its CLIProxyAPI credential.
+
+    Claude only: its prompt cache is per Anthropic account, so a request that
+    changes credential pays for a full cache write. The other families keep
+    the fail-open behaviour. Matched on the model leaf containing ``claude``,
+    wider than the family guess, so an alias such as ``cp-claude-sonnet`` is
+    covered too.
+    """
+
+    return "claude" in model.rsplit("/", 1)[-1].casefold()
+
+
 async def apply_cliproxy_account_route(
     body: dict[str, JsonValue],
     *,
@@ -434,20 +471,26 @@ async def apply_cliproxy_account_route(
 ) -> CliproxyDispatchChoice | None:
     """Rewrite ``body['model']`` when capacity routing can name a credential.
 
-    A disabled switch, an unconfigured sidecar, or any selection failure
-    leaves the model unchanged. Every routed request records one
-    ``codex_lb_cliproxy_route_outcome_total`` sample and one
-    ``cliproxy_route_outcome`` log line, so a fail-open is visible.
+    For a Claude model the rewrite is mandatory: a disabled switch, an
+    unconfigured sidecar, no prefixed credential, or a selection failure
+    raises ``CliproxyClaudeRouteRefused`` and the body is left unsent. For
+    other models those cases leave the model unchanged. Every routed request
+    records one ``codex_lb_cliproxy_route_outcome_total`` sample and one
+    ``cliproxy_route_outcome`` log line, so a fail-open or refusal is visible.
     """
 
     _CURRENT_CHOICE.set(None)
     model = body.get("model")
     if not isinstance(model, str) or not model.strip():
         return None
+    prefix_required = requires_cliproxy_credential_prefix(model)
     source: CliproxyKeySource = "unknown"
     try:
         settings = await get_settings_cache().get()
         if not _routing_active(settings):
+            if prefix_required:
+                _record_route_outcome("refused", "disabled", model=model)
+                raise CliproxyClaudeRouteRefused(model, "CLIProxyAPI capacity routing is off")
             return None
         identity = _resolve_sticky_identity(
             hints if hints is not None else cliproxy_sticky_hints_from_body(body),
@@ -456,11 +499,20 @@ async def apply_cliproxy_account_route(
         )
         source = identity.source
         choice = await _select_dispatch(settings, model, client=client, identity=identity)
-    except Exception:
+    except CliproxyClaudeRouteRefused:
+        raise
+    except Exception as exc:
+        if prefix_required:
+            logger.warning("cliproxy capacity route failed; refusing the Claude request", exc_info=True)
+            _record_route_outcome("refused", source, model=model)
+            raise CliproxyClaudeRouteRefused(model, "credential selection failed") from exc
         logger.warning("cliproxy capacity route failed; leaving model unchanged", exc_info=True)
         _record_route_outcome("fail_open", source, model=model)
         return None
     if choice is None:
+        if prefix_required:
+            _record_route_outcome("refused", source, model=model)
+            raise CliproxyClaudeRouteRefused(model, "no prefixed CLIProxyAPI credential serves this model")
         _record_route_outcome("no_candidate", source, model=model)
         return None
     body["model"] = choice.wire_model
@@ -1100,12 +1152,17 @@ def _warn_no_candidate(candidates: Sequence[CliproxyCandidate], model: str) -> N
     while len(_NO_CANDIDATE_WARNED) > _NO_CANDIDATE_WARN_LIMIT:
         _NO_CANDIDATE_WARNED.popitem(last=False)
     prefixed = [item for item in candidates if prefix_or_none(item.prefix)]
+    consequence = (
+        "the request is refused"
+        if requires_cliproxy_credential_prefix(model)
+        else "CLIProxyAPI selects the credential itself"
+    )
     logger.warning(
-        "cliproxy capacity routing found no prefixed credential for model=%s credentials=%s prefixed=%s; "
-        "CLIProxyAPI selects the credential itself",
+        "cliproxy capacity routing found no prefixed credential for model=%s credentials=%s prefixed=%s; %s",
         model,
         len(candidates),
         len(prefixed),
+        consequence,
     )
 
 

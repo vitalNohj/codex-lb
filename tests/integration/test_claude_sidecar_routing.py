@@ -94,6 +94,37 @@ def _block_unexpected_dispatch(monkeypatch, request):
         monkeypatch.setattr(f"app.modules.proxy.api.{name}", _boundary(name), raising=True)
 
 
+# Tests that run the real CLIProxyAPI credential router. Every other test here
+# checks payload shaping, usage, holds or logging, and has no CLIProxyAPI
+# credential to route to, so the router is replaced by one that names the
+# credential without changing the forwarded model.
+_REAL_CLIPROXY_ROUTE_TESTS = frozenset(
+    {
+        "test_claude_request_without_a_credential_prefix_is_refused_and_never_sent",
+        "test_streamed_claude_request_without_a_credential_prefix_is_refused_and_never_sent",
+        "test_claude_request_is_sent_with_its_credential_prefix",
+        "test_far_hold_still_answers_429_when_no_credential_prefix_resolves",
+        "test_near_hold_then_credential_prefix_resolves_and_the_request_is_served",
+        "test_every_claude_auth_paused_without_a_credential_prefix_stays_a_503",
+    }
+)
+
+
+@pytest.fixture(autouse=True)
+def _route_without_cliproxy_credentials(monkeypatch, request):
+    if request.node.name.split("[")[0] in _REAL_CLIPROXY_ROUTE_TESTS:
+        return
+
+    async def _named_credential(body, **_kwargs):
+        del body
+        return None
+
+    monkeypatch.setattr(
+        "app.modules.proxy.claude_sidecar_dispatch.apply_cliproxy_account_route",
+        _named_credential,
+    )
+
+
 @pytest_asyncio.fixture
 async def async_client(_reset_db_state, _block_unexpected_dispatch):
     """Module-local client that never enters the application lifespan.
@@ -897,6 +928,135 @@ async def test_cache_reads_are_priced_at_the_published_cache_read_rate(
         # 10k uncached input at $4/1M, 90k cache reads at $0.20/1M, 1k output at
         # $20/1M. Every input token at $4/1M would have recorded $0.42.
         assert log.cost_usd == pytest.approx(0.04 + 0.018 + 0.02)
+    finally:
+        reset_serving_context_loaders()
+
+
+def _install_opus_reference_price(monkeypatch, fake_sidecar) -> None:
+    """Price ``cc/claude-opus-5-5`` at $4/1M input, $0.20/1M read, $20/1M output."""
+
+    from app.core.usage.external_pricing import service as pricing_service
+    from app.core.usage.external_pricing.catalogs import OPENROUTER_REFERENCE_SOURCE, parse_openai_style_catalog
+    from app.core.usage.external_pricing.service import reset_serving_context_loaders
+    from app.modules.proxy.external_pricing_sources import register_external_pricing_sources
+
+    reference = parse_openai_style_catalog(
+        {
+            "data": [
+                {
+                    "id": "anthropic/claude-opus-5.5",
+                    "pricing": {"prompt": "0.000004", "completion": "0.00002", "input_cache_read": "0.0000002"},
+                }
+            ]
+        },
+        source=OPENROUTER_REFERENCE_SOURCE,
+    )
+
+    async def _reference():
+        return reference
+
+    monkeypatch.setattr(pricing_service, "_load_reference_catalog", _reference)
+    reset_serving_context_loaders()
+    register_external_pricing_sources()
+    monkeypatch.setattr(
+        "app.modules.proxy.claude_sidecar_dispatch.load_sidecar_config",
+        lambda: _resolved(fake_sidecar.config),
+    )
+
+
+# What CLIProxyAPI v8 reports for a Claude turn that reads 60k from the cache
+# and writes 30k to it: prompt_tokens = 10k uncached + 60k read + 30k written,
+# with the write under both of its names (claude_openai_response.go).
+_CLAUDE_CACHE_WRITE_USAGE = {
+    "prompt_tokens": 100_000,
+    "completion_tokens": 1_000,
+    "total_tokens": 101_000,
+    "prompt_tokens_details": {
+        "cached_tokens": 60_000,
+        "cached_creation_tokens": 30_000,
+        "cache_write_tokens": 30_000,
+    },
+}
+# 10k plain input at $4/1M, 60k reads at $0.20/1M, 30k writes at the 1-hour
+# write rate of 2 x $4/1M, 1k output at $20/1M. Counting the writes as plain
+# input instead would have recorded $0.072.
+_CLAUDE_CACHE_WRITE_COST = 0.04 + 0.012 + 0.24 + 0.02
+
+
+@pytest.mark.asyncio
+async def test_cache_writes_are_recorded_and_priced_at_the_one_hour_write_rate(
+    async_client,
+    sidecar_enabled,
+    fake_sidecar,
+    monkeypatch,
+):
+    from app.core.usage.external_pricing.service import get_lookup_coordinator, reset_serving_context_loaders
+
+    _install_opus_reference_price(monkeypatch, fake_sidecar)
+    try:
+        fake_sidecar.chat_usage = dict(_CLAUDE_CACHE_WRITE_USAGE)
+        for _ in range(2):
+            response = await async_client.post(
+                "/v1/chat/completions",
+                json={"model": "cc/claude-opus-5-5", "messages": [{"role": "user", "content": "hi"}]},
+            )
+            assert response.status_code == 200
+            await get_lookup_coordinator().drain()
+
+        priced = [log for log in await _sidecar_logs() if log.cost_usd is not None]
+        assert priced, "the second request must be priced from the stored reference rate"
+        log = priced[-1]
+        assert (log.input_tokens, log.cached_input_tokens, log.cache_write_input_tokens) == (100_000, 60_000, 30_000)
+        assert log.cost_usd == pytest.approx(_CLAUDE_CACHE_WRITE_COST)
+
+        listed = await async_client.get("/api/request-logs", params={"limit": 10})
+        assert listed.status_code == 200
+        row = next(item for item in listed.json()["requests"] if item["requestId"] == log.request_id)
+        assert row["cacheWriteInputTokens"] == 30_000
+        assert row["costUsd"] == pytest.approx(_CLAUDE_CACHE_WRITE_COST)
+    finally:
+        reset_serving_context_loaders()
+
+
+@pytest.mark.asyncio
+async def test_streamed_cache_writes_are_recorded_and_priced_at_the_one_hour_write_rate(
+    async_client,
+    sidecar_enabled,
+    fake_sidecar,
+    monkeypatch,
+):
+    from app.core.usage.external_pricing.service import get_lookup_coordinator, reset_serving_context_loaders
+
+    _install_opus_reference_price(monkeypatch, fake_sidecar)
+    usage_json = json.dumps(_CLAUDE_CACHE_WRITE_USAGE, separators=(",", ":"))
+    # CLIProxyAPI puts the usage on the message_delta chunk (with the finish
+    # reason) and repeats it on a trailing choices-less chunk.
+    fake_sidecar.stream_raw_chunks = [
+        b'data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"hi"}}]}\n\n',
+        (
+            b'data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},'
+            b'"finish_reason":"stop"}],"usage":' + usage_json.encode() + b"}\n\n"
+        ),
+        b'data: {"id":"c1","object":"chat.completion.chunk","choices":[],"usage":' + usage_json.encode() + b"}\n\n",
+        b"data: [DONE]\n\n",
+    ]
+    try:
+        for _ in range(2):
+            async with async_client.stream(
+                "POST",
+                "/v1/chat/completions",
+                json={"model": "cc/claude-opus-5-5", "messages": [{"role": "user", "content": "hi"}], "stream": True},
+            ) as response:
+                await response.aread()
+            assert response.status_code == 200
+            await get_lookup_coordinator().drain()
+
+        priced = [log for log in await _sidecar_logs() if log.cost_usd is not None]
+        assert priced, "the second request must be priced from the stored reference rate"
+        log = priced[-1]
+        assert log.status == "success"
+        assert (log.input_tokens, log.cached_input_tokens, log.cache_write_input_tokens) == (100_000, 60_000, 30_000)
+        assert log.cost_usd == pytest.approx(_CLAUDE_CACHE_WRITE_COST)
     finally:
         reset_serving_context_loaders()
 
@@ -2106,3 +2266,190 @@ async def test_unknown_provider_for_a_non_claude_model_stays_a_400_while_claude_
     assert response.status_code == 400
     assert response.json()["error"]["code"] == "model_not_found"
     assert "Retry-After" not in response.headers
+
+
+# --- Claude requests reach CLIProxyAPI only with a credential prefix --------
+#
+# These tests run the real credential router (see _REAL_CLIPROXY_ROUTE_TESTS).
+# A plain model name lets CLIProxyAPI pick any credential, and each switch to
+# an account with a cold prompt cache rewrites the whole prompt at twice the
+# input rate, so a Claude request with no resolvable prefix is refused.
+
+
+@pytest.fixture
+def _fresh_cliproxy_route_memory():
+    from app.modules.proxy import cliproxy_account_routing as routing
+
+    def _clear() -> None:
+        routing._LAST_SELECTED.clear()
+        routing._PREFIX_OVERLAY.clear()
+        routing._NO_CANDIDATE_WARNED.clear()
+        routing._drop_api_key_cache()
+        routing._MODEL_CACHE = None
+        routing.forget_cooldowns()
+
+    _clear()
+    yield
+    _clear()
+
+
+def _enabled_auth(name: str, prefix: str) -> SidecarAuthQuota:
+    return replace(_held_auth(name, disabled=False), prefix=prefix)
+
+
+async def _sidecar_reservation_key(async_client):
+    await _enable_api_key_auth(async_client)
+    return await _create_api_key(
+        "prefix-key",
+        limits=[LimitRuleInput(limit_type="total_tokens", limit_window="weekly", max_value=1000)],
+    )
+
+
+@pytest.mark.asyncio
+async def test_claude_request_without_a_credential_prefix_is_refused_and_never_sent(
+    async_client,
+    sidecar_enabled,
+    fake_sidecar,
+    _fresh_cliproxy_route_memory,
+):
+    key = await _sidecar_reservation_key(async_client)
+
+    response = await async_client.post(
+        "/v1/chat/completions", headers={"Authorization": f"Bearer {key.key}"}, json=_chat()
+    )
+
+    assert response.status_code == 503
+    error = response.json()["error"]
+    assert error["code"] == "cliproxy_claude_route_unavailable"
+    assert error["type"] == "upstream_error"
+    assert "Retry-After" in response.headers
+    assert fake_sidecar.chat_payloads == []
+    assert await _reservation_statuses() == ["released"]
+    logs = await _sidecar_logs()
+    assert [(log.status, log.error_code) for log in logs] == [("error", "cliproxy_claude_route_unavailable")]
+    assert "no prefixed CLIProxyAPI credential" in (logs[0].error_message or "")
+
+
+@pytest.mark.asyncio
+async def test_streamed_claude_request_without_a_credential_prefix_is_refused_and_never_sent(
+    async_client,
+    sidecar_enabled,
+    fake_sidecar,
+    _fresh_cliproxy_route_memory,
+):
+    key = await _sidecar_reservation_key(async_client)
+
+    async with async_client.stream(
+        "POST",
+        "/v1/chat/completions",
+        headers={"Authorization": f"Bearer {key.key}"},
+        json=_chat(stream=True),
+    ) as response:
+        await response.aread()
+
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "cliproxy_claude_route_unavailable"
+    assert fake_sidecar.stream_payloads == []
+    assert await _reservation_statuses() == ["released"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True])
+async def test_claude_request_is_sent_with_its_credential_prefix(
+    async_client,
+    sidecar_enabled,
+    fake_sidecar,
+    _fresh_cliproxy_route_memory,
+    stream,
+):
+    await _store_quota_snapshot((_enabled_auth("a.json", "acct-a"),))
+
+    if stream:
+        async with async_client.stream("POST", "/v1/chat/completions", json=_chat(stream=True)) as response:
+            await response.aread()
+        forwarded = fake_sidecar.stream_payloads
+    else:
+        response = await async_client.post("/v1/chat/completions", json=_chat())
+        forwarded = fake_sidecar.chat_payloads
+
+    assert response.status_code == 200
+    assert [payload["model"] for payload in forwarded] == ["acct-a/claude-sonnet-4-5-20250929"]
+
+
+@pytest.mark.asyncio
+async def test_far_hold_still_answers_429_when_no_credential_prefix_resolves(
+    async_client,
+    sidecar_enabled,
+    fake_sidecar,
+    _fresh_cliproxy_route_memory,
+):
+    # Every auth is held, so none is selectable; the hold, not the missing
+    # prefix, is what the client must hear.
+    await _hold_every_auth_until(datetime.now(timezone.utc) + timedelta(hours=2))
+
+    response = await async_client.post("/v1/chat/completions", json=_chat())
+
+    assert response.status_code == 429
+    assert response.json()["error"]["type"] == "rate_limit_error"
+    assert fake_sidecar.chat_payloads == []
+    logs = await _sidecar_logs()
+    assert [log.error_code for log in logs] == ["claude_sidecar_capacity_held"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True])
+async def test_near_hold_then_credential_prefix_resolves_and_the_request_is_served(
+    async_client,
+    sidecar_enabled,
+    fake_sidecar,
+    _fresh_cliproxy_route_memory,
+    monkeypatch,
+    stream,
+):
+    monkeypatch.setattr("app.modules.proxy.claude_sidecar_dispatch.CLAUDE_SIDECAR_HOLD_RECHECK_SECONDS", 0.05)
+    await _hold_every_auth_until(datetime.now(timezone.utc) + timedelta(seconds=30))
+    checks = 0
+    real_held_until = claude_sidecar_dispatch.claude_capacity_held_until
+
+    async def held_until_poller_lifts_it():
+        nonlocal checks
+        checks += 1
+        if checks == 3:
+            await _store_quota_snapshot((_enabled_auth("a.json", "acct-a"), _held_auth("b.json")))
+        return await real_held_until()
+
+    monkeypatch.setattr(
+        "app.modules.proxy.claude_sidecar_dispatch.claude_capacity_held_until",
+        held_until_poller_lifts_it,
+    )
+
+    if stream:
+        async with async_client.stream("POST", "/v1/chat/completions", json=_chat(stream=True)) as response:
+            body = await response.aread()
+        assert all("error" not in payload for payload in _chat_sse_payloads(body))
+        forwarded = fake_sidecar.stream_payloads
+    else:
+        response = await async_client.post("/v1/chat/completions", json=_chat())
+        forwarded = fake_sidecar.chat_payloads
+
+    assert response.status_code == 200
+    assert [payload["model"] for payload in forwarded] == ["acct-a/claude-sonnet-4-5-20250929"]
+    assert checks >= 3
+
+
+@pytest.mark.asyncio
+async def test_every_claude_auth_paused_without_a_credential_prefix_stays_a_503(
+    async_client,
+    sidecar_enabled,
+    fake_sidecar,
+    _fresh_cliproxy_route_memory,
+):
+    await _store_quota_snapshot((_held_auth("a.json"), _held_auth("b.json")))
+
+    response = await async_client.post("/v1/chat/completions", json=_chat())
+
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "claude_sidecar_no_enabled_account"
+    assert fake_sidecar.chat_payloads == []
+    logs = await _sidecar_logs()
+    assert [log.error_code for log in logs] == ["claude_sidecar_no_enabled_account"]
