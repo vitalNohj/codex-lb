@@ -38,6 +38,7 @@ from app.core.utils.stream_close import ClosingStreamingResponse, aclose_stream
 from app.modules.api_keys.service import ApiKeyData, ApiKeyUsageReservationData
 from app.modules.openai_compat.endpoints import is_openai_compat_provider
 from app.modules.proxy.claude_sidecar_dispatch import proxy_chat_to_sidecar
+from app.modules.proxy.cliproxy_account_routing import CliproxyStickyHints
 from app.modules.proxy.ollama_sidecar_dispatch import proxy_chat_to_ollama
 from app.modules.proxy.openai_compat_dispatch import proxy_chat_to_openai_compat
 from app.modules.proxy.openrouter_sidecar_dispatch import proxy_chat_to_openrouter
@@ -138,6 +139,7 @@ async def dispatch_responses_via_chat_provider(
     cursor_compat: bool,
     client: object,
     translation: ResponsesChatTranslation | None = None,
+    sticky_hints: CliproxyStickyHints | None = None,
 ) -> Response:
     """Dispatch one Responses request through the chat provider that owns it.
 
@@ -162,6 +164,7 @@ async def dispatch_responses_via_chat_provider(
         sse_keepalive_interval_seconds=sse_keepalive_interval_seconds,
         cursor_compat=cursor_compat,
         client=client,
+        sticky_hints=sticky_hints,
     )
     return translate_chat_response_to_responses(chat_response, model=effective_model, translation=translation)
 
@@ -219,6 +222,7 @@ async def _proxy_chat(
     sse_keepalive_interval_seconds: float,
     cursor_compat: bool,
     client: object,
+    sticky_hints: CliproxyStickyHints | None = None,
 ) -> Response:
     if provider == "claude":
         return await proxy_chat_to_sidecar(
@@ -232,6 +236,7 @@ async def _proxy_chat(
             client=cast(ClaudeSidecarClient, client),
             cursor_compat=cursor_compat,
             wire_model=wire_model,
+            sticky_hints=sticky_hints,
         )
     if provider == "openrouter":
         return await proxy_chat_to_openrouter(

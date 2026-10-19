@@ -135,6 +135,11 @@ def translate_responses_to_chat(
         data["service_tier"] = payload.service_tier
     if payload.stream is not None:
         data["stream"] = payload.stream
+    prompt_cache_key = payload.prompt_cache_key.strip() if isinstance(payload.prompt_cache_key, str) else ""
+    if prompt_cache_key:
+        # The conversation's sticky identity: CLIProxyAPI credential routing
+        # pins on it, and OpenAI-compatible upstreams use it for prompt caching.
+        data["prompt_cache_key"] = prompt_cache_key
     try:
         chat_request = ChatCompletionsRequest.model_validate(data)
     except ValidationError as exc:

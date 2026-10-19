@@ -285,24 +285,13 @@ def _derive_prompt_cache_key(
     - Successive turns within one session get the *same* key (first input stays constant).
     - Different API keys never collide.
     """
-    parts: list[str] = []
     model = getattr(payload, "model", None)
-    model_class = _extract_model_class(model) if isinstance(model, str) and model else None
-
-    if api_key is not None:
-        parts.append(api_key.id[:12])
-
-    instructions = getattr(payload, "instructions", None)
-    if isinstance(instructions, str) and instructions:
-        parts.append(sha256(instructions[:512].encode()).hexdigest()[:12])
-
-    instruction_input_text = _extract_instruction_input(payload)
-    if instruction_input_text:
-        parts.append(sha256(instruction_input_text[:512].encode()).hexdigest()[:12])
-
-    first_user_text = _extract_first_user_input(payload)
-    if first_user_text:
-        parts.append(sha256(first_user_text[:512].encode()).hexdigest()[:12])
+    model_class, parts, _content_parts = _derived_key_parts(
+        model=model if isinstance(model, str) else None,
+        instructions=getattr(payload, "instructions", None),
+        input_value=getattr(payload, "input", None),
+        api_key_id=api_key.id if api_key is not None else None,
+    )
 
     if not parts:
         random_suffix = uuid4().hex[:24]
@@ -311,8 +300,68 @@ def _derive_prompt_cache_key(
     return "-".join([model_class, *parts]) if model_class is not None else "-".join(parts)
 
 
+def derive_content_prompt_cache_key(
+    *,
+    model: str | None,
+    instructions: object,
+    input_value: object,
+    api_key_id: str | None,
+) -> str | None:
+    """The content-derived part of ``_derive_prompt_cache_key``.
+
+    ``input_value`` is a Responses ``input`` list or a Chat Completions
+    ``messages`` list; both carry ``role`` and ``content`` per item, and a
+    chat ``system`` message is hashed like a Responses system input item.
+    ``None`` means the request carries nothing stable to hash. The Codex
+    path then falls back to a random key; the CLIProxyAPI router leaves the
+    request unpinned instead, because a random key never matches again. An
+    API key alone is not enough either: it would put every conversation of
+    that key on one pin.
+    """
+
+    model_class, parts, content_parts = _derived_key_parts(
+        model=model,
+        instructions=instructions,
+        input_value=input_value,
+        api_key_id=api_key_id,
+    )
+    if content_parts <= 0:
+        return None
+    return "-".join([model_class, *parts]) if model_class is not None else "-".join(parts)
+
+
+def _derived_key_parts(
+    *,
+    model: str | None,
+    instructions: object,
+    input_value: object,
+    api_key_id: str | None,
+) -> tuple[str | None, list[str], int]:
+    parts: list[str] = []
+    model_class = _extract_model_class(model) if isinstance(model, str) and model else None
+
+    if api_key_id:
+        parts.append(api_key_id[:12])
+
+    if isinstance(instructions, str) and instructions:
+        parts.append(sha256(instructions[:512].encode()).hexdigest()[:12])
+
+    instruction_input_text = _instruction_text_from_items(input_value)
+    if instruction_input_text:
+        parts.append(sha256(instruction_input_text[:512].encode()).hexdigest()[:12])
+
+    first_user_text = _first_user_text_from_items(input_value)
+    if first_user_text:
+        parts.append(sha256(first_user_text[:512].encode()).hexdigest()[:12])
+
+    return model_class, parts, len(parts) - (1 if api_key_id else 0)
+
+
 def _extract_instruction_input(payload: ResponsesRequest | ResponsesCompactRequest) -> str | None:
-    input_value = getattr(payload, "input", None)
+    return _instruction_text_from_items(getattr(payload, "input", None))
+
+
+def _instruction_text_from_items(input_value: object) -> str | None:
     if not isinstance(input_value, list):
         return None
     parts: list[str] = []
@@ -335,7 +384,10 @@ def _extract_instruction_input(payload: ResponsesRequest | ResponsesCompactReque
 
 def _extract_first_user_input(payload: ResponsesRequest | ResponsesCompactRequest) -> str | None:
     """Return a text representation of the first user input item for cache key derivation."""
-    input_value = getattr(payload, "input", None)
+    return _first_user_text_from_items(getattr(payload, "input", None))
+
+
+def _first_user_text_from_items(input_value: object) -> str | None:
     if isinstance(input_value, str):
         return input_value[:512]
     if not isinstance(input_value, list):
