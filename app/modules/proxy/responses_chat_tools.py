@@ -89,6 +89,7 @@ class ChatToolTranslation:
 
     tools: list[JsonValue] = field(default_factory=list)
     shapes: dict[str, ChatToolShape] = field(default_factory=dict)
+    definitions: dict[str, _Json] = field(default_factory=dict)
 
 
 def translate_responses_tools(tools: list[JsonValue], *, model: str) -> ChatToolTranslation:
@@ -215,9 +216,13 @@ def _add_function_tool(
     source = function if is_json_mapping(function) else tool
     name = _tool_name(source, param=param)
     wire_name = qualify_namespace_tool_name(namespace, name) if namespace else name
-    if not _register_shape(translation, wire_name, ChatToolShape("function", name, namespace)):
-        return
-    translation.tools.append(_chat_function_tool(wire_name, source))
+    _register_tool(
+        translation,
+        wire_name,
+        ChatToolShape("function", name, namespace),
+        _chat_function_tool(wire_name, source),
+        param=param,
+    )
 
 
 def _add_custom_tool(
@@ -229,8 +234,6 @@ def _add_custom_tool(
 ) -> None:
     name = _tool_name(tool, param=param)
     wire_name = qualify_namespace_tool_name(namespace, name) if namespace else name
-    if not _register_shape(translation, wire_name, ChatToolShape("custom", name, namespace)):
-        return
     description = tool.get("description")
     text = description if isinstance(description, str) else ""
     grammar = _custom_tool_format_note(tool.get("format"))
@@ -239,7 +242,13 @@ def _add_custom_tool(
     function: _Json = {"name": wire_name, "parameters": dict(_CUSTOM_TOOL_PARAMETERS)}
     if text:
         function["description"] = text
-    translation.tools.append({"type": "function", "function": function})
+    _register_tool(
+        translation,
+        wire_name,
+        ChatToolShape("custom", name, namespace),
+        {"type": "function", "function": function},
+        param=param,
+    )
 
 
 def _custom_tool_format_note(tool_format: JsonValue) -> str:
@@ -310,17 +319,34 @@ def _drop_or_reject_web_search_tool(tool: Mapping[str, JsonValue], *, param: str
     )
 
 
-def _register_shape(translation: ChatToolTranslation, wire_name: str, shape: ChatToolShape) -> bool:
+def _register_tool(
+    translation: ChatToolTranslation,
+    wire_name: str,
+    shape: ChatToolShape,
+    definition: _Json,
+    *,
+    param: str,
+) -> None:
+    """Add one chat tool, keeping chat function names unique.
+
+    Chat upstreams reject repeated function names, so a tool declared twice
+    (for example in ``tools`` and again in a Codex ``additional_tools`` item)
+    is sent once. That is only safe when both declarations translate to the
+    same definition; two different definitions under one name are rejected,
+    because sending either one would silently drop the other.
+    """
+
     existing = translation.shapes.get(wire_name)
     if existing is None:
         translation.shapes[wire_name] = shape
-        return True
-    if existing == shape:
-        # The same tool declared twice; chat upstreams reject repeated names.
-        return False
+        translation.definitions[wire_name] = definition
+        translation.tools.append(definition)
+        return
+    if existing == shape and translation.definitions[wire_name] == definition:
+        return
     raise chat_bridge_error(
-        f"Two tools map to the chat function name '{wire_name}'. Rename one of them.",
-        param="tools",
+        f"Two different tools map to the chat function name '{wire_name}'. Remove the duplicate or rename one of them.",
+        param=param,
     )
 
 

@@ -948,13 +948,18 @@ class ResponsesStreamSynthesizer:
         if self._message is None and not self._tool_calls:
             # An answer with no content is still one empty assistant message.
             out.extend(self._open_content_part(_OUTPUT_TEXT_TYPE))
-        closers: list[tuple[int, list[_Json]]] = []
+        # Items close in output order. Sort the open items before closing
+        # them: closing assigns sequence numbers, so sorting the finished
+        # event batches instead would emit decreasing numbers whenever a tool
+        # call was opened before the assistant text.
+        open_items: list[_StreamMessage | _StreamToolCall] = list(self._tool_calls.values())
         if self._message is not None:
-            closers.append((self._message.output_index, self._close_message(self._message)))
-        for call in self._tool_calls.values():
-            closers.append((call.output_index, self._close_tool_call(call)))
-        for _, events in sorted(closers, key=lambda entry: entry[0]):
-            out.extend(events)
+            open_items.append(self._message)
+        for item in sorted(open_items, key=lambda entry: entry.output_index):
+            if isinstance(item, _StreamMessage):
+                out.extend(self._close_message(item))
+            else:
+                out.extend(self._close_tool_call(item))
         incomplete_reason = "interrupted" if not upstream_completed else _incomplete_reason(self._finish_reason)
         if incomplete_reason is None:
             out.append(self._event({"type": "response.completed", "response": self._response_object("completed")}))

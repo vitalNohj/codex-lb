@@ -518,6 +518,34 @@ def test_t8_function_call_stream_passes_the_sdk_parser():
     assert calls[0].call_id == "call_1"
 
 
+def test_t8_tool_call_before_text_closes_items_with_increasing_sequence_numbers():
+    # The tool call takes output index 0 and the text index 1, so the closing
+    # events must be numbered after sorting by output index, not before.
+    tools = [{"type": "function", "name": "lookup", "parameters": {"type": "object"}}]
+    translation = translate_responses_to_chat(_request(tools=tools), _MODEL)
+    synth = _Synth(model=_MODEL, translation=translation)
+    events = synth.feed(
+        {
+            "choices": [
+                {
+                    "delta": {
+                        "tool_calls": [{"index": 0, "id": "call_1", "function": {"name": "lookup", "arguments": "{}"}}]
+                    }
+                }
+            ]
+        }
+    )
+    events += synth.feed({"choices": [{"delta": {"content": "after the call"}}]})
+    events += synth.feed({"choices": [{"delta": {}, "finish_reason": "tool_calls"}]})
+    events += synth.feed("[DONE]")
+
+    assert [event["sequence_number"] for event in events] == list(range(len(events)))
+    done_indexes = [event["output_index"] for event in events if event["type"] == "response.output_item.done"]
+    assert done_indexes == [0, 1]
+    final = _sdk_replay(events, tools)
+    assert [item.type for item in final.output] == ["function_call", "message"]
+
+
 def test_t8_custom_tool_call_stream_passes_the_sdk_parser():
     tools = [{"type": "custom", "name": "apply_patch"}]
     translation = translate_responses_to_chat(_request(tools=tools), _MODEL)
@@ -736,6 +764,52 @@ def test_t9_additional_tools_item_declares_tools():
 
     assert [tool["function"]["name"] for tool in chat["tools"]] == ["extra"]
     assert chat["messages"][1:] == [{"role": "user", "content": "go"}]
+
+
+def test_t2_identical_duplicate_tool_is_sent_once():
+    tool = {"type": "function", "name": "extra", "parameters": {"type": "object"}}
+    chat = _chat(
+        tools=[tool],
+        input=[
+            {"type": "additional_tools", "role": "developer", "tools": [dict(tool)]},
+            {"role": "user", "content": "go"},
+        ],
+    )
+
+    assert [entry["function"]["name"] for entry in chat["tools"]] == ["extra"]
+
+
+@pytest.mark.parametrize(
+    "second",
+    [
+        {"type": "function", "name": "extra", "parameters": {"type": "object", "required": ["q"]}},
+        {"type": "function", "name": "extra", "parameters": {"type": "object"}, "strict": True},
+        {"type": "function", "name": "extra", "parameters": {"type": "object"}, "description": "other"},
+        {"type": "custom", "name": "extra"},
+    ],
+)
+def test_t2_conflicting_duplicate_tools_are_rejected_instead_of_dropped(second: dict[str, Any]):
+    first = {"type": "function", "name": "extra", "parameters": {"type": "object"}}
+    error = _rejection(
+        tools=[first],
+        input=[
+            {"type": "additional_tools", "role": "developer", "tools": [second]},
+            {"role": "user", "content": "go"},
+        ],
+    )
+
+    assert "extra" in str(error)
+
+
+def test_t2_conflicting_custom_tool_grammars_are_rejected():
+    def custom(definition: str) -> dict[str, Any]:
+        return {
+            "type": "custom",
+            "name": "apply_patch",
+            "format": {"type": "grammar", "syntax": "lark", "definition": definition},
+        }
+
+    _rejection(tools=[custom("start: A"), custom("start: B")])
 
 
 def test_t9_agent_message_text_is_kept():
