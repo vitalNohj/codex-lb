@@ -811,3 +811,100 @@ async def test_the_account_route_sees_the_cache_key_it_pins_on(async_client, fak
     await async_client.post("/v1/responses", json=_xai_request())
 
     assert seen == [("thread-xai-1", "thread-xai-1")]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [401, 403, 429])
+async def test_a_failed_credential_moves_a_stream_once(async_client, fake_cliproxy, monkeypatch, status):
+    """PR #148 parity on the streaming path: rebind before any byte reaches the client."""
+
+    rebinds: list[str] = []
+
+    async def fake_rebind(body, *, client):
+        del client
+        rebinds.append(str(body["model"]))
+        body["model"] = f"spare/{XAI_MODEL}"
+        return object()
+
+    monkeypatch.setattr(cliproxy_responses_dispatch, "rebind_cliproxy_account_route", fake_rebind)
+    monkeypatch.setattr(cliproxy_responses_dispatch, "apply_cliproxy_account_route", AsyncMock(return_value=None))
+    fake_cliproxy.stream_errors = [ClaudeSidecarError(status, "credential refused")]
+
+    async with async_client.stream("POST", "/v1/responses", json=_xai_request(stream=True)) as response:
+        body = await response.aread()
+
+    assert response.status_code == 200
+    assert rebinds == [XAI_MODEL]
+    assert [payload["model"] for payload in fake_cliproxy.stream_responses_payloads] == [
+        XAI_MODEL,
+        f"spare/{XAI_MODEL}",
+    ]
+    assert _sse_events(body)[-1]["type"] == "response.completed"
+    [log] = await _sidecar_logs()
+    assert log.status == "success"
+
+
+@pytest.mark.asyncio
+async def test_a_stream_rebinds_only_once(async_client, fake_cliproxy, monkeypatch):
+    rebind = AsyncMock(return_value=object())
+    monkeypatch.setattr(cliproxy_responses_dispatch, "rebind_cliproxy_account_route", rebind)
+    monkeypatch.setattr(cliproxy_responses_dispatch, "apply_cliproxy_account_route", AsyncMock(return_value=None))
+    fake_cliproxy.stream_errors = [ClaudeSidecarError(429, "limited"), ClaudeSidecarError(429, "limited again")]
+
+    async with async_client.stream("POST", "/v1/responses", json=_xai_request(stream=True)) as response:
+        body = await response.aread()
+
+    assert rebind.await_count == 1
+    assert len(fake_cliproxy.stream_responses_payloads) == 2
+    assert _sse_events(body)[-1]["type"] == "response.failed"
+    [log] = await _sidecar_logs()
+    assert log.status == "error"
+
+
+@pytest.fixture
+def _cooldown_wait(monkeypatch):
+    """A real cooldown budget with no sleep, so the retry loop runs instantly."""
+
+    monkeypatch.setattr("app.modules.proxy.claude_sidecar_dispatch.CLAUDE_SIDECAR_COOLDOWN_WAIT_SECONDS", 5.0)
+    monkeypatch.setattr("app.modules.proxy.claude_sidecar_dispatch.CLAUDE_SIDECAR_COOLDOWN_RETRY_SLEEP_SECONDS", 0.0)
+    reset_claude_sidecar_cooldown_gate()
+    yield
+    reset_claude_sidecar_cooldown_gate()
+
+
+@pytest.mark.asyncio
+async def test_a_cooling_pool_is_waited_out_non_streaming(async_client, fake_cliproxy, _cooldown_wait):
+    """CLIProxyAPI's auth_unavailable 503 is retried, as on the chat route."""
+
+    fake_cliproxy.responses_errors = [ClaudeSidecarError(503, "auth_unavailable: no auth available")]
+
+    response = await async_client.post("/v1/responses", json=_xai_request())
+
+    assert response.status_code == 200
+    assert len(fake_cliproxy.responses_payloads) == 2
+    [log] = await _sidecar_logs()
+    assert log.status == "success"
+
+
+@pytest.mark.asyncio
+async def test_a_cooling_pool_is_waited_out_streaming(async_client, fake_cliproxy, _cooldown_wait):
+    fake_cliproxy.stream_errors = [ClaudeSidecarError(503, "auth_unavailable: no auth available")]
+
+    async with async_client.stream("POST", "/v1/responses", json=_xai_request(stream=True)) as response:
+        body = await response.aread()
+
+    assert len(fake_cliproxy.stream_responses_payloads) == 2
+    assert _sse_events(body)[-1]["type"] == "response.completed"
+    [log] = await _sidecar_logs()
+    assert log.status == "success"
+
+
+@pytest.mark.asyncio
+async def test_a_non_cooldown_stream_error_is_not_retried(async_client, fake_cliproxy, _cooldown_wait):
+    fake_cliproxy.stream_errors = [ClaudeSidecarError(500, "upstream exploded")]
+
+    async with async_client.stream("POST", "/v1/responses", json=_xai_request(stream=True)) as response:
+        body = await response.aread()
+
+    assert len(fake_cliproxy.stream_responses_payloads) == 1
+    assert _sse_events(body)[-1]["type"] == "response.failed"
