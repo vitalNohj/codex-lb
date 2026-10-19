@@ -193,16 +193,22 @@ def responses_to_chat_request(
 
 
 def _reject_stateful_fields(payload: ResponsesRequest, *, model: str) -> None:
+    reject_stateful_responses_fields(payload, model=model, served_through="a chat-completions provider")
+
+
+def reject_stateful_responses_fields(payload: ResponsesRequest, *, model: str, served_through: str) -> None:
     """Refuse fields that need server-side response storage.
 
     A chat upstream keeps no responses, so ``previous_response_id`` would run
     the turn without the history it names, and ``store: true`` would promise a
-    stored response that can never be retrieved. Answering such a request
+    stored response that can never be retrieved. CLIProxyAPI's native
+    ``/v1/responses`` for xAI is no different: its executor deletes
+    ``previous_response_id`` before calling xAI. Answering such a request
     anyway is the silent failure this rejects: the client would bill a full
     turn that has lost its context.
     """
 
-    suffix = f"is not supported for model '{model}', which is served through a chat-completions provider."
+    suffix = f"is not supported for model '{model}', which is served through {served_through}."
     if payload.previous_response_id:
         raise chat_bridge_error(
             f"previous_response_id {suffix} Send the full conversation in input instead.",

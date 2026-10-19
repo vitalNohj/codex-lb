@@ -609,6 +609,8 @@ class SidecarUsage:
     # (prompt = uncached + cache read + cache write), so they are a part of
     # ``input_tokens`` priced at the cache-write rate, not extra input.
     cache_write_input_tokens: int = 0
+    # Part of ``output_tokens``; recorded on the log row, never priced again.
+    reasoning_tokens: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -2088,12 +2090,22 @@ def extract_usage(payload: JsonValue) -> SidecarUsage | None:
         if input_cached_tokens is not None:
             cached_tokens = input_cached_tokens
 
+    # Like ``cached_tokens``, an unusable reasoning count is dropped on its own.
+    reasoning_tokens: int | None = None
+    for details_key in ("completion_tokens_details", "output_tokens_details"):
+        details = usage.get(details_key)
+        if is_json_mapping(details):
+            _, details_reasoning_tokens = _first_int_field(details, "reasoning_tokens")
+            if details_reasoning_tokens is not None:
+                reasoning_tokens = details_reasoning_tokens
+
     return SidecarUsage(
         input_tokens=input_tokens,
         output_tokens=output_tokens,
         cached_input_tokens=cached_tokens,
         cost_usd=extract_billed_cost(payload),
         cache_write_input_tokens=_cache_write_tokens(usage),
+        reasoning_tokens=reasoning_tokens,
     )
 
 
@@ -2129,6 +2141,11 @@ def _cache_write_tokens(usage: Mapping[str, JsonValue]) -> int:
     return 0
 
 
+# xAI states cost in ticks: 1 USD is 10^10 ticks
+# (https://docs.x.ai/developers/cost-tracking).
+XAI_USD_TICKS_PER_USD = 10_000_000_000
+
+
 def extract_billed_cost(payload: JsonValue) -> float | None:
     if not is_json_mapping(payload):
         return None
@@ -2140,6 +2157,32 @@ def extract_billed_cost(payload: JsonValue) -> float | None:
         if cost_usd is not None:
             return cost_usd
     return None
+
+
+def extract_xai_billed_cost(payload: JsonValue) -> float | None:
+    """xAI's exact cost for one Responses turn, in USD, or ``None``.
+
+    xAI reports ``usage.cost_in_usd_ticks`` on the Responses object, which
+    CLIProxyAPI's native ``/v1/responses`` passes through unchanged. Ticks are
+    integers, so the value is read exactly and only then divided. Zero is not
+    a debit: a subscription login reports no per-request price, and treating
+    its zero as billed would record paid traffic as free.
+    """
+
+    if not is_json_mapping(payload):
+        return None
+    usage = payload.get("usage")
+    if not is_json_mapping(usage):
+        return None
+    ticks = usage.get("cost_in_usd_ticks")
+    if isinstance(ticks, bool) or not isinstance(ticks, int | float):
+        return None
+    if isinstance(ticks, float) and (not math.isfinite(ticks) or not ticks.is_integer()):
+        return None
+    whole_ticks = int(ticks)
+    if whole_ticks <= 0:
+        return None
+    return validated_billed_cost(whole_ticks / XAI_USD_TICKS_PER_USD)
 
 
 _MAX_PERSISTED_TOKEN_COUNT = (1 << 31) - 1
@@ -2186,16 +2229,26 @@ def _error_sse(error: OpenAIErrorEnvelope) -> bytes:
     return f"data: {data}\n\n".encode("utf-8")
 
 
-async def _sidecar_request_cost(model: str, usage: SidecarUsage | None) -> "ExternalRequestCost":
+async def _sidecar_request_cost(
+    model: str,
+    usage: SidecarUsage | None,
+    *,
+    xai_billed_cost_usd: float | None = None,
+) -> "ExternalRequestCost":
     """Resolve this request's cost once, for both the quota charge and the log.
 
     CLIProxyAPI debits nothing of its own: it proxies other vendors and can echo
     their ``usage.cost``/``usage.cost_usd`` back verbatim. Forwarding that as
     ``billed_cost_usd`` would record another party's debit as this request's
     authoritative actual spend, which the mapper and the savings arithmetic then
-    treat as final. The cost here is therefore always a catalog-calculated list
-    price, marked as such. Its per-account token attribution is collected
-    separately and is untouched.
+    treat as final. The cost here is therefore a catalog-calculated list price,
+    marked as such. Its per-account token attribution is collected separately
+    and is untouched.
+
+    The one exception is ``xai_billed_cost_usd``: xAI's own
+    ``cost_in_usd_ticks``, which only the native Responses route reads and
+    which CLIProxyAPI relays unchanged from xAI. It is xAI's debit for this
+    exact request, so it is recorded as billed.
 
     Imported lazily for the same reason the rest of this file does it: the pricing
     module reaches back into this one for routing identity.
@@ -2207,7 +2260,8 @@ async def _sidecar_request_cost(model: str, usage: SidecarUsage | None) -> "Exte
         provider=CLIPROXY_PRICING_PROVIDER,
         model=model,
         usage=usage_tokens_from_sidecar_usage(usage),
-        billed_cost_usd=None,
+        billed_cost_usd=xai_billed_cost_usd,
+        billed_cost_is_debit=xai_billed_cost_usd is not None,
     )
 
 
@@ -2257,6 +2311,7 @@ async def _log_sidecar_request(
                 output_tokens=usage.output_tokens if usage else None,
                 cached_input_tokens=usage.cached_input_tokens if usage else None,
                 cache_write_input_tokens=usage.cache_write_input_tokens if usage else None,
+                reasoning_tokens=usage.reasoning_tokens if usage else None,
                 latency_ms=max(0, int((time.monotonic() - started_at) * 1000)),
                 status=status,
                 error_code=error_code,

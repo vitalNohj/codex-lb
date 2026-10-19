@@ -244,6 +244,10 @@ class _StickyIdentity:
     key: str | None
     kind: StickySessionKind | None
     source: CliproxyKeySource
+    # The conversation id inside ``key``, without the ``cliproxy:<kind>:``
+    # namespace. The native xAI Responses route forwards it as
+    # ``prompt_cache_key`` so the pin and CLIProxyAPI's conversation id agree.
+    value: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -987,26 +991,52 @@ def _resolve_sticky_identity(
             f"cliproxy:prompt_cache:{hints.prompt_cache_key}",
             StickySessionKind.PROMPT_CACHE,
             "prompt_cache_key",
+            hints.prompt_cache_key,
         )
     turn_state = _sticky_key_from_turn_state_header(headers)
     if turn_state and not turn_state.startswith(("turn_", "http_turn_")):
-        return _StickyIdentity(f"cliproxy:turn:{turn_state}", StickySessionKind.STICKY_THREAD, "turn_state")
+        return _StickyIdentity(
+            f"cliproxy:turn:{turn_state}",
+            StickySessionKind.STICKY_THREAD,
+            "turn_state",
+            turn_state,
+        )
     session_key = _sticky_key_from_session_header(headers) or _client_session_header(headers)
     if session_key:
-        return _StickyIdentity(f"cliproxy:session:{session_key}", StickySessionKind.STICKY_THREAD, "session_header")
-    if hints.body_session_id:
         return _StickyIdentity(
-            f"cliproxy:session:{_bounded_identity(hints.body_session_id)}",
+            f"cliproxy:session:{session_key}",
+            StickySessionKind.STICKY_THREAD,
+            "session_header",
+            session_key,
+        )
+    if hints.body_session_id:
+        body_session_id = _bounded_identity(hints.body_session_id)
+        return _StickyIdentity(
+            f"cliproxy:session:{body_session_id}",
             StickySessionKind.STICKY_THREAD,
             "body_session_id",
+            body_session_id,
         )
     if hints.derived_key:
         return _StickyIdentity(
             f"cliproxy:derived:{hints.derived_key}",
             StickySessionKind.PROMPT_CACHE,
             "derived",
+            hints.derived_key,
         )
     return _StickyIdentity(None, None, "none")
+
+
+def cliproxy_conversation_id(hints: CliproxyStickyHints, headers: Mapping[str, str]) -> str | None:
+    """The conversation id the sticky pin is keyed on, without its namespace.
+
+    Read in the same order as the pin, so a caller that forwards it as
+    ``prompt_cache_key`` gives CLIProxyAPI and xAI the id codex-lb pins on.
+    It is read even when sticky routing is off: the upstream cache still
+    needs a stable id when codex-lb itself does not pin.
+    """
+
+    return _resolve_sticky_identity(hints, headers, sticky_enabled=True).value
 
 
 def _sticky_identity_from_request(

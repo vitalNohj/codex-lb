@@ -567,7 +567,31 @@ class ClaudeSidecarClient:
         return models
 
     async def chat_completion(self, payload: Mapping[str, JsonValue]) -> JsonValue:
-        url = f"{self.base_url}/v1/chat/completions"
+        return await self._post_json("/v1/chat/completions", payload, action="call Claude sidecar")
+
+    @asynccontextmanager
+    async def stream_chat_completion(self, payload: Mapping[str, JsonValue]) -> AsyncIterator[AsyncIterator[bytes]]:
+        async with self._post_stream("/v1/chat/completions", payload, action="stream Claude sidecar") as chunks:
+            yield chunks
+
+    async def responses(self, payload: Mapping[str, JsonValue]) -> JsonValue:
+        """Send one Responses request to CLIProxyAPI's native ``/v1/responses``.
+
+        Only xAI models take this path: CLIProxyAPI hands their Responses body to
+        the xAI executor without the chat round trip, so encrypted reasoning and
+        the cache key reach xAI unchanged. Client session headers are never
+        forwarded, the same as the chat route.
+        """
+
+        return await self._post_json("/v1/responses", payload, action="call CLIProxyAPI responses")
+
+    @asynccontextmanager
+    async def stream_responses(self, payload: Mapping[str, JsonValue]) -> AsyncIterator[AsyncIterator[bytes]]:
+        async with self._post_stream("/v1/responses", payload, action="stream CLIProxyAPI responses") as chunks:
+            yield chunks
+
+    async def _post_json(self, path: str, payload: Mapping[str, JsonValue], *, action: str) -> JsonValue:
+        url = f"{self.base_url}{path}"
         try:
             async with lease_http_session() as session:
                 async with session.post(
@@ -583,11 +607,17 @@ class ClaudeSidecarClient:
         except ClaudeSidecarError:
             raise
         except (asyncio.TimeoutError, aiohttp.ClientError, OSError) as exc:
-            raise ClaudeSidecarUnavailableError(_transport_message(exc, "call Claude sidecar")) from exc
+            raise ClaudeSidecarUnavailableError(_transport_message(exc, action)) from exc
 
     @asynccontextmanager
-    async def stream_chat_completion(self, payload: Mapping[str, JsonValue]) -> AsyncIterator[AsyncIterator[bytes]]:
-        url = f"{self.base_url}/v1/chat/completions"
+    async def _post_stream(
+        self,
+        path: str,
+        payload: Mapping[str, JsonValue],
+        *,
+        action: str,
+    ) -> AsyncIterator[AsyncIterator[bytes]]:
+        url = f"{self.base_url}{path}"
         try:
             async with lease_http_session() as session:
                 async with session.post(
@@ -603,7 +633,7 @@ class ClaudeSidecarClient:
         except ClaudeSidecarError:
             raise
         except (asyncio.TimeoutError, aiohttp.ClientError, OSError) as exc:
-            raise ClaudeSidecarUnavailableError(_transport_message(exc, "stream Claude sidecar")) from exc
+            raise ClaudeSidecarUnavailableError(_transport_message(exc, action)) from exc
 
 
 def _json_or_message(text: str) -> JsonValue:

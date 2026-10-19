@@ -38,6 +38,7 @@ from app.modules.claude_sidecar.schemas import (
     ClaudeSidecarStatusResponse,
     ClaudeSidecarTestResponse,
 )
+from app.modules.claude_sidecar.session_affinity_guard import observe_session_affinity
 from app.modules.claude_sidecar.usage_estimates import (
     SECONDARY_WINDOW,
     ClaudeAuthUsageEstimate,
@@ -233,6 +234,7 @@ class ClaudeSidecarService:
             status: ClaudeSidecarRoutingStatus = "unauthorized" if exc.status_code in {401, 403} else "error"
             return ClaudeSidecarRoutingResponse(status=status, message=_sanitize_message(exc.message))
 
+        observe_session_affinity(session_affinity)
         return ClaudeSidecarRoutingResponse(
             status="healthy",
             strategy=_WIRE_TO_STRATEGY.get(wire_strategy),

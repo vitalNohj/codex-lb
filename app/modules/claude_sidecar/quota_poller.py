@@ -52,6 +52,7 @@ from app.modules.claude_sidecar.rate_limit_hold import (
     plan_rate_limit_holds,
     plan_xai_rate_limit_holds,
 )
+from app.modules.claude_sidecar.session_affinity_guard import check_cliproxy_session_affinity
 from app.modules.proxy.claude_sidecar_dispatch import sidecar_config_from_settings
 from app.modules.settings.repository import SettingsRepository
 
@@ -151,6 +152,7 @@ class ClaudeSidecarQuotaPoller:
         if not config.management_key:
             return
         client = self._client_factory(config)
+        await check_cliproxy_session_affinity(client)
         stored_before = snapshot_from_json(settings_row.claude_sidecar_quota_state_json)
         snapshot = await _classify_poll_result(client, stored_before)
         if snapshot.status == "healthy":
