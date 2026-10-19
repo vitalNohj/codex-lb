@@ -167,9 +167,10 @@ def test_a_long_body_session_id_is_hashed_the_same_in_both() -> None:
 
 
 def test_the_cache_key_is_read_even_when_sticky_routing_is_off() -> None:
-    assert routing._resolve_sticky_identity(
-        CliproxyStickyHints(prompt_cache_key="pck"), {}, sticky_enabled=False
-    ).key is None
+    assert (
+        routing._resolve_sticky_identity(CliproxyStickyHints(prompt_cache_key="pck"), {}, sticky_enabled=False).key
+        is None
+    )
     assert cliproxy_conversation_id(CliproxyStickyHints(prompt_cache_key="pck"), {}) == "pck"
 
 
@@ -234,16 +235,18 @@ def test_usage_without_reasoning_detail_has_none() -> None:
         (5.0, 5e-10),
     ],
 )
-def test_xai_ticks_are_converted_to_usd(ticks: object, expected: float) -> None:
-    assert extract_xai_billed_cost({"usage": {"cost_in_usd_ticks": ticks}}) == pytest.approx(expected)
+def test_xai_ticks_are_converted_to_usd(ticks: Any, expected: float) -> None:
+    payload: Any = {"usage": {"cost_in_usd_ticks": ticks}}
+    assert extract_xai_billed_cost(payload) == pytest.approx(expected)
 
 
 @pytest.mark.parametrize(
     "ticks",
     [0, -5, None, "123", True, 1.5, float("nan"), float("inf")],
 )
-def test_unusable_xai_ticks_are_ignored(ticks: object) -> None:
-    assert extract_xai_billed_cost({"usage": {"cost_in_usd_ticks": ticks}}) is None
+def test_unusable_xai_ticks_are_ignored(ticks: Any) -> None:
+    payload: Any = {"usage": {"cost_in_usd_ticks": ticks}}
+    assert extract_xai_billed_cost(payload) is None
 
 
 @pytest.mark.parametrize("payload", [None, [], {"usage": None}, {"usage": {}}, {"usage": {"cost": 0.5}}])

@@ -174,7 +174,13 @@ def _stream_events(model: str, *, usage: dict | None, terminal: str = "response.
     if terminal == "response.failed":
         final["error"] = {"code": "server_error", "message": "xai broke"}
     return [
-        _sse({"type": "response.created", "sequence_number": 0, "response": {"id": "resp_xai_1", "status": "in_progress"}}),
+        _sse(
+            {
+                "type": "response.created",
+                "sequence_number": 0,
+                "response": {"id": "resp_xai_1", "status": "in_progress"},
+            }
+        ),
         _sse(
             {
                 "type": "response.output_item.done",
