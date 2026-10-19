@@ -84,7 +84,7 @@ from app.core.balancer.logic import AccountState, RoutingStrategy, select_accoun
 from app.core.clients.claude_sidecar import ClaudeSidecarClient
 from app.core.config.settings import get_settings
 from app.core.config.settings_cache import get_settings_cache
-from app.core.metrics.prometheus import cliproxy_route_outcome_total
+from app.core.metrics.prometheus import cliproxy_claude_sticky_cache_total, cliproxy_route_outcome_total
 from app.core.openai.chat_requests import ChatCompletionsRequest
 from app.core.openai.requests import ResponsesRequest
 from app.core.types import JsonValue
@@ -166,6 +166,12 @@ _IDENTITY_MAX_CHARS = 256
 _NO_CANDIDATE_WARN_SECONDS = 60.0
 _NO_CANDIDATE_WARNED: OrderedDict[str, float] = OrderedDict()
 _NO_CANDIDATE_WARN_LIMIT = 256
+# The largest minimum cacheable prompt Anthropic documents (Opus 4.5/4.6).
+# Below a model's minimum a prompt is silently uncached, which is not a fault,
+# so only prompts at least this long count toward the cache-miss signal.
+CLAUDE_CACHEABLE_PROMPT_TOKENS = 4096
+_CACHE_MISS_WARN_SECONDS = 600.0
+_CACHE_MISS_WARNED: OrderedDict[str, float] = OrderedDict()
 # Session headers in the order CLIProxyAPI's ``ExtractSessionID`` reads them,
 # after the Codex headers this router already honoured. Any other
 # ``x-<vendor>-session-id`` follows, as in LiteLLM's ``session_affinity``.
@@ -1136,6 +1142,56 @@ def _record_route_outcome(
         choice.provider,
         choice.auth_index,
         model,
+    )
+
+
+def record_claude_sticky_cache_result(*, input_tokens: int, cached_input_tokens: int) -> None:
+    """Count whether a Claude turn on its conversation's pin read the prompt cache.
+
+    Only a turn served by the credential its conversation was already pinned
+    to counts, with a prompt long enough to cache on every Claude model. Such
+    a turn repeats a prefix that same Anthropic account cached on an earlier
+    turn, so a read of zero means the cache was lost on the way: something
+    between CLIProxyAPI and ``api.anthropic.com`` rewrote the body, or the
+    body itself changed between turns. A conversation idle past the cache TTL
+    also misses once, so the signal is a sustained miss rate, not one miss.
+    """
+
+    choice = _CURRENT_CHOICE.get()
+    if (
+        choice is None
+        or choice.route != "sticky"
+        or choice.fallback
+        or not requires_cliproxy_credential_prefix(choice.requested_model)
+        or input_tokens < CLAUDE_CACHEABLE_PROMPT_TOKENS
+    ):
+        return
+    hit = cached_input_tokens > 0
+    if cliproxy_claude_sticky_cache_total is not None:
+        cliproxy_claude_sticky_cache_total.labels(result="hit" if hit else "miss").inc()
+    if not hit:
+        _warn_sticky_cache_miss(choice, input_tokens=input_tokens)
+
+
+def _warn_sticky_cache_miss(choice: CliproxyDispatchChoice, *, input_tokens: int) -> None:
+    """Warn, at most once every ten minutes per credential, of a pinned cache miss."""
+
+    now = time.monotonic()
+    last = _CACHE_MISS_WARNED.get(choice.account_id)
+    if last is not None and now - last < _CACHE_MISS_WARN_SECONDS:
+        return
+    _CACHE_MISS_WARNED[choice.account_id] = now
+    _CACHE_MISS_WARNED.move_to_end(choice.account_id)
+    while len(_CACHE_MISS_WARNED) > _NO_CANDIDATE_WARN_LIMIT:
+        _CACHE_MISS_WARNED.popitem(last=False)
+    logger.warning(
+        "cliproxy_claude_sticky_cache_miss provider=%s auth_index=%s model=%s input_tokens=%s: a pinned "
+        "Claude conversation read nothing from the prompt cache. CLIProxyAPI must reach api.anthropic.com "
+        "directly; a gateway that rewrites the request body in between makes every turn a full cache write",
+        choice.provider,
+        choice.auth_index,
+        choice.wire_model,
+        input_tokens,
     )
 
 

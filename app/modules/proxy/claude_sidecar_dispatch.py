@@ -52,6 +52,7 @@ from app.modules.proxy.cliproxy_account_routing import (
     cliproxy_log_attribution,
     cliproxy_sticky_hints,
     rebind_cliproxy_account_route,
+    record_claude_sticky_cache_result,
 )
 from app.modules.proxy.cursor_chat_compat import (
     apply_cursor_usage_fallback_to_response,
@@ -2237,6 +2238,11 @@ async def _log_sidecar_request(
     requested_reasoning_effort: str | None = None,
     cost: "ExternalRequestCost | None" = None,
 ) -> None:
+    if status == "success" and usage is not None:
+        record_claude_sticky_cache_result(
+            input_tokens=usage.input_tokens,
+            cached_input_tokens=usage.cached_input_tokens,
+        )
     try:
         if cost is None:
             cost = await _sidecar_request_cost(model, usage)

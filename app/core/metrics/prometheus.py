@@ -342,6 +342,13 @@ if PROMETHEUS_AVAILABLE:
         ["outcome", "key_source"],
         registry=REGISTRY,
     )
+    cliproxy_claude_sticky_cache_total = Counter(
+        "codex_lb_cliproxy_claude_sticky_cache_total",
+        "Claude responses served on a conversation's existing CLIProxyAPI pin with a cacheable prompt, "
+        "by whether any prompt-cache read was reported",
+        ["result"],
+        registry=REGISTRY,
+    )
 
     def make_scrape_registry() -> CollectorRegistryLike:
         if MULTIPROCESS_MODE:
@@ -409,6 +416,7 @@ else:
     cache_invalidation_bump_failures_total: CounterLike | None = None
     cache_invalidation_poll_failures_total: CounterLike | None = None
     cliproxy_route_outcome_total: CounterLike | None = None
+    cliproxy_claude_sticky_cache_total: CounterLike | None = None
 
     def make_scrape_registry() -> None:
         return None
@@ -448,6 +456,7 @@ __all__ = [
     "cache_invalidation_poll_failures_total",
     "cap_partition_replicas",
     "circuit_breaker_state",
+    "cliproxy_claude_sticky_cache_total",
     "cliproxy_route_outcome_total",
     "continuity_fail_closed_total",
     "event_loop_lag_seconds",

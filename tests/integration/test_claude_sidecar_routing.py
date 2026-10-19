@@ -107,6 +107,7 @@ _REAL_CLIPROXY_ROUTE_TESTS = frozenset(
         "test_near_hold_then_credential_prefix_resolves_and_the_request_is_served",
         "test_every_claude_auth_paused_without_a_credential_prefix_stays_a_503",
         "test_responses_tool_session_reaches_cliproxy_append_only_on_one_credential",
+        "test_a_pinned_claude_turn_that_reads_no_cache_is_counted_as_a_miss",
     }
 )
 
@@ -2530,3 +2531,63 @@ async def test_responses_tool_session_reaches_cliproxy_append_only_on_one_creden
         assert len(current["messages"]) > len(previous["messages"])
         assert wire(current["messages"][: len(previous["messages"])]) == wire(previous["messages"])
     assert [tool["function"]["name"] for tool in forwarded[-1]["tools"]] == ["Bash", "Read"]
+
+
+@pytest.mark.asyncio
+async def test_a_pinned_claude_turn_that_reads_no_cache_is_counted_as_a_miss(
+    async_client,
+    sidecar_enabled,
+    fake_sidecar,
+    _fresh_cliproxy_route_memory,
+    monkeypatch,
+):
+    """The second turn of a conversation is served on its pin and should read the cache.
+
+    The first turn creates the pin and is not counted: its account has no
+    cache for this conversation yet. The second turn repeats the prefix on the
+    same account, so ``cached_tokens`` of 0 there is the loss the alert
+    watches for.
+    """
+
+    from app.modules.proxy import cliproxy_account_routing as routing
+
+    counted: list[str] = []
+
+    class _Counter:
+        def labels(self, *, result: str):
+            counted.append(result)
+            return self
+
+        def inc(self) -> None:
+            return None
+
+    monkeypatch.setattr(routing, "cliproxy_claude_sticky_cache_total", _Counter())
+    routing._CACHE_MISS_WARNED.clear()
+    await _store_quota_snapshot((_enabled_auth("a.json", "acct-a"),))
+    fake_sidecar.chat_usage = {
+        "prompt_tokens": 20_000,
+        "completion_tokens": 50,
+        "prompt_tokens_details": {"cached_tokens": 0},
+    }
+
+    for _ in range(2):
+        response = await async_client.post(
+            "/v1/chat/completions",
+            json={**_chat(), "prompt_cache_key": "pck-miss"},
+        )
+        assert response.status_code == 200
+
+    assert [payload["model"] for payload in fake_sidecar.chat_payloads] == [
+        "acct-a/claude-sonnet-4-5-20250929",
+        "acct-a/claude-sonnet-4-5-20250929",
+    ]
+    assert counted == ["miss"]
+
+    fake_sidecar.chat_usage = {
+        "prompt_tokens": 20_000,
+        "completion_tokens": 50,
+        "prompt_tokens_details": {"cached_tokens": 19_000},
+    }
+    response = await async_client.post("/v1/chat/completions", json={**_chat(), "prompt_cache_key": "pck-miss"})
+    assert response.status_code == 200
+    assert counted == ["miss", "hit"]
