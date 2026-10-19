@@ -19,7 +19,7 @@ import logging
 import time
 from dataclasses import dataclass
 
-from app.core.clients.claude_sidecar import ClaudeSidecarClient, ClaudeSidecarError
+from app.core.clients.claude_sidecar import ClaudeSidecarClient
 from app.core.metrics.prometheus import cliproxy_session_affinity_enabled
 
 logger = logging.getLogger(__name__)
@@ -46,12 +46,13 @@ async def check_cliproxy_session_affinity(client: ClaudeSidecarClient) -> bool |
     """Read the switch, publish it, and warn if it is off.
 
     Returns the state, or ``None`` when it could not be read. A failed read
-    changes nothing: the poll that made it reports CLIProxyAPI's health.
+    changes nothing and never fails the caller: the quota poll that makes it
+    reports CLIProxyAPI's health and must go on.
     """
 
     try:
         enabled = await client.get_session_affinity()
-    except ClaudeSidecarError:
+    except Exception:
         logger.debug("could not read CLIProxyAPI routing.session-affinity", exc_info=True)
         return None
     observe_session_affinity(enabled)

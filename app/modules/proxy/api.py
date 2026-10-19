@@ -1404,9 +1404,8 @@ async def _chat_provider_responses_dispatch_or_none(
         responses_payload,
         prompt_cache_key_derived=prompt_cache_key_derived,
     )
-    if isinstance(client, ClaudeSidecarClient) and use_cliproxy_xai_native_responses(
-        decision.provider, decision.wire_model
-    ):
+    if use_cliproxy_xai_native_responses(decision.provider, decision.wire_model):
+        # ``claude`` is CLIProxyAPI, so its client is the CLIProxyAPI client.
         return await _cliproxy_native_responses_dispatch(
             request,
             responses_payload,
@@ -1414,7 +1413,7 @@ async def _chat_provider_responses_dispatch_or_none(
             wire_model=decision.wire_model,
             api_key=api_key,
             rate_limit_headers=rate_limit_headers,
-            client=client,
+            client=cast(ClaudeSidecarClient, client),
             sticky_hints=sticky_hints,
         )
     translation = _responses_chat_translation_or_error(request, responses_payload, effective_model, rate_limit_headers)
