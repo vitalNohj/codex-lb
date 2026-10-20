@@ -106,11 +106,17 @@ async def external_request_cost(
     billed_cost_usd: float | None,
     service_tier: str | None = None,
     schedule_lookup: bool = True,
+    billed_cost_is_debit: bool = False,
 ) -> ExternalRequestCost:
     """Resolve the cost fields for one request on a participating integration.
 
     Never raises and never blocks on remote work: the underlying resolver answers
     from persisted state and schedules any lookup in the background.
+
+    ``billed_cost_is_debit`` is for a caller that read a cost field it knows is
+    the serving upstream's debit for this request, from a provider that is not
+    per-request billed as a whole. CLIProxyAPI is the case: most of what it
+    relays is not a debit, but xAI's ``cost_in_usd_ticks`` is.
     """
 
     try:
@@ -131,7 +137,8 @@ async def external_request_cost(
     # whatever its response body says. Discarding the figure here rather than at
     # each dispatch keeps one rule in one place: the alternative is every future
     # integration remembering not to pass its own zero through.
-    valid_billed_cost = validated_billed_cost(billed_cost_usd) if reports_per_request_billed_cost(provider) else None
+    billed_is_debit = billed_cost_is_debit or reports_per_request_billed_cost(provider)
+    valid_billed_cost = validated_billed_cost(billed_cost_usd) if billed_is_debit else None
     if valid_billed_cost is not None:
         return ExternalRequestCost(
             cost_usd=valid_billed_cost,

@@ -269,7 +269,14 @@ from app.modules.proxy.claude_sidecar_dispatch import (
     load_sidecar_config,
     proxy_chat_to_sidecar,
 )
-from app.modules.proxy.cliproxy_account_routing import cliproxy_responses_sticky_hints
+from app.modules.proxy.cliproxy_account_routing import CliproxyStickyHints, cliproxy_responses_sticky_hints
+from app.modules.proxy.cliproxy_responses_dispatch import (
+    BRIDGE_ROUTE,
+    NATIVE_ROUTE_DESCRIPTION,
+    proxy_responses_to_cliproxy_native,
+    record_cliproxy_xai_responses_route,
+    use_cliproxy_xai_native_responses,
+)
 from app.modules.proxy.cursor_chat_compat import (
     apply_cursor_usage_fallback,
     cursor_context_limit_responses_completion,
@@ -363,7 +370,11 @@ from app.modules.proxy.request_policy import (
     validate_model_access,
     validate_top_level_compaction_trigger_input_shape,
 )
-from app.modules.proxy.responses_chat_bridge import ResponsesChatTranslation, translate_responses_to_chat
+from app.modules.proxy.responses_chat_bridge import (
+    ResponsesChatTranslation,
+    reject_stateful_responses_fields,
+    translate_responses_to_chat,
+)
 from app.modules.proxy.responses_provider_dispatch import (
     codex_serves_model,
     dispatch_responses_via_chat_provider,
@@ -1389,6 +1400,22 @@ async def _chat_provider_responses_dispatch_or_none(
     # be on the payload before translation copies it and before quota accounting.
     await _apply_api_key_enforcement_with_fast_mode_policy(responses_payload, api_key)
     prompt_cache_key_derived = _derive_chat_provider_prompt_cache_key(responses_payload, api_key)
+    sticky_hints = cliproxy_responses_sticky_hints(
+        responses_payload,
+        prompt_cache_key_derived=prompt_cache_key_derived,
+    )
+    if use_cliproxy_xai_native_responses(decision.provider, decision.wire_model):
+        # ``claude`` is CLIProxyAPI, so its client is the CLIProxyAPI client.
+        return await _cliproxy_native_responses_dispatch(
+            request,
+            responses_payload,
+            effective_model=effective_model,
+            wire_model=decision.wire_model,
+            api_key=api_key,
+            rate_limit_headers=rate_limit_headers,
+            client=cast(ClaudeSidecarClient, client),
+            sticky_hints=sticky_hints,
+        )
     translation = _responses_chat_translation_or_error(request, responses_payload, effective_model, rate_limit_headers)
     if isinstance(translation, Response):
         return translation
@@ -1399,6 +1426,7 @@ async def _chat_provider_responses_dispatch_or_none(
         request_usage_budget=None,
     )
     settings = get_settings()
+    record_cliproxy_xai_responses_route(decision.provider, decision.wire_model, BRIDGE_ROUTE)
     return await dispatch_responses_via_chat_provider(
         request,
         translation.chat_request,
@@ -1412,10 +1440,59 @@ async def _chat_provider_responses_dispatch_or_none(
         sse_keepalive_interval_seconds=settings.sse_keepalive_interval_seconds,
         cursor_compat=is_cursor_compat_client(request, api_key),
         client=client,
-        sticky_hints=cliproxy_responses_sticky_hints(
+        sticky_hints=sticky_hints,
+    )
+
+
+async def _cliproxy_native_responses_dispatch(
+    request: Request,
+    responses_payload: ResponsesRequest,
+    *,
+    effective_model: str,
+    wire_model: str,
+    api_key: ApiKeyData | None,
+    rate_limit_headers: Mapping[str, str],
+    client: ClaudeSidecarClient,
+    sticky_hints: CliproxyStickyHints,
+) -> Response:
+    """Send an xAI Responses request to CLIProxyAPI's native ``/v1/responses``.
+
+    The checks match the bridge's, minus the translation this route skips:
+    the API key's service tier is already enforced on the payload, a stateful
+    field is refused before any quota is reserved, and the reservation is
+    taken last.
+    """
+
+    try:
+        reject_stateful_responses_fields(
             responses_payload,
-            prompt_cache_key_derived=prompt_cache_key_derived,
-        ),
+            model=effective_model,
+            served_through=NATIVE_ROUTE_DESCRIPTION,
+        )
+    except ClientPayloadError as exc:
+        return _logged_error_json_response(
+            request,
+            400,
+            openai_client_payload_error(exc),
+            headers=rate_limit_headers,
+        )
+    reservation = await _enforce_request_limits(
+        api_key,
+        request_model=effective_model,
+        request_service_tier=responses_payload.service_tier,
+        request_usage_budget=None,
+    )
+    return await proxy_responses_to_cliproxy_native(
+        request,
+        responses_payload,
+        effective_model=effective_model,
+        wire_model=wire_model,
+        api_key=api_key,
+        reservation=reservation,
+        rate_limit_headers=rate_limit_headers,
+        sse_keepalive_interval_seconds=get_settings().sse_keepalive_interval_seconds,
+        client=client,
+        sticky_hints=sticky_hints,
     )
 
 

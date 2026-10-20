@@ -135,6 +135,7 @@ export function SyntheticAccountDetail({ account, busy }: { account: AccountSumm
       {isClaude ? (
         <SessionAffinityToggle
           checked={sessionAffinity === true}
+          enabled={sessionAffinity}
           disabled={
             busy ||
             routingQuery.isLoading ||

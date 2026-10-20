@@ -1331,6 +1331,7 @@ function Routing({
     <div className="space-y-3" aria-label="CLIProxyAPI routing controls">
       <SessionAffinityToggle
         checked={sessionAffinity === true}
+        enabled={sessionAffinity}
         disabled={busy || isLoading || typeof sessionAffinity !== "boolean"}
         onCheckedChange={onSessionAffinityChange}
       />

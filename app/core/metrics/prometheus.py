@@ -349,6 +349,18 @@ if PROMETHEUS_AVAILABLE:
         ["result"],
         registry=REGISTRY,
     )
+    cliproxy_xai_responses_route_total = Counter(
+        "codex_lb_cliproxy_xai_responses_route_total",
+        "xAI Responses requests sent to CLIProxyAPI, by native /v1/responses or the chat bridge",
+        ["route"],
+        registry=REGISTRY,
+    )
+    cliproxy_session_affinity_enabled = Gauge(
+        "codex_lb_cliproxy_session_affinity_enabled",
+        "CLIProxyAPI routing.session-affinity as last read by the quota poller (1 on, 0 off)",
+        registry=REGISTRY,
+        **({"multiprocess_mode": "livemax"} if MULTIPROCESS_MODE else {}),
+    )
 
     def make_scrape_registry() -> CollectorRegistryLike:
         if MULTIPROCESS_MODE:
@@ -417,6 +429,8 @@ else:
     cache_invalidation_poll_failures_total: CounterLike | None = None
     cliproxy_route_outcome_total: CounterLike | None = None
     cliproxy_claude_sticky_cache_total: CounterLike | None = None
+    cliproxy_xai_responses_route_total: CounterLike | None = None
+    cliproxy_session_affinity_enabled: GaugeLike | None = None
 
     def make_scrape_registry() -> None:
         return None
@@ -458,6 +472,8 @@ __all__ = [
     "circuit_breaker_state",
     "cliproxy_claude_sticky_cache_total",
     "cliproxy_route_outcome_total",
+    "cliproxy_session_affinity_enabled",
+    "cliproxy_xai_responses_route_total",
     "continuity_fail_closed_total",
     "event_loop_lag_seconds",
     "event_loop_lag_warnings_total",
