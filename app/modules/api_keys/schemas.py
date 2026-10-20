@@ -37,6 +37,7 @@ class ApiKeyCreateRequest(DashboardModel):
     traffic_class: str | None = Field(default=None, pattern=r"(?i)^(foreground|opportunistic)$")
     transport_policy_override: str | None = None
     rate_limit_as_payment_required: bool = False
+    is_shared: bool = False
     usage_sections: str | None = None
     weekly_token_limit: int | None = Field(default=None, ge=1)
     expires_at: datetime | None = None
@@ -58,6 +59,7 @@ class ApiKeyUpdateRequest(DashboardModel):
     traffic_class: str | None = Field(default=None, pattern=r"(?i)^(foreground|opportunistic)$")
     transport_policy_override: str | None = None
     rate_limit_as_payment_required: bool | None = None
+    is_shared: bool | None = None
     usage_sections: str | None = None
     weekly_token_limit: int | None = Field(default=None, ge=1)
     expires_at: datetime | None = None
@@ -88,6 +90,7 @@ class ApiKeyResponse(DashboardModel):
     traffic_class: str
     transport_policy_override: str | None = None
     rate_limit_as_payment_required: bool = False
+    is_shared: bool = False
     usage_sections: str = "upstream_limits,account_pool_usage"
     expires_at: datetime | None
     is_active: bool

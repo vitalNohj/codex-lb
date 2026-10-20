@@ -5054,6 +5054,10 @@ async def test_cliproxy_routing_attribution_migration_adds_log_columns_and_stick
         async with engine.connect() as conn:
             columns = {row[1] for row in (await conn.execute(text("PRAGMA table_info(request_logs)"))).fetchall()}
         assert {"cache_write_input_tokens", "cached_input_tokens", "sidecar_route"} <= columns
+        # The models describe the head schema, so check drift there: later
+        # revisions may add columns this chain does not cover.
+        head = await to_thread.run_sync(lambda: run_upgrade(db_url, "head", bootstrap_legacy=False))
+        assert head.current_revision == _HEAD_REVISION
         assert await to_thread.run_sync(lambda: check_schema_drift(db_url)) == ()
     finally:
         await engine.dispose()
@@ -5191,5 +5195,51 @@ async def test_reset_credits_section_migration_leaves_existing_keys_without_rese
         async with engine.begin() as conn:
             await conn.run_sync(module.grant_reset_credits_to_existing_keys)
         assert await _api_key_sections(engine) == granted
+    finally:
+        await engine.dispose()
+
+
+_IS_SHARED_REVISION = "20261020_010000_add_api_key_is_shared"
+
+
+async def _api_key_shared_rows(engine) -> dict[str, tuple[str, bool]]:
+    async with engine.connect() as conn:
+        rows = await conn.execute(text("SELECT id, usage_sections, is_shared FROM api_keys"))
+        return {row[0]: (row[1], bool(row[2])) for row in rows}
+
+
+@pytest.mark.asyncio
+async def test_is_shared_migration_defaults_false_and_round_trips_without_touching_sections(tmp_path):
+    from alembic import command
+
+    from app.db.migrate import _build_alembic_config
+
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'is-shared.sqlite'}"
+    await to_thread.run_sync(lambda: run_upgrade(db_url, _RESET_CREDITS_SECTION_REVISION, bootstrap_legacy=False))
+    engine = create_async_engine(db_url, future=True)
+    try:
+        await _seed_reset_credits_section_keys(engine)
+        await to_thread.run_sync(lambda: run_upgrade(db_url, _IS_SHARED_REVISION, bootstrap_legacy=False))
+        # Existing keys are unshared and keep their usage sections.
+        assert await _api_key_shared_rows(engine) == {
+            key_id: (sections, False) for key_id, sections in _RESET_CREDITS_SECTION_KEYS.items()
+        }
+
+        async with engine.begin() as conn:
+            await conn.execute(text("UPDATE api_keys SET is_shared = 1 WHERE id = 'key-default'"))
+        shared = await _api_key_shared_rows(engine)
+        assert shared["key-default"] == ("upstream_limits,account_pool_usage", True)
+
+        # The downgrade drops only the flag; every key keeps its sections.
+        await to_thread.run_sync(
+            lambda: command.downgrade(_build_alembic_config(db_url), _RESET_CREDITS_SECTION_REVISION)
+        )
+        assert await _api_key_sections(engine) == _RESET_CREDITS_SECTION_KEYS
+
+        # A re-upgrade is idempotent and starts every key unshared again.
+        await to_thread.run_sync(lambda: run_upgrade(db_url, _IS_SHARED_REVISION, bootstrap_legacy=False))
+        assert await _api_key_shared_rows(engine) == {
+            key_id: (sections, False) for key_id, sections in _RESET_CREDITS_SECTION_KEYS.items()
+        }
     finally:
         await engine.dispose()

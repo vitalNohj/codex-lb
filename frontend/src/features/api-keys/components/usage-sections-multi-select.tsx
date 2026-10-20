@@ -15,6 +15,7 @@ export type UsageSectionsMultiSelectProps = {
   value: string;
   onChange: (value: string) => void;
   placeholder?: string;
+  disabled?: boolean;
   "aria-describedby"?: string;
 };
 
@@ -43,6 +44,7 @@ export function UsageSectionsMultiSelect({
   value,
   onChange,
   placeholder,
+  disabled = false,
   "aria-describedby": ariaDescribedBy,
 }: UsageSectionsMultiSelectProps) {
   const { t } = useTranslation();
@@ -71,6 +73,7 @@ export function UsageSectionsMultiSelect({
           type="button"
           variant="outline"
           className="w-full justify-between font-normal"
+          disabled={disabled}
           aria-describedby={ariaDescribedBy}
         >
           <span className="truncate text-left">{label}</span>

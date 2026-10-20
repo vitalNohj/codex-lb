@@ -32,6 +32,7 @@ from app.core.exceptions import (
     ProxyRateLimitError,
     ProxyReasoningEffortNotAllowed,
     ProxyRequiredCapabilityTransportError,
+    ProxySharedApiKeyDenied,
     ProxyUpstreamError,
 )
 from app.core.middleware.multipart_content_encoding import (
@@ -61,6 +62,7 @@ _OPENAI_EXCEPTION_TYPES: tuple[type[AppError], ...] = (
     ProxyReasoningEffortNotAllowed,
     ProxyRateLimitError,
     ProxyRequiredCapabilityTransportError,
+    ProxySharedApiKeyDenied,
     ProxyUpstreamError,
 )
 

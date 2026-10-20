@@ -29,7 +29,7 @@ import { LimitRulesEditor } from "@/features/api-keys/components/limit-rules-edi
 import { AccountMultiSelect } from "@/features/api-keys/components/account-multi-select";
 import { ModelMultiSelect } from "@/features/api-keys/components/model-multi-select";
 import { ReasoningEffortsMultiSelect } from "@/features/api-keys/components/reasoning-efforts-multi-select";
-import { UsageSectionsMultiSelect } from "@/features/api-keys/components/usage-sections-multi-select";
+import { ApiKeyVisibilityFields } from "@/features/api-keys/components/api-key-visibility-fields";
 import { ModelSourceMultiSelect } from "@/features/model-sources/components/model-source-multi-select";
 import type {
   ApiKey,
@@ -97,6 +97,7 @@ type ApiKeyEditDraft = {
   selectedReasoningEfforts: ReasoningEffortType[];
   clearSourceScope: boolean;
   usageSections: string;
+  isShared: boolean;
   limitRules: LimitRuleCreate[];
   expiresAt: Date | null;
   applyToCodexModel: boolean;
@@ -116,6 +117,7 @@ function createApiKeyEditDraft(apiKey: ApiKey): ApiKeyEditDraft {
     selectedReasoningEfforts: apiKey.allowedReasoningEfforts || [],
     clearSourceScope: false,
     usageSections: apiKey.usageSections,
+    isShared: apiKey.isShared,
     limitRules: limitsToCreateRules(apiKey),
     expiresAt: parseDate(apiKey.expiresAt),
     applyToCodexModel: apiKey.applyToCodexModel,
@@ -182,6 +184,7 @@ function ApiKeyEditForm({ apiKey, busy, onSubmit, onClose }: ApiKeyEditFormProps
       transportPolicyOverride: draft.transportPolicyOverride,
       rateLimitAsPaymentRequired: draft.rateLimitAsPaymentRequired,
       usageSections: draft.usageSections,
+      isShared: draft.isShared,
       expiresAt: draft.expiresAt?.toISOString() ?? null,
       isActive: values.isActive,
     };
@@ -272,17 +275,13 @@ function ApiKeyEditForm({ apiKey, busy, onSubmit, onClose }: ApiKeyEditFormProps
               ) : null}
             </div>
 
-            <div className="space-y-1">
-              <div className="text-sm font-medium">{t("apiKeys.form.usageSections")}</div>
-              <UsageSectionsMultiSelect
-                value={draft.usageSections}
-                onChange={(usageSections) => updateDraft({ usageSections })}
-                aria-describedby="edit-api-key-usage-sections-hint"
-              />
-              <p id="edit-api-key-usage-sections-hint" className="text-xs text-muted-foreground">
-                {t("apiKeys.form.usageSectionsHint")}
-              </p>
-            </div>
+            <ApiKeyVisibilityFields
+              idPrefix="edit-api-key"
+              isShared={draft.isShared}
+              usageSections={draft.usageSections}
+              onIsSharedChange={(isShared) => updateDraft({ isShared })}
+              onUsageSectionsChange={(usageSections) => updateDraft({ usageSections })}
+            />
 
             <div className="space-y-1">
               <div className="text-sm font-medium">{t("apiKeys.form.enforcedModel")}</div>

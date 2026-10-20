@@ -37,9 +37,38 @@ Besides proxying, a key can read some data about itself and its account pool. **
 | Account pool usage | The key's Codex account pool: pooled capacity in `/v1/usage` and the account list in `/api/fleet/summary` | On |
 | Reset credits | Listing and redeeming the ChatGPT reset credits of the key's accounts at `/v1/reset-credit`. The listing includes account emails | **Off** |
 
-With both Upstream limits and Account pool usage, a key also sees each account's email and usage in `/api/fleet/summary`, its rows in `/v1/quota-feed`, pool traffic in `/api/fleet/observability`, and may start `POST /api/fleet/refresh`. **Settings → Hide upstream quota from API keys** turns off everything the first two sections grant, for every key. It does not change Reset credits.
+With both Upstream limits and Account pool usage, a key also sees each account's email and usage in `/api/fleet/summary`, its rows in `/v1/quota-feed`, pool traffic in `/api/fleet/observability`, and may start `POST /api/fleet/refresh`. **Settings → Hide upstream quota from API keys** turns off everything the first two sections grant, and the `x-codex-*` quota headers on proxied responses, for every key. It does not change Reset credits.
 
-A key always sees its own usage, limits and expiry in `/v1/usage`. Only enable Reset credits for keys you hold yourself: it lets the holder spend your ChatGPT reset credits.
+A key always sees its own usage, limits and expiry in `/v1/usage`, and its own limits in `/api/codex/usage` (credit windows, plus cost and token limits under `additional_rate_limits`). Only enable Reset credits for keys you hold yourself: it lets the holder spend your ChatGPT reset credits.
+
+### Capabilities by section
+
+What an unshared key can reach, and what it needs:
+
+| Capability | Endpoint | Needs |
+|---|---|---|
+| Own usage, limits and expiry | `/v1/usage`, `/api/codex/usage` | Always |
+| Pool-wide upstream quota | `/v1/usage` `upstream_limits` | Upstream limits |
+| CLIProxyAPI credential quota | `/v1/quota-feed` (Claude, xAI rows) | Upstream limits |
+| Pooled Claude utilization | `/api/oauth/usage` | Always (empty while the privacy setting is on) |
+| Pooled account capacity | `/v1/usage` `account_pool_usage` | Account pool usage |
+| Account ids and status | `/api/fleet/summary` | Account pool usage |
+| Account emails and per-account usage | `/api/fleet/summary`, Codex rows of `/v1/quota-feed` | Upstream limits and Account pool usage |
+| Other traffic on the pool | `/api/fleet/observability` | Upstream limits and Account pool usage |
+| Trigger a usage refresh | `POST /api/fleet/refresh` | Upstream limits and Account pool usage |
+| List and redeem reset credits (with account emails) | `GET`/`POST /v1/reset-credit` | Reset credits |
+| Warm up the pool's accounts | `POST /v1/warmup` | Always |
+| Pool quota headers on responses | `x-codex-*` headers | Always (off while the privacy setting is on) |
+
+### Shared keys
+
+Turn on **Shared key** (create and edit dialogs) for a key you give to a friend or client. A shared key sees only its own usage, limits and expiry, whatever its usage sections say:
+
+- `/v1/usage` and `/api/codex/usage` show only the key's own usage, limits and expiry.
+- `/v1/reset-credit`, `/v1/quota-feed`, `/api/oauth/usage` and `/v1/warmup` answer `403 shared_api_key_not_allowed`; `/api/fleet/*` answers `403 permission_denied`.
+- Proxied responses carry no `x-codex-*` quota headers.
+
+While the toggle is on, the usage-sections picker is disabled. The sections are kept, so turning the toggle off restores what the key saw before. Shared keys carry a **Shared** badge in the key lists. New and existing keys are unshared.
 
 ## Reasoning effort policies
 

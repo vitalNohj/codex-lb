@@ -78,6 +78,80 @@ describe("ApiKeyEditDialog", () => {
     expect("limits" in payload).toBe(false);
   });
 
+  it("overrides usage sections while shared and restores them when unshared", async () => {
+    const user = userEvent.setup();
+    const onSubmit = vi.fn().mockResolvedValue(undefined);
+    const sections = "upstream_limits,account_pool_usage,reset_credits";
+
+    renderWithProviders(
+      <ApiKeyEditDialog
+        open
+        busy={false}
+        apiKey={createApiKey({ usageSections: sections })}
+        onOpenChange={vi.fn()}
+        onSubmit={onSubmit}
+      />,
+    );
+
+    const sharedToggle = screen.getByRole("checkbox", { name: "Shared key" });
+    const picker = screen.getByRole("button", { name: "All sections" });
+    expect(sharedToggle).not.toBeChecked();
+    expect(picker).toBeEnabled();
+
+    await user.click(sharedToggle);
+    expect(sharedToggle).toBeChecked();
+    expect(picker).toBeDisabled();
+    expect(picker).toHaveAccessibleDescription(/Overridden while Shared key is on/);
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => {
+      expect(onSubmit).toHaveBeenCalledTimes(1);
+    });
+    // The stored sections travel unchanged with the flag.
+    expect(onSubmit.mock.calls[0][0]).toMatchObject({ isShared: true, usageSections: sections });
+
+    await user.click(sharedToggle);
+    expect(picker).toBeEnabled();
+    expect(screen.queryByText(/Overridden while Shared key is on/)).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => {
+      expect(onSubmit).toHaveBeenCalledTimes(2);
+    });
+    expect(onSubmit.mock.calls[1][0]).toMatchObject({ isShared: false, usageSections: sections });
+  });
+
+  it("shows an existing shared key as shared with its sections kept", () => {
+    renderWithProviders(
+      <ApiKeyEditDialog
+        open
+        busy={false}
+        apiKey={createApiKey({ isShared: true, usageSections: "upstream_limits" })}
+        onOpenChange={vi.fn()}
+        onSubmit={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole("checkbox", { name: "Shared key" })).toBeChecked();
+    expect(screen.getByRole("button", { name: "Upstream limits" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "What is a shared key?" })).toBeInTheDocument();
+  });
+
+  it("explains the shared key in its help tooltip", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(
+      <ApiKeyEditDialog
+        open
+        busy={false}
+        apiKey={createApiKey()}
+        onOpenChange={vi.fn()}
+        onSubmit={vi.fn()}
+      />,
+    );
+
+    await user.hover(screen.getByRole("button", { name: "What is a shared key?" }));
+
+    expect(await screen.findByRole("tooltip")).toHaveTextContent(/give to a friend or client/);
+  });
+
   it("submits reset credits when an admin enables them on an existing key", async () => {
     const user = userEvent.setup();
     const onSubmit = vi.fn().mockResolvedValue(undefined);

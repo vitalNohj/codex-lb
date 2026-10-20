@@ -104,6 +104,56 @@ describe("ApiKeyCreateDialog", () => {
     expect(onSubmit.mock.calls[0][0].usageSections).toBe("upstream_limits,account_pool_usage,reset_credits");
   });
 
+  it("creates unshared keys by default and submits the shared opt-in", async () => {
+    const user = userEvent.setup();
+    const onSubmit = vi.fn().mockResolvedValue(undefined);
+
+    renderWithProviders(
+      <ApiKeyCreateDialog
+        open
+        busy={false}
+        onOpenChange={vi.fn()}
+        onSubmit={onSubmit}
+      />,
+    );
+
+    await user.type(screen.getByLabelText("Name"), "Unshared key");
+    await user.click(screen.getByRole("button", { name: "Create" }));
+    await waitFor(() => {
+      expect(onSubmit).toHaveBeenCalledTimes(1);
+    });
+    expect(onSubmit.mock.calls[0][0].isShared).toBe(false);
+  });
+
+  it("disables the usage sections picker for a shared key", async () => {
+    const user = userEvent.setup();
+    const onSubmit = vi.fn().mockResolvedValue(undefined);
+
+    renderWithProviders(
+      <ApiKeyCreateDialog
+        open
+        busy={false}
+        onOpenChange={vi.fn()}
+        onSubmit={onSubmit}
+      />,
+    );
+
+    await user.type(screen.getByLabelText("Name"), "Friend key");
+    const sharedToggle = screen.getByRole("checkbox", { name: "Shared key" });
+    expect(sharedToggle).toHaveAccessibleDescription(/own usage, limits and expiry/);
+    await user.click(sharedToggle);
+    expect(screen.getByRole("button", { name: "Upstream limits, Account pool usage" })).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: "Create" }));
+
+    await waitFor(() => {
+      expect(onSubmit).toHaveBeenCalledTimes(1);
+    });
+    expect(onSubmit.mock.calls[0][0]).toMatchObject({
+      isShared: true,
+      usageSections: "upstream_limits,account_pool_usage",
+    });
+  });
+
   it("creates keys with 429 by default and submits the 402 opt-in", async () => {
     const user = userEvent.setup();
     const onSubmit = vi.fn().mockResolvedValue(undefined);

@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 import { EmptyState } from "@/components/empty-state";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { SharedKeyBadge } from "@/features/api-keys/components/shared-key-badge";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -132,7 +133,12 @@ export function ApiKeyTable({ keys, busy, onEdit, onDelete, onRegenerate }: ApiK
 
           return (
             <TableRow key={apiKey.id}>
-              <TableCell className="pl-4 font-medium truncate">{apiKey.name}</TableCell>
+              <TableCell className="pl-4 font-medium">
+                <div className="flex min-w-0 items-center gap-1.5">
+                  <span className="truncate">{apiKey.name}</span>
+                  {apiKey.isShared ? <SharedKeyBadge /> : null}
+                </div>
+              </TableCell>
               <TableCell className="truncate font-mono text-xs">{apiKey.keyPrefix}</TableCell>
               <TableCell className="truncate">{models}</TableCell>
               <TableCell className="truncate text-xs tabular-nums">{trafficClass}</TableCell>

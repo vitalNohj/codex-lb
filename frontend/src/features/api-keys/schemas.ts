@@ -54,6 +54,7 @@ export const ApiKeySchema = z.object({
     .default("foreground"),
   transportPolicyOverride: z.enum(TRANSPORT_POLICY_OVERRIDES).nullable().default(null),
   rateLimitAsPaymentRequired: z.boolean().default(false),
+  isShared: z.boolean().default(false),
   enforcedReasoningEffort: z.enum(ENFORCED_REASONING_EFFORTS).nullable().default(null),
   enforcedServiceTier: z
     .enum(SERVICE_TIERS)
@@ -91,6 +92,7 @@ export const ApiKeyCreateRequestSchema = z.object({
   trafficClass: z.enum(TRAFFIC_CLASSES).optional(),
   transportPolicyOverride: z.enum(TRANSPORT_POLICY_OVERRIDES).nullable().optional(),
   rateLimitAsPaymentRequired: z.boolean().optional(),
+  isShared: z.boolean().optional(),
   enforcedModel: z.string().min(1).nullable().optional(),
   allowedReasoningEfforts: z.array(z.enum(REASONING_EFFORTS)).min(1).nullable().optional(),
   enforcedReasoningEffort: z.enum(ENFORCED_REASONING_EFFORTS).nullable().optional(),
@@ -117,6 +119,7 @@ export const ApiKeyUpdateRequestSchema = z.object({
   trafficClass: z.enum(TRAFFIC_CLASSES).optional(),
   transportPolicyOverride: z.enum(TRANSPORT_POLICY_OVERRIDES).nullable().optional(),
   rateLimitAsPaymentRequired: z.boolean().optional(),
+  isShared: z.boolean().optional(),
   enforcedModel: z.string().min(1).nullable().optional(),
   allowedReasoningEfforts: z.array(z.enum(REASONING_EFFORTS)).min(1).nullable().optional(),
   enforcedReasoningEffort: z.enum(ENFORCED_REASONING_EFFORTS).nullable().optional(),

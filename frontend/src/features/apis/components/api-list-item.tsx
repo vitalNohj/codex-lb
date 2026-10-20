@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { MiniQuotaBar } from "@/components/mini-quota-bar";
+import { SharedKeyBadge } from "@/features/api-keys/components/shared-key-badge";
 import type { ApiKey } from "@/features/api-keys/schemas";
 import { formatPercentNullable } from "@/utils/formatters";
 
@@ -76,6 +77,7 @@ export function ApiListItem({ apiKey, selected, onSelect }: ApiListItemProps) {
         <div className="min-w-0 flex-1">
           <p className="truncate text-sm font-medium">{apiKey.name}</p>
         </div>
+        {apiKey.isShared ? <SharedKeyBadge /> : null}
         <Badge
           className={cn(
             !apiKey.isActive || expired

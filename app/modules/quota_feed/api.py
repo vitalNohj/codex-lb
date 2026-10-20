@@ -10,7 +10,7 @@ from app.core.auth.dependencies import (
     validate_dashboard_session,
     validate_required_proxy_api_key_authorization,
 )
-from app.core.exceptions import DashboardAuthError, ProxyAuthError
+from app.core.exceptions import DashboardAuthError, ProxyAuthError, ProxySharedApiKeyDenied
 from app.dependencies import QuotaFeedContext, get_quota_feed_context
 from app.modules.api_keys.service import ApiKeyData
 from app.modules.api_keys.visibility import api_key_visibility
@@ -57,10 +57,13 @@ async def _api_key_scope(api_key: ApiKeyData) -> QuotaFeedScope:
     Codex rows are per-account usage windows of the key's account pool, so
     they need the same visibility as per-account usage on the fleet summary.
     CLIProxyAPI rows are pool-wide upstream quota and need ``upstream_limits``.
-    The global privacy setting hides both.
+    The global privacy setting hides both. A shared key is refused: the feed
+    only describes the owner's pool.
     """
 
     visibility = await api_key_visibility(api_key)
+    if visibility.shared:
+        raise ProxySharedApiKeyDenied()
     codex_account_ids: frozenset[str] | None
     if not visibility.account_usage:
         codex_account_ids = frozenset()
