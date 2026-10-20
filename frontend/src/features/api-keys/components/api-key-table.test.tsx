@@ -47,6 +47,26 @@ describe("ApiKeyTable", () => {
     expect(within(secondRow).getByText("No Limit")).toBeInTheDocument();
   });
 
+  it("badges shared keys only", () => {
+    const keys = [
+      createApiKey({ id: "shared-key", name: "Friend key", isShared: true }),
+      createApiKey({ id: "own-key", name: "Own key", isShared: false }),
+    ];
+    renderWithProviders(
+      <ApiKeyTable
+        keys={keys}
+        busy={false}
+        onEdit={vi.fn()}
+        onDelete={vi.fn()}
+        onRegenerate={vi.fn()}
+      />,
+    );
+
+    const rows = screen.getAllByRole("row");
+    expect(within(rows[1]).getByText("Shared")).toBeInTheDocument();
+    expect(within(rows[2]).queryByText("Shared")).not.toBeInTheDocument();
+  });
+
   it("renders traffic class labels in the traffic column", () => {
     const keys = [
       createApiKey({ id: "foreground-key", trafficClass: "foreground" }),

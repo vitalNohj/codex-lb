@@ -2038,6 +2038,14 @@ class ApiKey(Base):
         server_default=false(),
         nullable=False,
     )
+    # A shared key (handed to a friend or client) sees only its own usage,
+    # limits and expiry, whatever its usage sections say.
+    is_shared: Mapped[bool] = mapped_column(
+        Boolean,
+        default=False,
+        server_default=false(),
+        nullable=False,
+    )
     usage_sections: Mapped[str | None] = mapped_column(
         Text,
         nullable=False,

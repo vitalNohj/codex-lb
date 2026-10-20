@@ -43,6 +43,15 @@ class ProxyReasoningEffortNotAllowed(AppError):
     error_type = "permission_error"
 
 
+class ProxySharedApiKeyDenied(AppError):
+    """A shared API key asked for data about the owner's pool."""
+
+    status_code = 403
+    code = "shared_api_key_not_allowed"
+    error_type = "permission_error"
+    message = "This endpoint is not available to shared API keys"
+
+
 class ProxyRateLimitError(AppError):
     status_code = 429
     code = "rate_limit_exceeded"

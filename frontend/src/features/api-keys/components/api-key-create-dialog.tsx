@@ -28,7 +28,7 @@ import { ExpiryPicker } from "@/features/api-keys/components/expiry-picker";
 import { LimitRulesEditor } from "@/features/api-keys/components/limit-rules-editor";
 import { ModelMultiSelect } from "@/features/api-keys/components/model-multi-select";
 import { ReasoningEffortsMultiSelect } from "@/features/api-keys/components/reasoning-efforts-multi-select";
-import { UsageSectionsMultiSelect } from "@/features/api-keys/components/usage-sections-multi-select";
+import { ApiKeyVisibilityFields } from "@/features/api-keys/components/api-key-visibility-fields";
 import { ModelSourceMultiSelect } from "@/features/model-sources/components/model-source-multi-select";
 import type {
   ApiKeyCreateRequest,
@@ -69,6 +69,7 @@ type ApiKeyCreateDraft = {
   selectedSourceIds: string[];
   selectedReasoningEfforts: ReasoningEffortType[];
   usageSections: string;
+  isShared: boolean;
   limitRules: LimitRuleCreate[];
   expiresAt: Date | null;
   enforcedModel: string;
@@ -86,6 +87,7 @@ const initialApiKeyCreateDraft: ApiKeyCreateDraft = {
   selectedSourceIds: [],
   selectedReasoningEfforts: [],
   usageSections: "upstream_limits,account_pool_usage",
+  isShared: false,
   limitRules: [],
   expiresAt: null,
   enforcedModel: "",
@@ -125,6 +127,7 @@ function ApiKeyCreateForm({ busy, onClose, onSubmit }: ApiKeyCreateFormProps) {
       ...(draft.selectedAccountIds.length > 0 ? { assignedAccountIds: draft.selectedAccountIds } : {}),
       ...(draft.selectedSourceIds.length > 0 ? { assignedSourceIds: draft.selectedSourceIds } : {}),
       usageSections: draft.usageSections,
+      isShared: draft.isShared,
       enforcedModel: draft.enforcedModel.trim() ? draft.enforcedModel.trim() : null,
       enforcedReasoningEffort:
         draft.enforcedReasoningEffort === "none"
@@ -200,17 +203,13 @@ function ApiKeyCreateForm({ busy, onClose, onSubmit }: ApiKeyCreateFormProps) {
               />
             </div>
 
-            <div className="space-y-1">
-              <label className="text-sm font-medium">{t("apiKeys.form.usageSections")}</label>
-              <UsageSectionsMultiSelect
-                value={draft.usageSections}
-                onChange={(usageSections) => updateDraft({ usageSections })}
-                aria-describedby="create-api-key-usage-sections-hint"
-              />
-              <p id="create-api-key-usage-sections-hint" className="text-xs text-muted-foreground">
-                {t("apiKeys.form.usageSectionsHint")}
-              </p>
-            </div>
+            <ApiKeyVisibilityFields
+              idPrefix="create-api-key"
+              isShared={draft.isShared}
+              usageSections={draft.usageSections}
+              onIsSharedChange={(isShared) => updateDraft({ isShared })}
+              onUsageSectionsChange={(usageSections) => updateDraft({ usageSections })}
+            />
 
             <div className="space-y-1">
               <label htmlFor="create-api-key-enforced-model" className="text-sm font-medium">{t("apiKeys.form.enforcedModel")}</label>

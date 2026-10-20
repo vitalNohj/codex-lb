@@ -14,7 +14,11 @@ from app.db.session import get_background_session
 from app.dependencies import AccountsContext, get_accounts_context
 from app.modules.accounts.repository import AccountsRepository
 from app.modules.api_keys.service import ApiKeyData
-from app.modules.api_keys.visibility import api_key_visibility
+from app.modules.api_keys.visibility import (
+    SHARED_API_KEY_DENIAL_MESSAGE,
+    ApiKeyVisibility,
+    api_key_visibility,
+)
 from app.modules.fleet.mappers import build_fleet_account_summaries
 from app.modules.fleet.observability import build_fleet_observability
 from app.modules.fleet.schemas import FleetObservabilityResponse, FleetRefreshResponse, FleetSummaryResponse
@@ -41,8 +45,14 @@ def _visible_account_ids(api_key: ApiKeyData) -> list[str] | None:
     return list(api_key.assigned_account_ids) if api_key.account_assignment_scope_enabled else None
 
 
-async def _can_view_fleet_usage(api_key: ApiKeyData) -> bool:
-    return (await api_key_visibility(api_key)).account_usage
+async def _fleet_visibility(api_key: ApiKeyData) -> ApiKeyVisibility:
+    """The fleet endpoints describe the owner's account pool, so a shared key
+    is refused outright rather than shown an empty fleet."""
+
+    visibility = await api_key_visibility(api_key)
+    if visibility.shared:
+        raise DashboardPermissionError(SHARED_API_KEY_DENIAL_MESSAGE)
+    return visibility
 
 
 @router.get("/summary", response_model=FleetSummaryResponse)
@@ -52,7 +62,7 @@ async def get_fleet_summary(
 ) -> FleetSummaryResponse:
     """Read-only, minimal per-account capacity summary for fleet consumers."""
 
-    visibility = await api_key_visibility(api_key)
+    visibility = await _fleet_visibility(api_key)
     if not visibility.account_pool:
         # The account list is the key's account pool. Without that section
         # (or with upstream quota hidden) the key sees no accounts at all.
@@ -91,7 +101,7 @@ async def get_fleet_observability(
     return await build_fleet_observability(
         context.session,
         visible_account_ids=_visible_account_ids(api_key),
-        include_usage=await _can_view_fleet_usage(api_key),
+        include_usage=(await _fleet_visibility(api_key)).account_usage,
     )
 
 
@@ -101,7 +111,7 @@ async def refresh_fleet_usage(
 ) -> FleetRefreshResponse:
     """Request a bounded usage refresh using codex-lb's normal refresh rules."""
 
-    if not await _can_view_fleet_usage(api_key):
+    if not (await _fleet_visibility(api_key)).account_usage:
         raise DashboardPermissionError("This API key cannot view fleet usage, so it cannot refresh it")
     if not is_control_plane_task_admission_open():
         raise DashboardServiceUnavailableError("Server is draining")

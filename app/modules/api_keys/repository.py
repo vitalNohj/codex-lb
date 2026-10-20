@@ -359,6 +359,7 @@ class ApiKeysRepository:
         traffic_class: str | _Unset = _UNSET,
         transport_policy_override: str | None | _Unset = _UNSET,
         rate_limit_as_payment_required: bool | _Unset = _UNSET,
+        is_shared: bool | _Unset = _UNSET,
         usage_sections: str | _Unset = _UNSET,
         account_assignment_scope_enabled: bool | _Unset = _UNSET,
         source_assignment_scope_enabled: bool | _Unset = _UNSET,
@@ -401,6 +402,9 @@ class ApiKeysRepository:
         if rate_limit_as_payment_required is not _UNSET:
             assert isinstance(rate_limit_as_payment_required, bool)
             row.rate_limit_as_payment_required = rate_limit_as_payment_required
+        if is_shared is not _UNSET:
+            assert isinstance(is_shared, bool)
+            row.is_shared = is_shared
         if usage_sections is not _UNSET:
             assert isinstance(usage_sections, str)
             row.usage_sections = usage_sections

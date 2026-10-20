@@ -93,6 +93,7 @@ from app.core.exceptions import (
     ProxyAuthError,
     ProxyModelNotAllowed,
     ProxyRateLimitError,
+    ProxySharedApiKeyDenied,
     ProxyUpstreamError,
 )
 from app.core.metrics.prometheus import (
@@ -188,8 +189,8 @@ from app.modules.api_keys.service import (
 )
 from app.modules.api_keys.visibility import (
     api_key_can_use_reset_credits,
+    api_key_is_shared,
     api_key_visibility,
-    upstream_quota_hidden_from_api_keys,
 )
 from app.modules.claude_sidecar.schemas import AnthropicOAuthUsageResponse
 from app.modules.claude_sidecar.service import ClaudeSidecarService
@@ -417,6 +418,7 @@ from app.modules.proxy.sidecar_routing import (
 )
 from app.modules.proxy.sidecar_upstream_errors import client_disconnected_response, has_usable_sidecar_api_key
 from app.modules.proxy.types import (
+    AdditionalRateLimitData,
     CreditStatusDetailsData,
     RateLimitResetCreditsData,
     RateLimitStatusPayloadData,
@@ -2367,9 +2369,11 @@ def _require_reset_credit_access(api_key: ApiKeyData) -> None:
     """Reset credits reveal account emails and spend the owner's credits.
 
     A key reaches them only when an admin enabled its ``reset_credits``
-    usage section.
+    usage section, and never when it is shared.
     """
 
+    if api_key_is_shared(api_key):
+        raise ProxySharedApiKeyDenied()
     if not api_key_can_use_reset_credits(api_key):
         raise HTTPException(status_code=403, detail="Reset credits are not enabled for this API key")
 
@@ -2517,6 +2521,9 @@ async def _run_v1_warmup(
     capability_transport_denial = await _required_capability_http_transport_denial(request, api_key)
     if capability_transport_denial is not None:
         return capability_transport_denial
+    if api_key is not None and api_key_is_shared(api_key):
+        # Warmup fans out over the owner's accounts and returns their ids.
+        raise ProxySharedApiKeyDenied()
     if mode not in _WARMUP_MODES:
         return _logged_error_json_response(
             request,
@@ -2675,13 +2682,49 @@ async def _build_codex_usage_payload_for_api_key(api_key: ApiKeyData) -> RateLim
             _codex_usage_window_snapshot(monthly_credit_limit),
         ),
         credits=_codex_usage_credit_snapshot(primary_credit_limit, secondary_credit_limit, monthly_credit_limit),
+        additional_rate_limits=_codex_usage_additional_key_limits(
+            key_limits,
+            primary=(primary_credit_limit, secondary_credit_limit, monthly_credit_limit),
+        ),
     )
 
 
-async def _hide_upstream_quota_for_api_key_clients(api_key: ApiKeyData | None) -> bool:
-    if api_key is None:
-        return False
-    return await upstream_quota_hidden_from_api_keys()
+def _codex_usage_additional_key_limits(
+    limits: list[V1UsageLimitResponse],
+    *,
+    primary: tuple[V1UsageLimitResponse | None, ...],
+) -> list[AdditionalRateLimitData]:
+    """The key's own limits that the credit windows above do not show.
+
+    Cost and token budgets (and model-scoped credit budgets) would otherwise
+    be invisible in Codex ``/status``; each one is a single-window entry.
+    """
+
+    shown = {id(limit) for limit in primary if limit is not None}
+    additional: list[AdditionalRateLimitData] = []
+    for limit in limits:
+        if id(limit) in shown:
+            continue
+        window = _codex_usage_window_snapshot(limit)
+        if window is None:
+            continue
+        name_parts = ["api_key", limit.limit_type, limit.limit_window]
+        if limit.model_filter is not None:
+            name_parts.append(limit.model_filter)
+        quota_key = ":".join(name_parts)
+        label = f"API key {limit.limit_type} ({limit.limit_window})"
+        if limit.model_filter is not None:
+            label = f"{label} {limit.model_filter}"
+        additional.append(
+            AdditionalRateLimitData(
+                limit_name=quota_key,
+                metered_feature=f"api_key_{limit.limit_type}",
+                quota_key=quota_key,
+                display_label=label,
+                rate_limit=_rate_limit_details(window, None),
+            )
+        )
+    return additional
 
 
 async def _apply_api_key_enforcement_with_fast_mode_policy(
@@ -2714,7 +2757,7 @@ async def _rate_limit_headers_for_request(
     context: ProxyContext,
     api_key: ApiKeyData | None,
 ) -> dict[str, str]:
-    if await _hide_upstream_quota_for_api_key_clients(api_key):
+    if api_key is not None and not (await api_key_visibility(api_key)).quota_headers:
         return {}
     return await context.service.rate_limit_headers()
 
@@ -8180,7 +8223,11 @@ async def _transcribe_request(
 async def anthropic_oauth_usage(
     api_key: ApiKeyData = Security(validate_usage_api_key),
 ) -> JSONResponse:
-    hide_upstream = await _hide_upstream_quota_for_api_key_clients(api_key)
+    visibility = await api_key_visibility(api_key)
+    if visibility.shared:
+        # Pooled Claude utilization describes the owner's accounts.
+        raise ProxySharedApiKeyDenied()
+    hide_upstream = not visibility.quota_headers
     async with get_background_session() as session:
         service = ClaudeSidecarService(
             SettingsRepository(session),

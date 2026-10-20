@@ -51,6 +51,7 @@ def _to_response(row: ApiKeyData) -> ApiKeyResponse:
         traffic_class=row.traffic_class,
         transport_policy_override=row.transport_policy_override,
         rate_limit_as_payment_required=row.rate_limit_as_payment_required,
+        is_shared=row.is_shared,
         usage_sections=row.usage_sections,
         expires_at=row.expires_at,
         is_active=row.is_active,
@@ -142,6 +143,7 @@ async def create_api_key(
                 traffic_class=payload.traffic_class or "foreground",
                 transport_policy_override=payload.transport_policy_override,
                 rate_limit_as_payment_required=payload.rate_limit_as_payment_required,
+                is_shared=payload.is_shared,
                 usage_sections=(
                     payload.usage_sections
                     if payload.usage_sections is not None
@@ -209,6 +211,8 @@ async def update_api_key(
         transport_policy_override_set="transport_policy_override" in fields,
         rate_limit_as_payment_required=payload.rate_limit_as_payment_required,
         rate_limit_as_payment_required_set="rate_limit_as_payment_required" in fields,
+        is_shared=payload.is_shared,
+        is_shared_set="is_shared" in fields,
         usage_sections=payload.usage_sections,
         usage_sections_set="usage_sections" in fields,
         expires_at=payload.expires_at,

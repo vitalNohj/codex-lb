@@ -16,6 +16,23 @@ describe("ApiList", () => {
     expect(screen.queryByText("Adjust filters")).not.toBeInTheDocument();
   });
 
+  it("badges shared keys in the list", () => {
+    render(
+      <ApiList
+        apiKeys={[
+          createApiKey({ id: "shared", name: "Friend key", isShared: true }),
+          createApiKey({ id: "own", name: "Own key", isShared: false }),
+        ]}
+        selectedKeyId={null}
+        onSelect={() => {}}
+        onOpenCreate={() => {}}
+      />,
+    );
+
+    expect(screen.getAllByText("Shared")).toHaveLength(1);
+    expect(screen.getByRole("button", { name: /Friend key/ })).toHaveTextContent("Shared");
+  });
+
   it("shows filter-empty copy when keys exist but none match", async () => {
     const user = userEvent.setup();
 
