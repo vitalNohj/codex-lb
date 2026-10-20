@@ -7,13 +7,17 @@ stays off; stored sidecar snapshots are still reported.
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 from collections import defaultdict
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from app.core.balancer import ERROR_BACKOFF_THRESHOLD, AccountState
+from app.core.config.settings import get_settings
 from app.core.config.settings_cache import get_settings_cache
+from app.core.crypto import get_or_create_key
 from app.db.models import Account, AccountStatus, UsageHistory
 from app.modules.accounts.repository import AccountsRepository
 from app.modules.claude_sidecar.capacity_hold import StoredSnapshotReader
@@ -49,18 +53,50 @@ _OAUTH_SOURCE = {"claude": "anthropic_oauth_usage", "codex": "codex_oauth_usage"
 _XAI_WINDOW_KINDS = frozenset({"weekly", "monthly", "credits"})
 
 
+_OPAQUE_ACCOUNT_KEY_CONTEXT = b"codex-lb.quota-feed.account-key.v1"
+_OPAQUE_ACCOUNT_KEY_HEX_CHARS = 32
+
+
 @dataclass(frozen=True, slots=True)
 class QuotaFeedScope:
-    """Which pool rows this caller may see.
+    """Which pool rows this caller may see, and how they are labelled.
 
-    ``codex_account_ids is None`` means every Codex account. A scoped proxy
-    key passes the ids assigned to that key. Sidecar rows are pool-wide:
-    those credentials are not assigned per key, and every authenticated
-    caller that can send sidecar traffic can read their headroom.
+    ``codex_account_ids is None`` means every Codex account; an empty set
+    means none. A scoped proxy key passes the ids assigned to that key.
+    ``include_sidecar`` adds the pool-wide CLIProxyAPI credential rows.
+
+    ``opaque_account_keys_for`` is the API key id when the caller is a proxy
+    API key. Each row's ``accountKey`` is then an opaque value derived from
+    that key id and the router's account id, so a key holder never sees the
+    raw id (a Codex id embeds the ChatGPT account id) and two keys cannot
+    match their rows against each other. ``None`` keeps the router ids for
+    the dashboard admin.
     """
 
     codex_account_ids: frozenset[str] | None
     include_sidecar: bool
+    opaque_account_keys_for: str | None = None
+
+
+def opaque_account_key_mapper(api_key_id: str) -> Callable[[str], str]:
+    """Stable per-key pseudonym for router account ids.
+
+    Keyed with the deployment's encryption key, which every replica shares,
+    so the value is the same on every replica and across restarts.
+    """
+
+    secret = hmac.new(
+        get_or_create_key(get_settings().encryption_key_file),
+        _OPAQUE_ACCOUNT_KEY_CONTEXT,
+        hashlib.sha256,
+    ).digest()
+    key_secret = hmac.new(secret, api_key_id.encode("utf-8"), hashlib.sha256).digest()
+
+    def account_key(account_id: str) -> str:
+        digest = hmac.new(key_secret, account_id.encode("utf-8"), hashlib.sha256).hexdigest()
+        return digest[:_OPAQUE_ACCOUNT_KEY_HEX_CHARS]
+
+    return account_key
 
 
 class QuotaFeedService:
@@ -70,7 +106,7 @@ class QuotaFeedService:
 
     async def build(self, scope: QuotaFeedScope) -> QuotaFeedResponse:
         now = datetime.now(timezone.utc)
-        accounts = await self._accounts.list_accounts()
+        accounts = [] if scope.codex_account_ids == frozenset() else await self._accounts.list_accounts()
         if scope.codex_account_ids is not None:
             accounts = [account for account in accounts if account.id in scope.codex_account_ids]
         account_ids = None if scope.codex_account_ids is None else [account.id for account in accounts]
@@ -107,6 +143,11 @@ class QuotaFeedService:
             sidecar_accounts=sidecar_accounts,
             holds=holds,
             now=now,
+            account_key=(
+                opaque_account_key_mapper(scope.opaque_account_keys_for)
+                if scope.opaque_account_keys_for is not None
+                else None
+            ),
         )
 
 
@@ -129,6 +170,7 @@ def compose_quota_feed(
     sidecar_accounts: Sequence[SidecarAuthQuota],
     holds: Sequence[SidecarRateLimitHold],
     now: datetime,
+    account_key: Callable[[str], str] | None = None,
 ) -> QuotaFeedResponse:
     rows: list[tuple[AccountState, QuotaFeedAccount]] = [
         _codex_row(state, codex_long_window_ids.get(state.account_id, "seven_day")) for state in codex_states
@@ -138,6 +180,13 @@ def compose_quota_feed(
         if state is None:
             continue
         rows.append(_sidecar_row(auth, state))
+    if account_key is not None:
+        # Relabel before sorting, so the row order carries nothing of the
+        # raw ids either.
+        rows = [
+            (state, account.model_copy(update={"account_key": account_key(account.account_key)}))
+            for state, account in rows
+        ]
     rows.sort(key=lambda item: (item[1].provider, item[1].account_key))
     grouped: dict[str, list[tuple[AccountState, QuotaFeedAccount]]] = defaultdict(list)
     for state, account in rows:

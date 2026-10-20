@@ -12,6 +12,8 @@ from app.core.auth.dependencies import (
 )
 from app.core.exceptions import DashboardAuthError, ProxyAuthError
 from app.dependencies import QuotaFeedContext, get_quota_feed_context
+from app.modules.api_keys.service import ApiKeyData
+from app.modules.api_keys.visibility import api_key_visibility
 from app.modules.dashboard_auth.service import DASHBOARD_SESSION_COOKIE, get_dashboard_session_store
 from app.modules.quota_feed.schemas import QuotaFeedResponse
 from app.modules.quota_feed.service import QuotaFeedScope
@@ -41,15 +43,36 @@ async def require_quota_feed_caller(request: Request) -> QuotaFeedScope:
     if authorization is not None:
         api_key = await validate_required_proxy_api_key_authorization(authorization)
         record_authenticated_api_key(request, api_key)
-        if api_key.account_assignment_scope_enabled:
-            assigned = frozenset(account_id for account_id in api_key.assigned_account_ids if account_id)
-            return QuotaFeedScope(codex_account_ids=assigned, include_sidecar=True)
-        return QuotaFeedScope(codex_account_ids=None, include_sidecar=True)
+        return await _api_key_scope(api_key)
 
     principal = await _dashboard_principal(request)
     if principal is None or principal.role != DashboardRole.ADMIN:
         raise ProxyAuthError("Authentication required")
     return QuotaFeedScope(codex_account_ids=None, include_sidecar=True)
+
+
+async def _api_key_scope(api_key: ApiKeyData) -> QuotaFeedScope:
+    """Rows a proxy API key may see, following its usage visibility.
+
+    Codex rows are per-account usage windows of the key's account pool, so
+    they need the same visibility as per-account usage on the fleet summary.
+    CLIProxyAPI rows are pool-wide upstream quota and need ``upstream_limits``.
+    The global privacy setting hides both.
+    """
+
+    visibility = await api_key_visibility(api_key)
+    codex_account_ids: frozenset[str] | None
+    if not visibility.account_usage:
+        codex_account_ids = frozenset()
+    elif api_key.account_assignment_scope_enabled:
+        codex_account_ids = frozenset(account_id for account_id in api_key.assigned_account_ids if account_id)
+    else:
+        codex_account_ids = None
+    return QuotaFeedScope(
+        codex_account_ids=codex_account_ids,
+        include_sidecar=visibility.upstream_limits,
+        opaque_account_keys_for=api_key.id,
+    )
 
 
 async def _dashboard_principal(request: Request) -> DashboardPrincipal | None:

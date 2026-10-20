@@ -2600,3 +2600,33 @@ async def test_a_pinned_claude_turn_that_reads_no_cache_is_counted_as_a_miss(
     response = await async_client.post("/v1/chat/completions", json={**_chat(), "prompt_cache_key": "pck-miss"})
     assert response.status_code == 200
     assert counted == ["miss", "hit"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("hidden", [False, True])
+async def test_responses_claude_dispatch_follows_api_key_quota_privacy(
+    async_client, sidecar_enabled, fake_sidecar, monkeypatch, hidden
+):
+    """Pool-wide quota headers on the chat-provider Responses path obey the privacy setting."""
+
+    async def pool_headers(_self):
+        return {"x-codex-primary-used-percent": "42.0"}
+
+    monkeypatch.setattr("app.modules.proxy.service.ProxyService.rate_limit_headers", pool_headers)
+    await _enable_api_key_auth(async_client)
+    response = await async_client.put("/api/settings", json={"hideUpstreamQuotaFromApiKeys": hidden})
+    assert response.status_code == 200
+    key = await _create_api_key("claude-quota-privacy-key")
+
+    response = await async_client.post(
+        "/v1/responses",
+        headers={"Authorization": f"Bearer {key.key}"},
+        json=_claude_image_input(),
+    )
+
+    assert response.status_code == 200
+    assert len(fake_sidecar.chat_payloads) == 1
+    if hidden:
+        assert "x-codex-primary-used-percent" not in response.headers
+    else:
+        assert response.headers["x-codex-primary-used-percent"] == "42.0"

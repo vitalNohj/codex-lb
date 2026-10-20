@@ -78,6 +78,32 @@ describe("ApiKeyEditDialog", () => {
     expect("limits" in payload).toBe(false);
   });
 
+  it("submits reset credits when an admin enables them on an existing key", async () => {
+    const user = userEvent.setup();
+    const onSubmit = vi.fn().mockResolvedValue(undefined);
+
+    renderWithProviders(
+      <ApiKeyEditDialog
+        open
+        busy={false}
+        apiKey={createApiKey({ usageSections: "upstream_limits" })}
+        onOpenChange={vi.fn()}
+        onSubmit={onSubmit}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Upstream limits" }));
+    expect(screen.getByRole("menuitemcheckbox", { name: "Reset credits" })).not.toBeChecked();
+    await user.click(screen.getByRole("menuitemcheckbox", { name: "Reset credits" }));
+    await user.keyboard("{Escape}");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => {
+      expect(onSubmit).toHaveBeenCalledTimes(1);
+    });
+    expect(onSubmit.mock.calls[0][0].usageSections).toBe("upstream_limits,reset_credits");
+  });
+
   it("omits limits from payload when only isActive changes", async () => {
     const user = userEvent.setup();
     const onSubmit = vi.fn().mockResolvedValue(undefined);

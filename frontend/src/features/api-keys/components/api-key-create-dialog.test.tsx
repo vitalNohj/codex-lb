@@ -56,6 +56,54 @@ describe("ApiKeyCreateDialog", () => {
     expect(onSubmit.mock.calls[0][0].applyToCodexModel).toBe(true);
   });
 
+  it("creates keys without reset credits by default and submits the opt-in", async () => {
+    const user = userEvent.setup();
+    const onSubmit = vi.fn().mockResolvedValue(undefined);
+
+    renderWithProviders(
+      <ApiKeyCreateDialog
+        open
+        busy={false}
+        onOpenChange={vi.fn()}
+        onSubmit={onSubmit}
+      />,
+    );
+
+    await user.type(screen.getByLabelText("Name"), "Shared key");
+    await user.click(screen.getByRole("button", { name: "Create" }));
+    await waitFor(() => {
+      expect(onSubmit).toHaveBeenCalledTimes(1);
+    });
+    expect(onSubmit.mock.calls[0][0].usageSections).toBe("upstream_limits,account_pool_usage");
+  });
+
+  it("submits the reset credits section when selected", async () => {
+    const user = userEvent.setup();
+    const onSubmit = vi.fn().mockResolvedValue(undefined);
+
+    renderWithProviders(
+      <ApiKeyCreateDialog
+        open
+        busy={false}
+        onOpenChange={vi.fn()}
+        onSubmit={onSubmit}
+      />,
+    );
+
+    await user.type(screen.getByLabelText("Name"), "Owner key");
+    const sections = screen.getByRole("button", { name: "Upstream limits, Account pool usage" });
+    expect(sections).toHaveAccessibleDescription(/Reset credits lets this key see account emails/);
+    await user.click(sections);
+    await user.click(screen.getByRole("menuitemcheckbox", { name: "Reset credits" }));
+    await user.keyboard("{Escape}");
+    await user.click(screen.getByRole("button", { name: "Create" }));
+
+    await waitFor(() => {
+      expect(onSubmit).toHaveBeenCalledTimes(1);
+    });
+    expect(onSubmit.mock.calls[0][0].usageSections).toBe("upstream_limits,account_pool_usage,reset_credits");
+  });
+
   it("creates keys with 429 by default and submits the 402 opt-in", async () => {
     const user = userEvent.setup();
     const onSubmit = vi.fn().mockResolvedValue(undefined);

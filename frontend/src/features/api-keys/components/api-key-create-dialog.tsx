@@ -202,7 +202,14 @@ function ApiKeyCreateForm({ busy, onClose, onSubmit }: ApiKeyCreateFormProps) {
 
             <div className="space-y-1">
               <label className="text-sm font-medium">{t("apiKeys.form.usageSections")}</label>
-              <UsageSectionsMultiSelect value={draft.usageSections} onChange={(usageSections) => updateDraft({ usageSections })} />
+              <UsageSectionsMultiSelect
+                value={draft.usageSections}
+                onChange={(usageSections) => updateDraft({ usageSections })}
+                aria-describedby="create-api-key-usage-sections-hint"
+              />
+              <p id="create-api-key-usage-sections-hint" className="text-xs text-muted-foreground">
+                {t("apiKeys.form.usageSectionsHint")}
+              </p>
             </div>
 
             <div className="space-y-1">

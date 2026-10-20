@@ -75,12 +75,13 @@ export const ApiKeySchema = z.object({
   pooledCapacityCreditsPrimary: z.number().default(0),
 });
 
-export const USAGE_SECTIONS = ["upstream_limits", "account_pool_usage"] as const;
+export const USAGE_SECTIONS = ["upstream_limits", "account_pool_usage", "reset_credits"] as const;
 export type UsageSection = (typeof USAGE_SECTIONS)[number];
 
 export const USAGE_SECTION_LABELS: Record<UsageSection, string> = {
   upstream_limits: "Upstream limits",
   account_pool_usage: "Account pool usage",
+  reset_credits: "Reset credits",
 };
 
 export const ApiKeyCreateRequestSchema = z.object({

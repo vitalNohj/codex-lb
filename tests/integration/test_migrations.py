@@ -5122,3 +5122,74 @@ async def test_cache_write_tokens_migration_keeps_existing_rows_and_downgrade_ke
         assert tuple(kept) == (90, 0.4, 0.45)
     finally:
         await engine.dispose()
+
+
+_RESET_CREDITS_SECTION_REVISION = "20261020_000000_add_api_key_reset_credits_section"
+_RESET_CREDITS_SECTION_KEYS = {
+    "key-default": "upstream_limits,account_pool_usage",
+    "key-empty": "",
+    "key-upstream": "upstream_limits",
+}
+
+
+async def _seed_reset_credits_section_keys(engine) -> None:
+    async with engine.begin() as conn:
+        for key_id, sections in _RESET_CREDITS_SECTION_KEYS.items():
+            await conn.execute(
+                text(
+                    "INSERT INTO api_keys (id, name, key_hash, key_prefix, is_active, created_at, usage_sections) "
+                    "VALUES (:id, :id, :hash, 'sk-clb-x', 1, CURRENT_TIMESTAMP, :sections)"
+                ),
+                {"id": key_id, "hash": f"hash-{key_id}", "sections": sections},
+            )
+
+
+async def _api_key_sections(engine) -> dict[str, str]:
+    async with engine.connect() as conn:
+        return {row[0]: row[1] for row in (await conn.execute(text("SELECT id, usage_sections FROM api_keys")))}
+
+
+@pytest.mark.asyncio
+async def test_reset_credits_section_migration_leaves_existing_keys_without_reset_credits(tmp_path, monkeypatch):
+    from alembic import command
+
+    from app.db.migrate import _build_alembic_config
+
+    module = importlib.import_module(f"app.db.alembic.versions.{_RESET_CREDITS_SECTION_REVISION}")
+    # The shipped choice: existing keys lose reset credits like new keys.
+    assert module.GRANT_RESET_CREDITS_TO_EXISTING_KEYS is False
+
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'reset-credits-section.sqlite'}"
+    parent_revision = "20261019_000000_add_request_log_cache_write_tokens"
+    await to_thread.run_sync(lambda: run_upgrade(db_url, parent_revision, bootstrap_legacy=False))
+    engine = create_async_engine(db_url, future=True)
+    try:
+        await _seed_reset_credits_section_keys(engine)
+        await to_thread.run_sync(lambda: run_upgrade(db_url, _RESET_CREDITS_SECTION_REVISION, bootstrap_legacy=False))
+        assert await _api_key_sections(engine) == _RESET_CREDITS_SECTION_KEYS
+
+        # The other choice, as the flag would apply it, then the downgrade.
+        # A batch smaller than the key count walks more than one keyset page.
+        monkeypatch.setattr(module, "_BATCH_SIZE", 2)
+        async with engine.begin() as conn:
+            await conn.run_sync(module.grant_reset_credits_to_existing_keys)
+            await conn.run_sync(module.grant_reset_credits_to_existing_keys)
+        assert await _api_key_sections(engine) == {
+            key_id: ",".join(filter(None, [sections, "reset_credits"]))
+            for key_id, sections in _RESET_CREDITS_SECTION_KEYS.items()
+        }
+
+        granted = await _api_key_sections(engine)
+
+        # The downgrade cannot tell its own grants from an admin's, so it
+        # keeps every one of them.
+        await to_thread.run_sync(lambda: command.downgrade(_build_alembic_config(db_url), parent_revision))
+        assert await _api_key_sections(engine) == granted
+
+        # A re-upgrade keeps them too and adds nothing twice.
+        await to_thread.run_sync(lambda: run_upgrade(db_url, _RESET_CREDITS_SECTION_REVISION, bootstrap_legacy=False))
+        async with engine.begin() as conn:
+            await conn.run_sync(module.grant_reset_credits_to_existing_keys)
+        assert await _api_key_sections(engine) == granted
+    finally:
+        await engine.dispose()

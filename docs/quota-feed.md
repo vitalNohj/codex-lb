@@ -15,7 +15,13 @@ The feed uses credentials codex-lb already issues. It does not add a key type or
 
 Missing credentials and invalid credentials get `401`. A request that sends an `Authorization` header is checked as a proxy API key only; an invalid key does not fall through to a dashboard cookie. Passwordless local dashboard access is not a credential for this route.
 
-An API key with account assignment scope sees only its assigned Codex accounts. Another key's assigned accounts are not included. CLIProxyAPI quota is pool-wide, because those credentials are not assigned per key and any proxy client can send that traffic.
+What an API key sees follows its usage sections (Dashboard → API Keys → Usage sections):
+
+- **Codex rows** need both **Upstream limits** and **Account pool usage**. A key with account assignment scope sees only its assigned Codex accounts.
+- **CLIProxyAPI rows** need **Upstream limits**. That quota is pool-wide, because those credentials are not assigned per key.
+- With **Settings → Hide upstream quota from API keys** on, an API key gets no rows at all.
+
+A key without those sections gets `200` with empty `providers` and `perProvider`. A dashboard admin always sees every row.
 
 ## Response
 
@@ -38,7 +44,12 @@ Window `source` values:
 | `usage_queue_tokens` | xAI token rollup; percent is null |
 | `unknown` | A provider the quota map does not interpret |
 
-The response never includes tokens, API keys, credential paths, or account emails. `accountKey` is the router's account id (`acc-…` for Codex, `cliproxy:<provider>:<auth index>` for a sidecar credential).
+The response never includes tokens, API keys, credential paths, or account emails.
+
+`accountKey` identifies a row:
+
+- **For a dashboard admin** it is the router's account id (`acc-…` for Codex, `cliproxy:<provider>:<auth index>` for a sidecar credential).
+- **For an API key** it is an opaque 32-character hex value. It stays the same for that key and account across requests and replicas, and differs for every other key, so it cannot be matched against another key's feed or mapped back to an account.
 
 Responses send `Cache-Control: private, max-age=15` and `Vary: Authorization, Cookie`.
 
@@ -51,7 +62,7 @@ Responses send `Cache-Control: private, max-age=15` and `Vary: Authorization, Co
   "providers": [
     {
       "provider": "codex",
-      "accountKey": "acc-123",
+      "accountKey": "5f0c2a7d9e41b8c63a1f0e9d7b2c4a86",
       "windows": [
         {
           "id": "five_hour",

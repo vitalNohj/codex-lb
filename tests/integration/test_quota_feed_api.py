@@ -28,7 +28,7 @@ from app.modules.claude_sidecar.quota import (
 )
 from app.modules.dashboard_auth.service import DASHBOARD_SESSION_COOKIE, get_dashboard_session_store
 from app.modules.proxy.load_balancer import _build_states
-from app.modules.quota_feed.service import routing_state_for_auth
+from app.modules.quota_feed.service import opaque_account_key_mapper, routing_state_for_auth
 from app.modules.settings.repository import SettingsRepository
 from app.modules.usage.repository import UsageRepository
 
@@ -174,12 +174,42 @@ def _sidecar_snapshot() -> SidecarQuotaSnapshot:
     )
 
 
-async def _create_key(name: str, account_ids: list[str] | None = None) -> str:
+async def _create_key(
+    name: str,
+    account_ids: list[str] | None = None,
+    *,
+    usage_sections: str = "upstream_limits,account_pool_usage",
+) -> tuple[str, str]:
+    """Create a key and return ``(key id, plain key)``."""
+
     async with SessionLocal() as session:
         created = await ApiKeysService(ApiKeysRepository(session)).create_key(
-            ApiKeyCreateData(name=name, allowed_models=None, assigned_account_ids=account_ids, limits=[])
+            ApiKeyCreateData(
+                name=name,
+                allowed_models=None,
+                assigned_account_ids=account_ids,
+                usage_sections=usage_sections,
+                limits=[],
+            )
         )
-    return created.key
+    return created.id, created.key
+
+
+def _bearer(key: str) -> dict[str, str]:
+    return {"Authorization": f"Bearer {key}"}
+
+
+async def _hide_upstream_quota(hidden: bool) -> None:
+    async with SessionLocal() as session:
+        await SettingsRepository(session).update(hide_upstream_quota_from_api_keys=hidden)
+    await get_settings_cache().invalidate()
+
+
+def _raw_router_ids_absent(raw: str) -> None:
+    """A key's response carries no router account id in any form."""
+
+    for router_id in ("acc-a", "acc-b", "acc-empty", "chatgpt-acc", "claude-idx", "xai-idx", "kimi-idx", "cliproxy:"):
+        assert router_id not in raw
 
 
 async def _seed_pool() -> None:
@@ -293,9 +323,9 @@ async def test_quota_feed_rejects_dashboard_guest(async_client) -> None:
 
 @pytest.mark.asyncio
 async def test_quota_feed_accepts_proxy_key_and_dashboard_session(async_client) -> None:
-    key = await _create_key("feed-open")
+    _, key = await _create_key("feed-open")
 
-    by_key = await async_client.get("/v1/quota-feed", headers={"Authorization": f"Bearer {key}"})
+    by_key = await async_client.get("/v1/quota-feed", headers=_bearer(key))
     _install_dashboard_cookie(async_client)
     by_cookie = await async_client.get("/v1/quota-feed")
 
@@ -310,13 +340,13 @@ async def test_quota_feed_accepts_proxy_key_and_dashboard_session(async_client) 
 @pytest.mark.asyncio
 async def test_quota_feed_scopes_keys_and_matches_router_inputs(async_client) -> None:
     await _seed_pool()
-    key_a = await _create_key("feed-a", ["acc-a"])
-    key_b = await _create_key("feed-b", ["acc-b"])
-    key_all = await _create_key("feed-all")
+    key_a_id, key_a = await _create_key("feed-a", ["acc-a"])
+    key_b_id, key_b = await _create_key("feed-b", ["acc-b"])
+    key_all_id, key_all = await _create_key("feed-all")
 
-    scoped_a = await async_client.get("/v1/quota-feed", headers={"Authorization": f"Bearer {key_a}"})
-    scoped_b = await async_client.get("/v1/quota-feed", headers={"Authorization": f"Bearer {key_b}"})
-    unscoped = await async_client.get("/v1/quota-feed", headers={"Authorization": f"Bearer {key_all}"})
+    scoped_a = await async_client.get("/v1/quota-feed", headers=_bearer(key_a))
+    scoped_b = await async_client.get("/v1/quota-feed", headers=_bearer(key_b))
+    unscoped = await async_client.get("/v1/quota-feed", headers=_bearer(key_all))
     _install_dashboard_cookie(async_client)
     dashboard = await async_client.get("/v1/quota-feed")
     claude_quota = await async_client.get("/api/claude-sidecar/quota")
@@ -326,12 +356,21 @@ async def test_quota_feed_scopes_keys_and_matches_router_inputs(async_client) ->
     body_a = scoped_a.json()
     body_b = scoped_b.json()
     body_all = unscoped.json()
-    assert _codex_keys(body_a) == {"acc-a"}
-    assert _codex_keys(body_b) == {"acc-b"}
-    assert "acc-b" not in scoped_a.text
-    assert "acc-a" not in scoped_b.text
-    assert _codex_keys(body_all) == {"acc-a", "acc-b", "acc-empty"}
-    assert _codex_keys(dashboard.json()) == {"acc-a", "acc-b", "acc-empty"}
+    body_dashboard = dashboard.json()
+    opaque_a = opaque_account_key_mapper(key_a_id)
+    opaque_b = opaque_account_key_mapper(key_b_id)
+    opaque_all = opaque_account_key_mapper(key_all_id)
+    # A key sees per-key opaque account keys; the dashboard admin sees router ids.
+    assert _codex_keys(body_a) == {opaque_a("acc-a")}
+    assert _codex_keys(body_b) == {opaque_b("acc-b")}
+    assert _codex_keys(body_all) == {opaque_all(account_id) for account_id in ("acc-a", "acc-b", "acc-empty")}
+    assert _codex_keys(body_dashboard) == {"acc-a", "acc-b", "acc-empty"}
+    # The same account gets a different key per API key, so holders cannot
+    # match their rows against each other.
+    assert opaque_a("acc-a") != opaque_all("acc-a")
+    assert opaque_a("acc-a") not in unscoped.text
+    for raw in (scoped_a.text, scoped_b.text, unscoped.text):
+        _raw_router_ids_absent(raw)
 
     assert body_a["perProvider"]["codex"]["accountsAvailable"] == 1
     assert body_a["perProvider"]["codex"]["maxHeadroomPercent"] == 80.0
@@ -339,9 +378,12 @@ async def test_quota_feed_scopes_keys_and_matches_router_inputs(async_client) ->
     assert body_all["perProvider"]["codex"]["accountsAvailable"] == 2
     assert body_all["perProvider"]["codex"]["maxHeadroomPercent"] == 80.0
 
-    five_hour = _window(body_all, "acc-a", "five_hour")
-    seven_day = _window(body_all, "acc-a", "seven_day")
-    empty = _window(body_all, "acc-empty", "five_hour")
+    assert _window(body_all, opaque_all("acc-a"), "five_hour") == _window(body_dashboard, "acc-a", "five_hour")
+    assert body_all["perProvider"] == body_dashboard["perProvider"]
+
+    five_hour = _window(body_dashboard, "acc-a", "five_hour")
+    seven_day = _window(body_dashboard, "acc-a", "seven_day")
+    empty = _window(body_dashboard, "acc-empty", "five_hour")
     assert five_hour["confidence"] == "established"
     assert five_hour["source"] == "codex_usage"
     assert five_hour["percentRemaining"] == 90.0
@@ -365,7 +407,7 @@ async def test_quota_feed_scopes_keys_and_matches_router_inputs(async_client) ->
     by_id = {state.account_id: state for state in states}
     for account_id in ("acc-a", "acc-b", "acc-empty"):
         state = by_id[account_id]
-        window = _window(body_all, account_id, "five_hour")
+        window = _window(body_dashboard, account_id, "five_hour")
         if state.used_percent is None:
             assert window["percentRemaining"] is None
         else:
@@ -382,16 +424,16 @@ async def test_quota_feed_scopes_keys_and_matches_router_inputs(async_client) ->
     for auth in snapshot.accounts:
         state = routing_state_for_auth(auth, holds=(), now=now)
         assert state is not None
-        row = _row(body_all, state.account_id)
+        row = _row(body_dashboard, state.account_id)
         if auth.provider == "claude":
-            window = _window(body_all, state.account_id, "five_hour")
+            window = _window(body_dashboard, state.account_id, "five_hour")
             assert row["provider"] == "claude"
             assert window["source"] == "anthropic_oauth_usage"
             assert window["confidence"] == "established"
             assert window["percentRemaining"] == pytest.approx(100.0 - (state.used_percent or 0.0))
         elif auth.provider == "xai":
-            window = _window(body_all, state.account_id, "credits")
-            tokens = _window(body_all, state.account_id, "tokens_24h")
+            window = _window(body_dashboard, state.account_id, "credits")
+            tokens = _window(body_dashboard, state.account_id, "tokens_24h")
             assert row["provider"] == "xai"
             assert window["source"] == "grok_credits_config"
             assert window["percentRemaining"] == pytest.approx(100.0 - (state.used_percent or 0.0))
@@ -401,6 +443,7 @@ async def test_quota_feed_scopes_keys_and_matches_router_inputs(async_client) ->
             assert row["provider"] == "unknown"
             assert row["windows"][0]["confidence"] == "unknown"
 
+    _assert_no_secrets(body_dashboard, dashboard.text)
     _assert_no_secrets(body_all, unscoped.text)
     _assert_no_secrets(body_a, scoped_a.text)
     assert claude_quota.status_code == 200
@@ -408,3 +451,86 @@ async def test_quota_feed_scopes_keys_and_matches_router_inputs(async_client) ->
     assert claude_quota.json()["accounts"] == []
     assert _SECRET not in claude_quota.text
     assert "xai-idx" not in claude_quota.text
+
+
+@pytest.mark.asyncio
+async def test_quota_feed_shows_nothing_to_unscoped_key_without_usage_sections(async_client) -> None:
+    await _seed_pool()
+    _, key = await _create_key("feed-no-sections", usage_sections="")
+
+    response = await async_client.get("/v1/quota-feed", headers=_bearer(key))
+    _install_dashboard_cookie(async_client)
+    dashboard = await async_client.get("/v1/quota-feed")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["providers"] == []
+    assert body["perProvider"] == {}
+    _raw_router_ids_absent(response.text)
+    _assert_no_secrets(body, response.text)
+    # The admin dashboard still sees every row.
+    assert _codex_keys(dashboard.json()) == {"acc-a", "acc-b", "acc-empty"}
+    assert {row["provider"] for row in dashboard.json()["providers"]} == {"codex", "claude", "xai", "unknown"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("usage_sections", "expected_providers"),
+    [
+        # CLIProxyAPI rows are pool-wide upstream quota.
+        ("upstream_limits", {"claude", "xai", "unknown"}),
+        # Per-account Codex windows need both sections, like fleet usage.
+        ("account_pool_usage", set()),
+        ("upstream_limits,account_pool_usage", {"codex", "claude", "xai", "unknown"}),
+        # Reset credits grant no quota visibility.
+        ("reset_credits", set()),
+    ],
+)
+async def test_quota_feed_follows_usage_sections(async_client, usage_sections, expected_providers) -> None:
+    await _seed_pool()
+    key_id, key = await _create_key(f"feed-{usage_sections}", usage_sections=usage_sections)
+
+    response = await async_client.get("/v1/quota-feed", headers=_bearer(key))
+
+    assert response.status_code == 200
+    body = response.json()
+    assert {row["provider"] for row in body["providers"]} == expected_providers
+    assert set(body["perProvider"]) == expected_providers
+    if "codex" in expected_providers:
+        opaque = opaque_account_key_mapper(key_id)
+        assert _codex_keys(body) == {opaque(account_id) for account_id in ("acc-a", "acc-b", "acc-empty")}
+    _raw_router_ids_absent(response.text)
+    _assert_no_secrets(body, response.text)
+
+
+@pytest.mark.asyncio
+async def test_quota_feed_hide_setting_hides_every_row_from_keys(async_client) -> None:
+    await _seed_pool()
+    _, key = await _create_key("feed-hidden")
+    await _hide_upstream_quota(True)
+
+    response = await async_client.get("/v1/quota-feed", headers=_bearer(key))
+    _install_dashboard_cookie(async_client)
+    dashboard = await async_client.get("/v1/quota-feed")
+
+    assert response.status_code == 200
+    assert response.json()["providers"] == []
+    assert response.json()["perProvider"] == {}
+    _raw_router_ids_absent(response.text)
+    # The privacy setting is about API-key clients; the admin keeps the view.
+    assert _codex_keys(dashboard.json()) == {"acc-a", "acc-b", "acc-empty"}
+
+
+@pytest.mark.asyncio
+async def test_quota_feed_opaque_account_keys_are_stable_for_one_key(async_client) -> None:
+    await _seed_pool()
+    _, key = await _create_key("feed-stable")
+
+    first = await async_client.get("/v1/quota-feed", headers=_bearer(key))
+    second = await async_client.get("/v1/quota-feed", headers=_bearer(key))
+
+    assert first.status_code == 200
+    assert [row["accountKey"] for row in first.json()["providers"]] == [
+        row["accountKey"] for row in second.json()["providers"]
+    ]
+    assert len({row["accountKey"] for row in first.json()["providers"]}) == len(first.json()["providers"])

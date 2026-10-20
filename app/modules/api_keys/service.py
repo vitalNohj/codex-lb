@@ -36,6 +36,7 @@ from app.modules.api_keys.repository import (
     UsageReservationItemData,
     _Unset,
 )
+from app.modules.api_keys.visibility import DEFAULT_USAGE_SECTIONS, VALID_USAGE_SECTIONS
 from app.modules.usage.repository import UsageRepository
 
 _SQLITE_BUSY_RETRY_ATTEMPTS = 4
@@ -1357,8 +1358,8 @@ def _normalize_name(name: str) -> str:
     return normalized
 
 
-_VALID_USAGE_SECTIONS = {"upstream_limits", "account_pool_usage"}
-_DEFAULT_USAGE_SECTIONS = "upstream_limits,account_pool_usage"
+_VALID_USAGE_SECTIONS = VALID_USAGE_SECTIONS
+_DEFAULT_USAGE_SECTIONS = DEFAULT_USAGE_SECTIONS
 
 
 def _normalize_usage_sections(raw: str | None) -> str:

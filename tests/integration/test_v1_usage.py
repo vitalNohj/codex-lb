@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -19,6 +19,7 @@ async def _create_api_key(
     name: str,
     limits: list[LimitRuleInput] | None = None,
     usage_sections: str = "upstream_limits,account_pool_usage",
+    expires_at: datetime | None = None,
 ) -> tuple[str, str]:
     async with SessionLocal() as session:
         service = ApiKeysService(ApiKeysRepository(session))
@@ -27,6 +28,7 @@ async def _create_api_key(
                 name=name,
                 allowed_models=None,
                 usage_sections=usage_sections,
+                expires_at=expires_at,
                 limits=limits or [],
             )
         )
@@ -296,6 +298,7 @@ async def test_v1_usage_returns_zero_usage_for_key_without_logs(async_client):
             "primary": None,
             "secondary": None,
         },
+        "expires_at": None,
     }
 
 
@@ -317,6 +320,7 @@ async def test_v1_usage_omits_disabled_account_pool_usage_section(async_client):
         "limits": [],
         "upstream_limits": [],
         "account_pool_usage": None,
+        "expires_at": None,
     }
 
 
@@ -756,3 +760,50 @@ async def test_v1_usage_ignores_paused_and_deactivated_accounts_in_aggregate_cre
         },
     ]
     assert payload["limits"] == payload["upstream_limits"]
+
+
+@pytest.mark.asyncio
+async def test_v1_usage_shows_unscoped_key_without_sections_only_its_own_usage(async_client):
+    _, plain_key = await _create_api_key(name="usage-no-sections", usage_sections="")
+    now = utcnow()
+    await _seed_upstream_usage(now=now)
+
+    response = await async_client.get("/v1/usage", headers={"Authorization": f"Bearer {plain_key}"})
+
+    assert response.status_code == 200
+    payload = response.json()
+    # No own limits, and no fallback to the pool's upstream windows either.
+    assert payload["limits"] == []
+    assert payload["upstream_limits"] == []
+    assert payload["account_pool_usage"] is None
+    assert payload["expires_at"] is None
+    assert "aggregate" not in response.text
+
+
+@pytest.mark.asyncio
+async def test_v1_usage_hide_setting_never_mirrors_upstream_into_limits_even_with_sections(async_client):
+    _, plain_key = await _create_api_key(name="usage-hidden-all-sections")
+    now = utcnow()
+    await _seed_upstream_usage(now=now)
+    visible = await async_client.get("/v1/usage", headers={"Authorization": f"Bearer {plain_key}"})
+    assert visible.json()["limits"] == visible.json()["upstream_limits"] != []
+
+    settings = await async_client.put("/api/settings", json={"hideUpstreamQuotaFromApiKeys": True})
+    assert settings.status_code == 200
+    hidden = await async_client.get("/v1/usage", headers={"Authorization": f"Bearer {plain_key}"})
+
+    assert hidden.status_code == 200
+    assert hidden.json()["limits"] == []
+    assert hidden.json()["upstream_limits"] == []
+    assert hidden.json()["account_pool_usage"] is None
+
+
+@pytest.mark.asyncio
+async def test_v1_usage_returns_key_expiry_as_utc(async_client):
+    expires_at = datetime(2031, 3, 4, 5, 6, 7, tzinfo=timezone.utc)
+    _, plain_key = await _create_api_key(name="usage-expiry", usage_sections="", expires_at=expires_at)
+
+    response = await async_client.get("/v1/usage", headers={"Authorization": f"Bearer {plain_key}"})
+
+    assert response.status_code == 200
+    assert response.json()["expires_at"] == "2031-03-04T05:06:07Z"

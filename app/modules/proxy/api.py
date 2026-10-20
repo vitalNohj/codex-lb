@@ -186,6 +186,11 @@ from app.modules.api_keys.service import (
     ApiKeyUsageReservationData,
     _compute_pooled_credits,
 )
+from app.modules.api_keys.visibility import (
+    api_key_can_use_reset_credits,
+    api_key_visibility,
+    upstream_quota_hidden_from_api_keys,
+)
 from app.modules.claude_sidecar.schemas import AnthropicOAuthUsageResponse
 from app.modules.claude_sidecar.service import ClaudeSidecarService
 from app.modules.claude_sidecar.usage_repository import ClaudeSidecarUsageRepository
@@ -1263,7 +1268,7 @@ async def _opencode_go_responses_dispatch_or_none(
         return None
 
     validate_model_access(api_key, effective_model, routing_entries=routing_entries)
-    rate_limit_headers = await context.service.rate_limit_headers()
+    rate_limit_headers = await _rate_limit_headers_for_request(context, api_key)
     translation = _responses_chat_translation_or_error(
         request, responses_payload, decision.wire_model or effective_model, rate_limit_headers
     )
@@ -1316,7 +1321,7 @@ async def _omniroute_responses_dispatch_or_none(
         # Defense in depth on the externally callable Responses path.
         return None
     validate_model_access(api_key, effective_model, routing_entries=tuple(routing_entries))
-    rate_limit_headers = await context.service.rate_limit_headers()
+    rate_limit_headers = await _rate_limit_headers_for_request(context, api_key)
     translation = _responses_chat_translation_or_error(
         request, responses_payload, decision.wire_model or effective_model, rate_limit_headers
     )
@@ -1364,7 +1369,7 @@ async def _chat_provider_responses_dispatch_or_none(
         return None
 
     validate_model_access(api_key, effective_model, routing_entries=routing_entries)
-    rate_limit_headers = await context.service.rate_limit_headers()
+    rate_limit_headers = await _rate_limit_headers_for_request(context, api_key)
     # A resolved route whose config cannot be loaded never starts a turn.
     # Reserving first would leave that quota pending until the expiry sweep.
     client = await _responses_chat_provider_client(decision.provider)
@@ -2079,19 +2084,18 @@ async def v1_models(
 async def v1_usage(
     api_key: ApiKeyData = Security(validate_usage_api_key),
 ) -> V1UsageResponse | JSONResponse:
-    usage_sections = _parse_usage_sections(api_key.usage_sections)
+    visibility = await api_key_visibility(api_key)
     async with get_background_session() as session:
         service = ApiKeysService(ApiKeysRepository(session), usage_repository=UsageRepository(session))
         usage = await service.get_key_usage_summary_for_self(api_key.id)
-        aggregate_limits = await _build_aggregate_credit_limits(session) if "upstream_limits" in usage_sections else {}
-        hide_upstream_limits = await _hide_upstream_quota_for_api_key_clients(api_key)
+        aggregate_limits = await _build_aggregate_credit_limits(session) if visibility.upstream_limits else {}
         account_pool_usage = (
             await _build_account_pool_usage(
                 session,
                 assigned_account_ids=api_key.assigned_account_ids,
                 account_assignment_scope_enabled=api_key.account_assignment_scope_enabled,
             )
-            if "account_pool_usage" in usage_sections and not hide_upstream_limits
+            if visibility.account_pool
             else None
         )
 
@@ -2099,17 +2103,29 @@ async def v1_usage(
         raise ProxyAuthError("Invalid API key")
 
     own_limits = [_to_v1_usage_limit_response(limit) for limit in usage.limits]
-    upstream_limits = [] if hide_upstream_limits else _ordered_aggregate_limits(aggregate_limits)
+    upstream_limits = _ordered_aggregate_limits(aggregate_limits)
 
     return V1UsageResponse(
         request_count=usage.request_count,
         total_tokens=usage.total_tokens,
         cached_input_tokens=usage.cached_input_tokens,
         total_cost_usd=usage.total_cost_usd,
+        # Legacy clients read ``limits`` only. A key without its own limits
+        # mirrors the upstream windows there, but only when the key may see
+        # them: ``upstream_limits`` is empty whenever they are hidden.
         limits=own_limits or upstream_limits,
         upstream_limits=upstream_limits,
         account_pool_usage=account_pool_usage,
+        expires_at=_v1_usage_timestamp(api_key.expires_at),
     )
+
+
+def _v1_usage_timestamp(moment: datetime | None) -> str | None:
+    if moment is None:
+        return None
+    if moment.tzinfo is not None:
+        moment = moment.astimezone(timezone.utc).replace(tzinfo=None)
+    return moment.isoformat() + "Z"
 
 
 def _is_reset_credit_selectable_account(account: Account) -> bool:
@@ -2270,10 +2286,22 @@ async def _ensure_v1_reset_credit_account_fresh(account_id: str) -> _V1ResetCred
         )
 
 
+def _require_reset_credit_access(api_key: ApiKeyData) -> None:
+    """Reset credits reveal account emails and spend the owner's credits.
+
+    A key reaches them only when an admin enabled its ``reset_credits``
+    usage section.
+    """
+
+    if not api_key_can_use_reset_credits(api_key):
+        raise HTTPException(status_code=403, detail="Reset credits are not enabled for this API key")
+
+
 @usage_router.get("/v1/reset-credit", response_model=list[V1ResetCreditEntry])
 async def v1_reset_credit(
     api_key: ApiKeyData = Security(validate_usage_api_key),
 ) -> list[V1ResetCreditEntry]:
+    _require_reset_credit_access(api_key)
     async with get_background_session() as session:
         accounts = await AccountsRepository(session).list_accounts(refresh_existing=True)
         eligible_accounts = _project_reset_credit_accounts(accounts, api_key)
@@ -2296,6 +2324,7 @@ async def v1_redeem_reset_credit(
     capability_transport_denial = await _required_capability_http_transport_denial(request, api_key)
     if capability_transport_denial is not None:
         return capability_transport_denial
+    _require_reset_credit_access(api_key)
     async with get_background_session() as session:
         account = await AccountsRepository(session).get_by_id(payload.account_id)
         # A pending-deletion account is gone (credentials wiped): treat it
@@ -2499,12 +2528,6 @@ def _ordered_aggregate_limits(aggregate_limits: dict[str, V1UsageLimitResponse])
     return [limit for window in ("5h", "7d", "monthly") if (limit := aggregate_limits.get(window)) is not None]
 
 
-def _parse_usage_sections(raw: str) -> set[str]:
-    if not raw or not raw.strip():
-        return set()
-    return {s.strip() for s in raw.split(",") if s.strip()}
-
-
 async def _build_account_pool_usage(
     session: AsyncSession,
     *,
@@ -2581,8 +2604,7 @@ async def _build_codex_usage_payload_for_api_key(api_key: ApiKeyData) -> RateLim
 async def _hide_upstream_quota_for_api_key_clients(api_key: ApiKeyData | None) -> bool:
     if api_key is None:
         return False
-    settings = await get_settings_cache().get()
-    return bool(getattr(settings, "hide_upstream_quota_from_api_keys", False))
+    return await upstream_quota_hidden_from_api_keys()
 
 
 async def _apply_api_key_enforcement_with_fast_mode_policy(
