@@ -732,7 +732,14 @@ async def test_the_switch_returns_xai_to_the_chat_bridge(async_client, fake_clip
 
 
 @pytest.mark.asyncio
-async def test_claude_stays_on_the_chat_bridge(async_client, fake_cliproxy):
+async def test_claude_stays_on_the_chat_bridge(async_client, fake_cliproxy, monkeypatch):
+    # Claude fails closed without a credential prefix (#151); name one so this
+    # test sees only which CLIProxyAPI entry the request takes.
+    async def _pin_claude(body, **kwargs):
+        del kwargs
+        body["model"] = f"cred/{body['model']}"
+
+    monkeypatch.setattr("app.modules.proxy.claude_sidecar_dispatch.apply_cliproxy_account_route", _pin_claude)
     response = await async_client.post(
         "/v1/responses",
         json={"model": CLAUDE_MODEL, "input": "hi"},
