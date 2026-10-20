@@ -71,7 +71,11 @@ from app.modules.proxy.cliproxy_account_routing import (
     rebind_cliproxy_account_route,
 )
 from app.modules.proxy.sidecar_model_profiles import read_reasoning_effort
-from app.modules.proxy.sidecar_upstream_errors import client_facing_sidecar_error
+from app.modules.proxy.sidecar_upstream_errors import (
+    client_facing_sidecar_error,
+    has_usable_sidecar_api_key,
+    sidecar_not_configured_error,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -85,6 +89,8 @@ NATIVE_ROUTE_DESCRIPTION = "CLIProxyAPI's native Responses route, which keeps no
 _TERMINAL_SUCCESS_EVENTS = frozenset({"response.completed", "response.incomplete"})
 _TERMINAL_FAILURE_EVENTS = frozenset({"response.failed", "error"})
 _STREAM_INCOMPLETE_ERROR_CODE = "claude_sidecar_stream_incomplete"
+NOT_CONFIGURED_ERROR_CODE = "cliproxy_not_configured"
+NOT_CONFIGURED_MESSAGE = "CLIProxyAPI is enabled but no API key is configured."
 _UNAVAILABLE_ERROR_CODE = "claude_sidecar_unavailable"
 _UNAVAILABLE_MESSAGE = "Claude sidecar unavailable"
 _UPSTREAM_FAILED_ERROR_CODE = "cliproxy_xai_response_failed"
@@ -195,6 +201,18 @@ async def proxy_responses_to_cliproxy_native(
     sticky_hints: CliproxyStickyHints,
 ) -> Response:
     record_cliproxy_xai_responses_route(CLIPROXY_PROVIDER, wire_model, NATIVE_ROUTE)
+    # Credential gate first, before the body is built or anything is sent.
+    # codex-lb treats a CLIProxyAPI integration without an API key as not
+    # configured (its status reads ``missing_api_key``), and a key that failed
+    # to decrypt arrives here as ``None`` too. Sending anyway would put the
+    # caller's prompt on the wire only for CLIProxyAPI to refuse it.
+    if not has_usable_sidecar_api_key(client.config.api_key):
+        return await _not_configured_response(
+            effective_model=effective_model,
+            api_key=api_key,
+            reservation=reservation,
+            rate_limit_headers=rate_limit_headers,
+        )
     built = build_cliproxy_xai_responses_body(
         payload,
         wire_model=wire_model,
@@ -268,6 +286,32 @@ async def proxy_responses_to_cliproxy_native(
         failure=_failure_of_response(response_body),
     )
     return JSONResponse(content=response_body, status_code=200, headers=dict(rate_limit_headers))
+
+
+async def _not_configured_response(
+    *,
+    effective_model: str,
+    api_key: ApiKeyData | None,
+    reservation: ApiKeyUsageReservationData | None,
+    rate_limit_headers: Mapping[str, str],
+) -> Response:
+    """Refuse a request CLIProxyAPI cannot authenticate, sending nothing."""
+
+    await _release_sidecar_reservation(reservation, api_key=api_key)
+    await _log_sidecar_request(
+        api_key=api_key,
+        model=effective_model,
+        started_at=time.monotonic(),
+        status="error",
+        error_code=NOT_CONFIGURED_ERROR_CODE,
+        error_message=NOT_CONFIGURED_MESSAGE,
+    )
+    refusal = sidecar_not_configured_error(
+        error_code=NOT_CONFIGURED_ERROR_CODE,
+        message=NOT_CONFIGURED_MESSAGE,
+        extra_headers=rate_limit_headers,
+    )
+    return JSONResponse(status_code=refusal.status_code, content=refusal.content, headers=refusal.headers)
 
 
 @dataclass(frozen=True, slots=True)

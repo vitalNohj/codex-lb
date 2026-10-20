@@ -34,7 +34,15 @@ The forwarded body MUST equal the client's request except for three changes: `mo
 
 ### Requirement: The native xAI route keeps the chat route's guards
 
-The native xAI route MUST reject `previous_response_id`, `conversation` and `store: true` with a 400 before reserving quota, because CLIProxyAPI does not store responses. It MUST enforce the API key's service tier and take the same usage reservation as the chat route. It MUST use the chat route's account selection, sticky pins, cooldown waits and 401/403/429 rebind.
+The native xAI route MUST refuse a request with 503 before building or sending its body when the CLIProxyAPI API key is unusable. It MUST reject `previous_response_id`, `conversation` and `store: true` with a 400 before reserving quota, because CLIProxyAPI does not store responses. It MUST enforce the API key's service tier and take the same usage reservation as the chat route. It MUST use the chat route's account selection, sticky pins, cooldown waits and 401/403/429 rebind.
+
+#### Scenario: A keyless CLIProxyAPI is refused before anything is sent
+
+- **GIVEN** the CLIProxyAPI API key is missing, blank, or cannot be decrypted
+- **WHEN** an xAI request reaches the native route
+- **THEN** codex-lb answers 503 `cliproxy_not_configured` with `Retry-After`
+- **AND** no request body is built or sent to CLIProxyAPI
+- **AND** the reservation is released and the refusal is logged
 
 #### Scenario: previous_response_id is refused before reservation
 

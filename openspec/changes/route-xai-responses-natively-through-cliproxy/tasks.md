@@ -3,7 +3,7 @@
 - [x] 1.1 Add `responses()` / `stream_responses()` to the CLIProxyAPI client for its `/v1/responses`.
 - [x] 1.2 Route `/v1/responses` for plain xAI wire models to the native path behind `CODEX_LB_CLIPROXY_XAI_NATIVE_RESPONSES_ENABLED`; keep every other model on the chat bridge.
 - [x] 1.3 Forward the body with only `model`, `prompt_cache_key` and an absent-effort default changed; relay the response unchanged.
-- [x] 1.4 Reject `previous_response_id`, `conversation` and `store: true` before reserving quota.
+- [x] 1.4 Refuse with 503 `cliproxy_not_configured`, sending nothing, when the CLIProxyAPI API key is unusable; reject `previous_response_id`, `conversation` and `store: true` before reserving quota.
 - [x] 1.5 Always send `prompt_cache_key`, equal to the sticky pin identity, or a random key when there is none.
 
 ## 2. Routing, limits and accounting

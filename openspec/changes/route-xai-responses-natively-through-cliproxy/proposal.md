@@ -20,6 +20,7 @@ That native route has two hazards. CLIProxyAPI silently drops `previous_response
   - The response, streamed or not, goes back unchanged.
   - Every other CLIProxyAPI model, and every other provider, keeps the chat bridge. Prefixed ids such as `devin/grok-4-6` name a different CLIProxyAPI executor, so they keep it too.
   - Turning the setting off returns xAI to the bridge.
+- **No key, no request.** When the CLIProxyAPI API key is missing, cleared or cannot be decrypted, the native route answers 503 `cliproxy_not_configured`. It builds and sends nothing, releases the reservation and logs the refusal, the same way OpenRouter and OrcaRouter handle a missing key.
 - **Stateful fields stay rejected.** `previous_response_id`, `conversation` and `store: true` return a 400 before any quota is reserved, the same as on the bridge.
 - **The cache key is always sent.** `prompt_cache_key` is the identity codex-lb pins the conversation on: the client key, a session header, or the derived key. A request with no identity gets a fresh random key, so CLIProxyAPI never falls back to its message-derived key. Such a request is not pinned.
 - **Same routing and limits as the chat route.** The native route reuses the chat route's handling for each of these:

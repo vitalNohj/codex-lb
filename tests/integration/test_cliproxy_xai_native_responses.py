@@ -928,3 +928,45 @@ async def test_a_non_cooldown_stream_error_is_not_retried(async_client, fake_cli
 
     assert len(fake_cliproxy.stream_responses_payloads) == 1
     assert _sse_events(body)[-1]["type"] == "response.failed"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("missing_key", [None, "", "   "])
+@pytest.mark.parametrize("stream", [False, True])
+async def test_a_keyless_cliproxy_is_refused_before_anything_is_sent(
+    async_client, fake_cliproxy, monkeypatch, missing_key, stream
+):
+    """No usable CLIProxyAPI key (never set, cleared, or undecryptable): send nothing."""
+
+    from dataclasses import replace
+
+    keyless = replace(fake_cliproxy.config, api_key=missing_key)
+    fake_cliproxy.config = keyless
+
+    async def load_config():
+        return keyless
+
+    monkeypatch.setattr("app.modules.proxy.api.load_sidecar_config", load_config)
+    route = AsyncMock(return_value=None)
+    monkeypatch.setattr(cliproxy_responses_dispatch, "apply_cliproxy_account_route", route)
+    await _enable_api_key_auth(async_client)
+    key = await _create_api_key(
+        "keyless-cliproxy",
+        limits=[LimitRuleInput(limit_type="total_tokens", limit_window="weekly", max_value=100000)],
+    )
+
+    response = await async_client.post(
+        "/v1/responses",
+        json=_xai_request(stream=stream),
+        headers={"Authorization": f"Bearer {key.key}"},
+    )
+
+    assert response.status_code == 503
+    assert response.headers["Retry-After"]
+    assert response.json()["error"]["code"] == "cliproxy_not_configured"
+    assert fake_cliproxy.responses_payloads == []
+    assert fake_cliproxy.stream_responses_payloads == []
+    route.assert_not_awaited()
+    assert await _reservation_statuses() == ["released"]
+    [log] = await _sidecar_logs()
+    assert (log.status, log.error_code) == ("error", "cliproxy_not_configured")
