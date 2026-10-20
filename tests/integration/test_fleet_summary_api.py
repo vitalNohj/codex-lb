@@ -457,7 +457,7 @@ async def test_fleet_summary_respects_account_scoped_api_key(async_client, db_se
 
 
 @pytest.mark.asyncio
-async def test_fleet_summary_hides_usage_when_key_disables_account_pool_usage(async_client, db_setup):
+async def test_fleet_summary_lists_no_accounts_when_key_disables_account_pool_usage(async_client, db_setup):
     await _seed_account_with_windows(
         "acc_usage_hidden",
         "usage-hidden@example.com",
@@ -474,18 +474,13 @@ async def test_fleet_summary_hides_usage_when_key_disables_account_pool_usage(as
     )
 
     assert response.status_code == 200
-    account = response.json()["accounts"][0]
-    assert account["accountId"] == "acc_usage_hidden"
-    assert account["email"] == "usage-hidden@example.com"
-    assert account["status"] == "active"
-    assert account["lastRefreshAt"] is None
-    assert account["usageRefreshedAt"] is None
-    assert account["primary"] == {"remainingPercent": None, "resetAt": None, "windowMinutes": None}
-    assert account["secondary"] == {"remainingPercent": None, "resetAt": None, "windowMinutes": None}
+    assert response.json() == {"accounts": []}
+    assert "acc_usage_hidden" not in response.text
+    assert "usage-hidden@example.com" not in response.text
 
 
 @pytest.mark.asyncio
-async def test_fleet_summary_hides_usage_when_key_only_allows_upstream_limits(async_client, db_setup):
+async def test_fleet_summary_lists_no_accounts_when_key_only_allows_upstream_limits(async_client, db_setup):
     await _seed_account_with_windows(
         "acc_upstream_only",
         "upstream-only@example.com",
@@ -502,14 +497,8 @@ async def test_fleet_summary_hides_usage_when_key_only_allows_upstream_limits(as
     )
 
     assert response.status_code == 200
-    account = response.json()["accounts"][0]
-    assert account["accountId"] == "acc_upstream_only"
-    assert account["email"] == "upstream-only@example.com"
-    assert account["status"] == "active"
-    assert account["lastRefreshAt"] is None
-    assert account["usageRefreshedAt"] is None
-    assert account["primary"] == {"remainingPercent": None, "resetAt": None, "windowMinutes": None}
-    assert account["secondary"] == {"remainingPercent": None, "resetAt": None, "windowMinutes": None}
+    assert response.json() == {"accounts": []}
+    assert "upstream-only@example.com" not in response.text
 
 
 @pytest.mark.asyncio
@@ -532,6 +521,12 @@ async def test_fleet_summary_hides_usage_when_key_omits_upstream_limits(async_cl
     assert response.status_code == 200
     account = response.json()["accounts"][0]
     assert account["accountId"] == "acc_usage_hidden"
+    # Without per-account usage the key does not learn who owns the account.
+    assert account["email"] is None
+    assert account["displayName"] is None
+    assert "usage-hidden-no-upstream@example.com" not in response.text
+    assert account["status"] == "active"
+    assert account["planType"] == "plus"
     assert account["lastRefreshAt"] is None
     assert account["usageRefreshedAt"] is None
     assert account["primary"] == {"remainingPercent": None, "resetAt": None, "windowMinutes": None}
@@ -539,7 +534,7 @@ async def test_fleet_summary_hides_usage_when_key_omits_upstream_limits(async_cl
 
 
 @pytest.mark.asyncio
-async def test_fleet_summary_hides_usage_when_global_api_key_quota_privacy_enabled(async_client, db_setup):
+async def test_fleet_summary_lists_no_accounts_when_global_api_key_quota_privacy_enabled(async_client, db_setup):
     plain_key = await _create_api_key("fleet-summary-global-hidden-key")
     await _seed_account_with_windows(
         "acc_global_usage_hidden",
@@ -562,12 +557,8 @@ async def test_fleet_summary_hides_usage_when_global_api_key_quota_privacy_enabl
     )
 
     assert response.status_code == 200
-    account = response.json()["accounts"][0]
-    assert account["accountId"] == "acc_global_usage_hidden"
-    assert account["lastRefreshAt"] is None
-    assert account["usageRefreshedAt"] is None
-    assert account["primary"] == {"remainingPercent": None, "resetAt": None, "windowMinutes": None}
-    assert account["secondary"] == {"remainingPercent": None, "resetAt": None, "windowMinutes": None}
+    assert response.json() == {"accounts": []}
+    assert "global-usage-hidden@example.com" not in response.text
 
 
 @pytest.mark.asyncio
@@ -1338,3 +1329,118 @@ async def test_fleet_refresh_drain_reports_overdue_task(caplog: pytest.LogCaptur
     allow_refresh_finish.set()
     assert await fleet_api.drain_background_refresh_tasks(timeout_seconds=1) is True
     assert fleet_api._BACKGROUND_REFRESH_TASKS == set()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "usage_sections",
+    ["", "upstream_limits", "account_pool_usage", "reset_credits"],
+)
+async def test_fleet_refresh_rejects_key_that_cannot_view_fleet_usage(
+    async_client,
+    db_setup,
+    monkeypatch,
+    usage_sections,
+):
+    async def fail_refresh(*_args, **_kwargs):
+        pytest.fail("a key without fleet usage visibility must not start an upstream refresh")
+
+    monkeypatch.setattr(fleet_api, "_refresh_fleet_usage_with_owned_session", fail_refresh)
+    plain_key = await _create_api_key(f"fleet-refresh-denied-{usage_sections or 'none'}", usage_sections=usage_sections)
+    await _seed_account_with_windows(
+        "acc_refresh_denied",
+        "refresh-denied@example.com",
+        primary_used_percent=10.0,
+        secondary_used_percent=10.0,
+        primary_reset_at=1735862400,
+        secondary_reset_at=1736467200,
+    )
+
+    response = await async_client.post(
+        "/api/fleet/refresh",
+        headers={"Authorization": f"Bearer {plain_key}"},
+    )
+
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "permission_denied"
+    assert "refresh-denied@example.com" not in response.text
+    assert "acc_refresh_denied" not in response.text
+
+
+@pytest.mark.asyncio
+async def test_fleet_refresh_rejects_key_when_global_api_key_quota_privacy_enabled(async_client, db_setup, monkeypatch):
+    async def fail_refresh(*_args, **_kwargs):
+        pytest.fail("the privacy setting must stop key-triggered upstream refreshes")
+
+    monkeypatch.setattr(fleet_api, "_refresh_fleet_usage_with_owned_session", fail_refresh)
+    plain_key = await _create_api_key("fleet-refresh-global-hidden-key")
+    settings = await async_client.put("/api/settings", json={"hideUpstreamQuotaFromApiKeys": True})
+    assert settings.status_code == 200
+
+    response = await async_client.post(
+        "/api/fleet/refresh",
+        headers={"Authorization": f"Bearer {plain_key}"},
+    )
+
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "permission_denied"
+
+
+@pytest.mark.asyncio
+async def test_fleet_endpoints_reveal_nothing_to_unscoped_key_without_usage_sections(async_client, db_setup):
+    """An unscoped key with no sections sees no account, email, or traffic anywhere under /api/fleet."""
+
+    await _seed_account_with_windows(
+        "acc_unscoped_hidden",
+        "unscoped-hidden@example.com",
+        primary_used_percent=10.0,
+        secondary_used_percent=20.0,
+        primary_reset_at=1735862400,
+        secondary_reset_at=1736467200,
+    )
+    plain_key = await _create_api_key("fleet-unscoped-no-sections", usage_sections="")
+    headers = {"Authorization": f"Bearer {plain_key}"}
+
+    summary = await async_client.get("/api/fleet/summary", headers=headers)
+    observability = await async_client.get("/api/fleet/observability", headers=headers)
+    refresh = await async_client.post("/api/fleet/refresh", headers=headers)
+
+    assert summary.status_code == 200
+    assert summary.json() == {"accounts": []}
+    assert observability.status_code == 200
+    assert observability.json()["pressure"]["windows"] == []
+    assert observability.json()["sticky"]["byAccount"] == []
+    assert refresh.status_code == 403
+    for response in (summary, observability, refresh):
+        assert "unscoped-hidden@example.com" not in response.text
+        assert "acc_unscoped_hidden" not in response.text
+
+
+@pytest.mark.asyncio
+async def test_fleet_summary_keeps_identity_and_usage_for_unscoped_key_with_both_sections(async_client, db_setup):
+    now_epoch = int(utcnow().replace(tzinfo=timezone.utc).timestamp())
+    await _seed_account_with_windows(
+        "acc_unscoped_visible",
+        "unscoped-visible@example.com",
+        primary_used_percent=10.0,
+        secondary_used_percent=20.0,
+        primary_reset_at=now_epoch + 300,
+        secondary_reset_at=now_epoch + 5 * 24 * 3600,
+    )
+    plain_key = await _create_api_key(
+        "fleet-unscoped-all-sections",
+        usage_sections="upstream_limits,account_pool_usage",
+    )
+
+    response = await async_client.get(
+        "/api/fleet/summary",
+        headers={"Authorization": f"Bearer {plain_key}"},
+    )
+
+    assert response.status_code == 200
+    account = response.json()["accounts"][0]
+    assert account["accountId"] == "acc_unscoped_visible"
+    assert account["email"] == "unscoped-visible@example.com"
+    assert account["displayName"] == "unscoped-visible@example.com"
+    assert account["primary"]["remainingPercent"] == 90
+    assert account["secondary"]["remainingPercent"] == 80

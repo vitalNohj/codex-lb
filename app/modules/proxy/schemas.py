@@ -280,6 +280,7 @@ class V1UsageResponse(BaseModel):
     limits: list[V1UsageLimitResponse]
     upstream_limits: list[V1UsageLimitResponse] = []
     account_pool_usage: AccountPoolUsageResponse | None = None
+    expires_at: str | None = None
 
 
 class V1ResetCreditEntry(BaseModel):

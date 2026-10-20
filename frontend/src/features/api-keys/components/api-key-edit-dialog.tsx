@@ -274,7 +274,14 @@ function ApiKeyEditForm({ apiKey, busy, onSubmit, onClose }: ApiKeyEditFormProps
 
             <div className="space-y-1">
               <div className="text-sm font-medium">{t("apiKeys.form.usageSections")}</div>
-              <UsageSectionsMultiSelect value={draft.usageSections} onChange={(usageSections) => updateDraft({ usageSections })} />
+              <UsageSectionsMultiSelect
+                value={draft.usageSections}
+                onChange={(usageSections) => updateDraft({ usageSections })}
+                aria-describedby="edit-api-key-usage-sections-hint"
+              />
+              <p id="edit-api-key-usage-sections-hint" className="text-xs text-muted-foreground">
+                {t("apiKeys.form.usageSectionsHint")}
+              </p>
             </div>
 
             <div className="space-y-1">

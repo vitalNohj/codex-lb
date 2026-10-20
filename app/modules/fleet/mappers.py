@@ -10,7 +10,12 @@ def fleet_account_summary_from_account(
     include_usage: bool = True,
     persisted_status_by_account_id: dict[str, str] | None = None,
 ) -> FleetAccountSummary:
-    """Project a dashboard account into the minimal fleet payload."""
+    """Project a dashboard account into the minimal fleet payload.
+
+    Account identity (email and display name) is shown only with usage: a
+    key that may not see per-account usage may not learn who owns each
+    account either.
+    """
 
     usage = account.usage
     if include_usage:
@@ -21,8 +26,8 @@ def fleet_account_summary_from_account(
         status = persisted_status_by_account_id.get(account.account_id, "unknown")
     return FleetAccountSummary(
         account_id=account.account_id,
-        display_name=account.display_name,
-        email=account.email,
+        display_name=account.display_name if include_usage else None,
+        email=account.email if include_usage else None,
         status=status,
         plan_type=account.plan_type,
         primary=FleetWindowSummary(

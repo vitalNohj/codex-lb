@@ -15,6 +15,7 @@ export type UsageSectionsMultiSelectProps = {
   value: string;
   onChange: (value: string) => void;
   placeholder?: string;
+  "aria-describedby"?: string;
 };
 
 function parseSections(raw: string): Set<UsageSection> {
@@ -42,6 +43,7 @@ export function UsageSectionsMultiSelect({
   value,
   onChange,
   placeholder,
+  "aria-describedby": ariaDescribedBy,
 }: UsageSectionsMultiSelectProps) {
   const { t } = useTranslation();
   const placeholderLabel = placeholder ?? t("apiKeys.usageSections.allSections");
@@ -65,7 +67,12 @@ export function UsageSectionsMultiSelect({
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <Button type="button" variant="outline" className="w-full justify-between font-normal">
+        <Button
+          type="button"
+          variant="outline"
+          className="w-full justify-between font-normal"
+          aria-describedby={ariaDescribedBy}
+        >
           <span className="truncate text-left">{label}</span>
           <ChevronsUpDown className="ml-1 size-4 shrink-0 opacity-50" />
         </Button>

@@ -1005,3 +1005,37 @@ async def test_a_complete_responses_stream_still_reports_completed(async_client,
     assert "response.completed" in response.text
     assert "response.incomplete" not in response.text
     assert (await _go_logs())[0].status == "success"
+
+
+_POOL_HEADER = "x-codex-primary-used-percent"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("hidden", [False, True])
+async def test_responses_go_dispatch_follows_api_key_quota_privacy(
+    async_client, opencode_go_enabled, fake_opencode_go, monkeypatch, hidden
+):
+    """Pool-wide quota headers on the Go Responses path obey the privacy setting."""
+
+    async def pool_headers(_self):
+        return {_POOL_HEADER: "42.0"}
+
+    monkeypatch.setattr("app.modules.proxy.service.ProxyService.rate_limit_headers", pool_headers)
+    await _settings_payload(async_client)
+    await _enable_api_key_auth(async_client)
+    response = await async_client.put("/api/settings", json={"hideUpstreamQuotaFromApiKeys": hidden})
+    assert response.status_code == 200
+    key = await _create_api_key("go-quota-privacy-key")
+
+    response = await async_client.post(
+        "/v1/responses",
+        headers={"Authorization": f"Bearer {key.key}", "user-agent": "opencode/1.0"},
+        json={"model": "opencode-go/glm-5.3", "input": "hi", "stream": False},
+    )
+
+    assert response.status_code == 200
+    assert fake_opencode_go.chat_payloads[0]["model"] == "glm-5.3"
+    if hidden:
+        assert _POOL_HEADER not in response.headers
+    else:
+        assert response.headers[_POOL_HEADER] == "42.0"

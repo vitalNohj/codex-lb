@@ -128,9 +128,15 @@ def test_registered_proxy_route_inventory_has_one_explicit_capability_policy(app
 
 
 async def _create_api_key(name: str) -> str:
+    # Every section, so the self-service reset-credit routes are reachable
+    # and the capability guard, not the section gate, decides the outcome.
     async with SessionLocal() as session:
         created = await ApiKeysService(ApiKeysRepository(session)).create_key(
-            ApiKeyCreateData(name=name, allowed_models=None)
+            ApiKeyCreateData(
+                name=name,
+                allowed_models=None,
+                usage_sections="upstream_limits,account_pool_usage,reset_credits",
+            )
         )
     return created.key
 

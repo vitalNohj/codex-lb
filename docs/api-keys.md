@@ -27,6 +27,20 @@ Keys can also be scoped to specific accounts, so a key draws quota only from the
 
 ![API keys with assigned accounts](screenshots/apis-assigned-accounts.jpg)
 
+## What a key holder can see
+
+Besides proxying, a key can read some data about itself and its account pool. **Usage sections** (in the create and edit dialogs) decide what:
+
+| Section | Grants | Default for new keys |
+|---|---|---|
+| Upstream limits | Pool-wide upstream quota: aggregate Codex windows in `/v1/usage`, and CLIProxyAPI credential quota in `/v1/quota-feed` | On |
+| Account pool usage | The key's Codex account pool: pooled capacity in `/v1/usage` and the account list in `/api/fleet/summary` | On |
+| Reset credits | Listing and redeeming the ChatGPT reset credits of the key's accounts at `/v1/reset-credit`. The listing includes account emails | **Off** |
+
+With both Upstream limits and Account pool usage, a key also sees each account's email and usage in `/api/fleet/summary`, its rows in `/v1/quota-feed`, pool traffic in `/api/fleet/observability`, and may start `POST /api/fleet/refresh`. **Settings → Hide upstream quota from API keys** turns off everything the first two sections grant, for every key. It does not change Reset credits.
+
+A key always sees its own usage, limits and expiry in `/v1/usage`. Only enable Reset credits for keys you hold yourself: it lets the holder spend your ChatGPT reset credits.
+
 ## Reasoning effort policies
 
 A key can either enforce one reasoning effort or allow a selected non-empty set of client-requested efforts.

@@ -85,8 +85,21 @@ async def _enable_api_key_auth(async_client) -> None:
     assert response.status_code == 200
 
 
-async def _create_api_key(async_client, *, name: str) -> tuple[str, str]:
-    response = await async_client.post("/api/api-keys/", json={"name": name})
+_RESET_CREDIT_SECTIONS = "upstream_limits,account_pool_usage,reset_credits"
+
+
+async def _create_api_key(
+    async_client,
+    *,
+    name: str,
+    usage_sections: str | None = _RESET_CREDIT_SECTIONS,
+) -> tuple[str, str]:
+    """Create a key; by default it has the ``reset_credits`` section these tests exercise."""
+
+    body: dict[str, object] = {"name": name}
+    if usage_sections is not None:
+        body["usageSections"] = usage_sections
+    response = await async_client.post("/api/api-keys/", json=body)
     assert response.status_code == 200
     payload = response.json()
     return payload["id"], payload["key"]
@@ -1243,3 +1256,124 @@ async def test_v1_reset_credit_post_preserves_success_when_post_redeem_usage_ref
     }
     assert "V1 reset credit consume succeeded but usage refresh failed" in caplog.text
     assert get_rate_limit_reset_credits_store().get(account_id) is None
+
+
+def _fail_reset_credit_io(monkeypatch: pytest.MonkeyPatch) -> AsyncMock:
+    """Fail the test if a gated request reaches account refresh or upstream."""
+
+    fail = AsyncMock(side_effect=AssertionError("a key without reset_credits must not reach reset-credit I/O"))
+    monkeypatch.setattr("app.modules.proxy.api.fetch_reset_credits", fail)
+    monkeypatch.setattr("app.modules.proxy.api.consume_reset_credit", fail)
+    monkeypatch.setattr("app.modules.proxy.api._ensure_v1_reset_credit_account_fresh", fail)
+    return fail
+
+
+async def _seed_listable_credit(async_client, *, raw_account_id: str, email: str) -> str:
+    account_id = await _import_account(async_client, raw_account_id, email)
+    await _seed_snapshot(
+        account_id,
+        available_count=1,
+        credits=[
+            ResetCreditItem(
+                id=f"credit-{raw_account_id}",
+                status="available",
+                expires_at=datetime(2031, 1, 2, 3, 4, 5, tzinfo=timezone.utc),
+            )
+        ],
+    )
+    return account_id
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "usage_sections",
+    [
+        # Omitted: a new key gets the default sections, which exclude reset credits.
+        None,
+        "",
+        "upstream_limits,account_pool_usage",
+    ],
+)
+async def test_v1_reset_credit_rejects_unscoped_key_without_reset_credits_section(
+    async_client,
+    monkeypatch: pytest.MonkeyPatch,
+    usage_sections: str | None,
+):
+    await _enable_api_key_auth(async_client)
+    email = "gated-owner@example.com"
+    account_id = await _seed_listable_credit(async_client, raw_account_id="acc-reset-gated", email=email)
+    io = _fail_reset_credit_io(monkeypatch)
+    key_id, key = await _create_api_key(async_client, name="reset-credit-gated", usage_sections=usage_sections)
+    created = await async_client.get("/api/api-keys/")
+    sections = next(item["usageSections"] for item in created.json() if item["id"] == key_id)
+    assert "reset_credits" not in sections
+
+    listed = await async_client.get("/v1/reset-credit", headers={"Authorization": f"Bearer {key}"})
+    redeemed = await async_client.post(
+        "/v1/reset-credit",
+        headers={"Authorization": f"Bearer {key}"},
+        json={"account_id": account_id, "redeem_id": "credit-acc-reset-gated"},
+    )
+
+    for response in (listed, redeemed):
+        assert response.status_code == 403
+        assert response.json()["error"] == {
+            "message": "Reset credits are not enabled for this API key",
+            "type": "permission_error",
+            "code": "insufficient_permissions",
+        }
+        assert email not in response.text
+        assert account_id not in response.text
+    io.assert_not_awaited()
+    # The credit is still available for the owner.
+    snapshot = get_rate_limit_reset_credits_store().get(account_id)
+    assert snapshot is not None and snapshot.available_count == 1
+
+
+@pytest.mark.asyncio
+async def test_v1_reset_credit_works_after_admin_enables_reset_credits_section(async_client):
+    await _enable_api_key_auth(async_client)
+    email = "enabled-owner@example.com"
+    account_id = await _seed_listable_credit(async_client, raw_account_id="acc-reset-enabled", email=email)
+    key_id, key = await _create_api_key(async_client, name="reset-credit-enable-later", usage_sections=None)
+
+    before = await async_client.get("/v1/reset-credit", headers={"Authorization": f"Bearer {key}"})
+    enable = await async_client.patch(f"/api/api-keys/{key_id}", json={"usageSections": "reset_credits"})
+    assert enable.status_code == 200
+    assert enable.json()["usageSections"] == "reset_credits"
+    after = await async_client.get("/v1/reset-credit", headers={"Authorization": f"Bearer {key}"})
+    disable = await async_client.patch(f"/api/api-keys/{key_id}", json={"usageSections": ""})
+    assert disable.status_code == 200
+    again = await async_client.get("/v1/reset-credit", headers={"Authorization": f"Bearer {key}"})
+
+    assert before.status_code == 403
+    assert after.status_code == 200
+    assert after.json() == [
+        {
+            "account_id": account_id,
+            "email": email,
+            "redeem_id": "credit-acc-reset-enabled",
+            "expiredAt": "2031-01-02T03:04:05Z",
+        }
+    ]
+    assert again.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_v1_reset_credit_section_is_independent_of_quota_privacy_setting(async_client):
+    """The admin grants reset credits per key; the quota privacy setting does not revoke them."""
+
+    await _enable_api_key_auth(async_client)
+    account_id = await _seed_listable_credit(
+        async_client,
+        raw_account_id="acc-reset-privacy",
+        email="privacy-owner@example.com",
+    )
+    _, key = await _create_api_key(async_client, name="reset-credit-privacy", usage_sections="reset_credits")
+    settings = await async_client.put("/api/settings", json={"hideUpstreamQuotaFromApiKeys": True})
+    assert settings.status_code == 200
+
+    response = await async_client.get("/v1/reset-credit", headers={"Authorization": f"Bearer {key}"})
+
+    assert response.status_code == 200
+    assert [entry["account_id"] for entry in response.json()] == [account_id]

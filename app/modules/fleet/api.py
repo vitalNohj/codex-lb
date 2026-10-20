@@ -6,8 +6,7 @@ import logging
 from fastapi import APIRouter, Depends, Security
 
 from app.core.auth.dependencies import set_dashboard_error_format, validate_usage_api_key
-from app.core.config.settings_cache import get_settings_cache
-from app.core.exceptions import DashboardServiceUnavailableError
+from app.core.exceptions import DashboardPermissionError, DashboardServiceUnavailableError
 from app.core.shutdown import is_control_plane_task_admission_open, wait_for_tasks_to_drain
 from app.core.utils.time import utcnow
 from app.db.models import AccountStatus
@@ -15,6 +14,7 @@ from app.db.session import get_background_session
 from app.dependencies import AccountsContext, get_accounts_context
 from app.modules.accounts.repository import AccountsRepository
 from app.modules.api_keys.service import ApiKeyData
+from app.modules.api_keys.visibility import api_key_visibility
 from app.modules.fleet.mappers import build_fleet_account_summaries
 from app.modules.fleet.observability import build_fleet_observability
 from app.modules.fleet.schemas import FleetObservabilityResponse, FleetRefreshResponse, FleetSummaryResponse
@@ -41,18 +41,8 @@ def _visible_account_ids(api_key: ApiKeyData) -> list[str] | None:
     return list(api_key.assigned_account_ids) if api_key.account_assignment_scope_enabled else None
 
 
-def _usage_sections(raw: str) -> set[str]:
-    if not raw or not raw.strip():
-        return set()
-    return {section.strip() for section in raw.split(",") if section.strip()}
-
-
 async def _can_view_fleet_usage(api_key: ApiKeyData) -> bool:
-    sections = _usage_sections(api_key.usage_sections)
-    if "account_pool_usage" not in sections or "upstream_limits" not in sections:
-        return False
-    settings = await get_settings_cache().get()
-    return not bool(getattr(settings, "hide_upstream_quota_from_api_keys", False))
+    return (await api_key_visibility(api_key)).account_usage
 
 
 @router.get("/summary", response_model=FleetSummaryResponse)
@@ -62,8 +52,13 @@ async def get_fleet_summary(
 ) -> FleetSummaryResponse:
     """Read-only, minimal per-account capacity summary for fleet consumers."""
 
+    visibility = await api_key_visibility(api_key)
+    if not visibility.account_pool:
+        # The account list is the key's account pool. Without that section
+        # (or with upstream quota hidden) the key sees no accounts at all.
+        return FleetSummaryResponse(accounts=[])
     visible_account_ids = _visible_account_ids(api_key)
-    include_usage = await _can_view_fleet_usage(api_key)
+    include_usage = visibility.account_usage
     accounts = await context.service.list_accounts(account_ids=visible_account_ids)
     # Fleet consumers reason about native Codex account capacity; synthetic
     # sidecar accounts (CLIProxyAPI/OpenRouter/OmniRoute/Ollama) are dashboard
@@ -106,6 +101,8 @@ async def refresh_fleet_usage(
 ) -> FleetRefreshResponse:
     """Request a bounded usage refresh using codex-lb's normal refresh rules."""
 
+    if not await _can_view_fleet_usage(api_key):
+        raise DashboardPermissionError("This API key cannot view fleet usage, so it cannot refresh it")
     if not is_control_plane_task_admission_open():
         raise DashboardServiceUnavailableError("Server is draining")
     task = asyncio.create_task(

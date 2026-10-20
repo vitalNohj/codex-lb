@@ -19,8 +19,8 @@ class FleetAccountSummary(DashboardModel):
     """Non-sensitive capacity projection for fleet consumers."""
 
     account_id: str
-    display_name: str
-    email: str
+    display_name: str | None = None
+    email: str | None = None
     status: str
     plan_type: str
     primary: FleetWindowSummary

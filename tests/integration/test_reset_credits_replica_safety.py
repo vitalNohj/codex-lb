@@ -81,7 +81,10 @@ async def _import_account(async_client, *, email: str, account_id: str) -> str:
 
 
 async def _create_api_key(async_client, *, name: str) -> str:
-    response = await async_client.post("/api/api-keys/", json={"name": name})
+    response = await async_client.post(
+        "/api/api-keys/",
+        json={"name": name, "usageSections": "upstream_limits,account_pool_usage,reset_credits"},
+    )
     assert response.status_code == 200
     return response.json()["key"]
 
