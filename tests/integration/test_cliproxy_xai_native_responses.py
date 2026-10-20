@@ -90,12 +90,25 @@ async def async_client(_reset_db_state, _block_unexpected_dispatch):
         if service is not None and hasattr(service, "drain_persistence_tasks"):
             await service.drain_persistence_tasks(timeout_seconds=5)
 
-    async with AsyncClient(
-        transport=ASGITransport(app=app),
-        base_url="http://testserver",
-        event_hooks={"response": [_drain_proxy_persistence]},
-    ) as client:
-        yield client
+    try:
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://testserver",
+            event_hooks={"response": [_drain_proxy_persistence]},
+        ) as client:
+            yield client
+    finally:
+        # A catalog-priced turn schedules a background price lookup that reads
+        # dashboard settings. Left running, it can cache this test's settings
+        # (API-key auth on) after the next test has reset the cache, and that
+        # test then gets a 401. Finish it here, then drop what it cached.
+        from app.core.config.settings_cache import get_settings_cache
+        from app.core.usage.external_pricing.service import drain_pending_lookups
+
+        await drain_pending_lookups()
+        settings_cache = get_settings_cache()
+        settings_cache._cached_settings = None
+        settings_cache._cached_at = 0.0
 
 
 @pytest.fixture
