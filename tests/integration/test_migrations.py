@@ -5150,7 +5150,7 @@ async def _api_key_sections(engine) -> dict[str, str]:
 
 
 @pytest.mark.asyncio
-async def test_reset_credits_section_migration_leaves_existing_keys_without_reset_credits(tmp_path):
+async def test_reset_credits_section_migration_leaves_existing_keys_without_reset_credits(tmp_path, monkeypatch):
     from alembic import command
 
     from app.db.migrate import _build_alembic_config
@@ -5169,6 +5169,8 @@ async def test_reset_credits_section_migration_leaves_existing_keys_without_rese
         assert await _api_key_sections(engine) == _RESET_CREDITS_SECTION_KEYS
 
         # The other choice, as the flag would apply it, then the downgrade.
+        # A batch smaller than the key count walks more than one keyset page.
+        monkeypatch.setattr(module, "_BATCH_SIZE", 2)
         async with engine.begin() as conn:
             await conn.run_sync(module.grant_reset_credits_to_existing_keys)
             await conn.run_sync(module.grant_reset_credits_to_existing_keys)
@@ -5178,7 +5180,8 @@ async def test_reset_credits_section_migration_leaves_existing_keys_without_rese
         }
 
         await to_thread.run_sync(lambda: command.downgrade(_build_alembic_config(db_url), parent_revision))
-        # Older code rejects the unknown section, so the downgrade removes it.
+        # The older edit dialog sends stored sections back and the older
+        # service rejects unknown ones, so the downgrade removes the section.
         assert await _api_key_sections(engine) == _RESET_CREDITS_SECTION_KEYS
     finally:
         await engine.dispose()
