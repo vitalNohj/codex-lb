@@ -14,7 +14,7 @@
 
 ## 3. Migration and dashboard
 
-- [x] 3.1 Migration with a single `GRANT_RESET_CREDITS_TO_EXISTING_KEYS` choice (shipped `False`); downgrade removes the section.
+- [x] 3.1 Migration with a single `GRANT_RESET_CREDITS_TO_EXISTING_KEYS` choice (shipped `False`); downgrade keeps the section, because it has no record of which grants it wrote.
 - [x] 3.2 Usage-sections picker lists "Reset credits" in the create and edit dialogs, with a hint.
 
 ## 4. Tests and docs

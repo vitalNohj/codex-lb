@@ -5179,9 +5179,17 @@ async def test_reset_credits_section_migration_leaves_existing_keys_without_rese
             for key_id, sections in _RESET_CREDITS_SECTION_KEYS.items()
         }
 
+        granted = await _api_key_sections(engine)
+
+        # The downgrade cannot tell its own grants from an admin's, so it
+        # keeps every one of them.
         await to_thread.run_sync(lambda: command.downgrade(_build_alembic_config(db_url), parent_revision))
-        # The older edit dialog sends stored sections back and the older
-        # service rejects unknown ones, so the downgrade removes the section.
-        assert await _api_key_sections(engine) == _RESET_CREDITS_SECTION_KEYS
+        assert await _api_key_sections(engine) == granted
+
+        # A re-upgrade keeps them too and adds nothing twice.
+        await to_thread.run_sync(lambda: run_upgrade(db_url, _RESET_CREDITS_SECTION_REVISION, bootstrap_legacy=False))
+        async with engine.begin() as conn:
+            await conn.run_sync(module.grant_reset_credits_to_existing_keys)
+        assert await _api_key_sections(engine) == granted
     finally:
         await engine.dispose()

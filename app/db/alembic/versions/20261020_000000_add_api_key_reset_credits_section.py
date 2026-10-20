@@ -19,8 +19,6 @@ Create Date: 2026-10-20
 
 from __future__ import annotations
 
-from collections.abc import Callable
-
 import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.engine import Connection
@@ -51,11 +49,8 @@ def _has_usage_sections(connection: Connection) -> bool:
     return "usage_sections" in columns
 
 
-def _rewrite_sections(connection: Connection, transform: Callable[[list[str]], list[str] | None]) -> None:
-    """Apply ``transform`` to every key's sections, in bounded keyset batches.
-
-    ``transform`` returns the new sections, or ``None`` to leave the key alone.
-    """
+def grant_reset_credits_to_existing_keys(connection: Connection) -> None:
+    """Add ``reset_credits`` to every key, in bounded keyset batches."""
 
     if not _has_usage_sections(connection):
         return
@@ -67,27 +62,15 @@ def _rewrite_sections(connection: Connection, transform: Callable[[list[str]], l
             {"last_id": last_id, "limit": _BATCH_SIZE},
         ).fetchall()
         for key_id, raw in batch:
-            updated = transform(_sections(raw))
-            if updated is not None:
+            sections = _sections(raw)
+            if _SECTION not in sections:
                 connection.execute(
                     sa.text(f"UPDATE {_TABLE} SET usage_sections = :sections WHERE id = :id"),
-                    {"sections": ",".join(updated), "id": key_id},
+                    {"sections": ",".join([*sections, _SECTION]), "id": key_id},
                 )
         if len(batch) < _BATCH_SIZE:
             return
         last_id = str(batch[-1][0])
-
-
-def _with_section(sections: list[str]) -> list[str] | None:
-    return None if _SECTION in sections else [*sections, _SECTION]
-
-
-def _without_section(sections: list[str]) -> list[str] | None:
-    return [section for section in sections if section != _SECTION] if _SECTION in sections else None
-
-
-def grant_reset_credits_to_existing_keys(connection: Connection) -> None:
-    _rewrite_sections(connection, _with_section)
 
 
 def upgrade() -> None:
@@ -96,14 +79,14 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    """Remove the section older code does not know.
+    """Keep ``reset_credits`` on every key.
 
-    The older dashboard edit dialog sends a key's stored sections back on
-    every save, and the older service rejects an unknown section, so a key
-    that kept ``reset_credits`` could no longer be edited after a downgrade.
-    Removing it drops nothing that code can act on: before this revision
-    every key could use reset credits. A later re-upgrade starts from the
-    same choice as a fresh upgrade.
+    Nothing records which grants this revision wrote, and an admin may have
+    granted the section after the upgrade, so removing it could destroy a
+    choice this revision never made. Older code ignores the section when it
+    decides access (every key can use reset credits there), and a re-upgrade
+    finds every grant intact. One older-code caveat: its edit dialog sends a
+    key's stored sections back unchanged and its service rejects unknown
+    ones, so saving such a key fails until the admin toggles any usage
+    section, which makes the older picker send only the sections it knows.
     """
-
-    _rewrite_sections(op.get_bind(), _without_section)
