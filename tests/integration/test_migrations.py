@@ -5060,7 +5060,7 @@ async def test_cliproxy_routing_attribution_migration_adds_log_columns_and_stick
 
 
 @pytest.mark.asyncio
-async def test_cache_write_tokens_migration_keeps_existing_rows_and_reverses(tmp_path):
+async def test_cache_write_tokens_migration_keeps_existing_rows_and_downgrade_keeps_written_values(tmp_path):
     from alembic import command
 
     from app.db.migrate import _build_alembic_config
@@ -5097,11 +5097,28 @@ async def test_cache_write_tokens_migration_keeps_existing_rows_and_reverses(tmp
         # the cost they were recorded with.
         assert tuple(row) == (100, 60, None, None, 0.5)
 
+        # Traffic after the upgrade records writes; the downgrade must not
+        # destroy them, and a later upgrade reuses the columns as they are.
+        async with engine.begin() as conn:
+            await conn.execute(
+                text(
+                    "INSERT INTO request_logs (request_id, requested_at, model, status, input_tokens, "
+                    "cached_input_tokens, cache_write_input_tokens, cache_write_input_cost_usd, cost_usd) "
+                    "VALUES ('req-after', CURRENT_TIMESTAMP, 'cc/claude-opus-5-5', 'success', 100, 0, 90, 0.4, 0.45)"
+                )
+            )
         await to_thread.run_sync(lambda: command.downgrade(_build_alembic_config(db_url), parent_revision))
+        reupgraded = await to_thread.run_sync(lambda: run_upgrade(db_url, revision, bootstrap_legacy=False))
+        assert reupgraded.current_revision == revision
         async with engine.connect() as conn:
-            columns = {row[1] for row in (await conn.execute(text("PRAGMA table_info(request_logs)"))).fetchall()}
-        assert "cache_write_input_tokens" not in columns
-        assert "cache_write_input_cost_usd" not in columns
-        assert "cached_input_tokens" in columns
+            kept = (
+                await conn.execute(
+                    text(
+                        "SELECT cache_write_input_tokens, cache_write_input_cost_usd, cost_usd "
+                        "FROM request_logs WHERE request_id = 'req-after'"
+                    )
+                )
+            ).one()
+        assert tuple(kept) == (90, 0.4, 0.45)
     finally:
         await engine.dispose()

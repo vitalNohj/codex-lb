@@ -49,10 +49,18 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    existing = _columns(op.get_bind(), _LOGS)
-    present = [name for name, _ in _COLUMNS if name in existing]
-    if not present:
-        return
-    with op.batch_alter_table(_LOGS) as batch_op:
-        for name in present:
-            batch_op.drop_column(name)
+    """Keep both columns and the values application traffic wrote to them.
+
+    After the upgrade every Claude request log row stores its cache-write
+    tokens and their cost, and nothing tells those values apart from ones this
+    revision wrote (it writes none), so dropping the columns would destroy
+    request history. Running ``upgrade()`` again reuses them.
+
+    Code older than this revision does not declare the columns, and its
+    startup schema check reports them as drift. Drop
+    ``request_logs.cache_write_input_tokens`` and
+    ``request_logs.cache_write_input_cost_usd`` by hand before starting such
+    code.
+    """
+
+    return
