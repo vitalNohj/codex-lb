@@ -42,7 +42,7 @@ async def test_poll_preserves_exclusions_saved_during_oauth_read(monkeypatch, tm
 
     path = tmp_path / "claude-test.json"
     path.write_text(json.dumps({"excluded_models": []}))
-    monkeypatch.setattr("app.modules.claude_sidecar.excluded_models.default_auth_dir", lambda: tmp_path)
+    monkeypatch.setattr("app.modules.claude_sidecar.auth_file.default_auth_dir", lambda: tmp_path)
     entered = asyncio.Event()
     resume = asyncio.Event()
     settings = _FakeSettings()

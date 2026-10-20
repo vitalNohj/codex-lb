@@ -30,11 +30,12 @@ an absent key and reads as a readable empty list.
 
 from __future__ import annotations
 
-import json
 import logging
 from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Literal
+
+from app.modules.claude_sidecar.auth_file import read_auth_file
 
 logger = logging.getLogger(__name__)
 
@@ -55,11 +56,6 @@ MAX_PATTERNS = 32
 _FORBIDDEN_CHARACTERS = ("\n", "\r", "\x00", ",")
 _SNAKE_KEY = "excluded_models"
 _KEBAB_KEY = "excluded-models"
-
-
-def default_auth_dir() -> Path:
-    """Return the CLIProxyAPI auth directory that auth-file paths must sit under."""
-    return Path.home() / ".cli-proxy-api"
 
 
 def normalize_excluded_models(raw: object) -> list[str]:
@@ -137,24 +133,8 @@ def excluded_models_from_auth_file(path: str | None, auth_dir: Path | None = Non
     readable and returns an empty list. Only the exclusion key is read out of the file; no other key is
     returned or logged.
     """
-    if not isinstance(path, str) or not path.strip():
-        return None
-    root = (auth_dir or default_auth_dir()).expanduser()
-    try:
-        resolved = Path(path).expanduser().resolve()
-        root_resolved = root.resolve()
-    except OSError:
-        logger.warning("could not resolve CLIProxyAPI auth-file path")
-        return None
-    if not resolved.is_relative_to(root_resolved):
-        logger.warning("refusing to read CLIProxyAPI auth-file outside the auth directory")
-        return None
-    try:
-        parsed = json.loads(resolved.read_text(encoding="utf-8"))
-    except (OSError, ValueError, UnicodeDecodeError):
-        logger.warning("could not read CLIProxyAPI auth-file excluded models")
-        return None
-    if not isinstance(parsed, Mapping):
+    parsed = read_auth_file(path, auth_dir)
+    if parsed is None:
         return None
     return excluded_models_from_mapping(parsed)
 

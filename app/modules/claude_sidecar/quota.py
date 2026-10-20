@@ -10,8 +10,8 @@ from typing import Literal
 
 from app.core.types import JsonValue
 from app.core.utils.json_guards import is_json_mapping
+from app.modules.claude_sidecar.auth_file import default_auth_dir, stored_prefix_for_entry
 from app.modules.claude_sidecar.excluded_models import (
-    default_auth_dir,
     excluded_models_for_entry,
     normalize_excluded_models,
 )
@@ -258,7 +258,7 @@ def _parse_one(entry: Mapping[str, JsonValue], *, auth_dir: Path) -> SidecarAuth
         expired=_expired_from_entry(entry, auth_dir=auth_dir),
         excluded_models=tuple(excluded) if excluded is not None else (),
         excluded_models_available=excluded is not None,
-        prefix=_str(entry.get("prefix")),
+        prefix=stored_prefix_for_entry(entry, auth_dir),
         weight=_int(entry.get("weight")),
         priority=_int(entry.get("priority")),
     )

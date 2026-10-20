@@ -42,7 +42,7 @@ async def test_real_cliproxy_handler_save_readback_clear_without_app_lifespan(mo
     base_url = os.environ["CODEX_LB_HTTP_FIXTURE_BASE_URL"]
     auth_dir = Path(os.environ["CODEX_LB_HTTP_FIXTURE_AUTH_DIR"])
     monkeypatch.setattr(
-        "app.modules.claude_sidecar.excluded_models.default_auth_dir",
+        "app.modules.claude_sidecar.auth_file.default_auth_dir",
         lambda: auth_dir,
     )
 

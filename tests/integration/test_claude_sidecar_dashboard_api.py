@@ -1064,7 +1064,7 @@ async def test_get_routing_reports_excluded_models(async_client, monkeypatch):
 async def test_get_routing_marks_empty_auth_file_list_available(async_client, monkeypatch, tmp_path):
     monkeypatch.setattr("app.modules.claude_sidecar.service.ClaudeSidecarClient", _FakeSidecarClient)
     monkeypatch.setattr(
-        "app.modules.claude_sidecar.excluded_models.default_auth_dir",
+        "app.modules.claude_sidecar.auth_file.default_auth_dir",
         lambda: tmp_path,
     )
     _reset_fake_sidecar_client()
@@ -1101,7 +1101,7 @@ async def test_get_routing_marks_empty_auth_file_list_available(async_client, mo
 async def test_get_routing_flags_unreadable_auth_file(async_client, monkeypatch, tmp_path):
     monkeypatch.setattr("app.modules.claude_sidecar.service.ClaudeSidecarClient", _FakeSidecarClient)
     monkeypatch.setattr(
-        "app.modules.claude_sidecar.excluded_models.default_auth_dir",
+        "app.modules.claude_sidecar.auth_file.default_auth_dir",
         lambda: tmp_path,
     )
     _reset_fake_sidecar_client()
@@ -1136,7 +1136,7 @@ async def test_get_routing_flags_unreadable_auth_file(async_client, monkeypatch,
 async def test_get_routing_reads_excluded_models_from_auth_file(async_client, monkeypatch, tmp_path):
     monkeypatch.setattr("app.modules.claude_sidecar.service.ClaudeSidecarClient", _FakeSidecarClient)
     monkeypatch.setattr(
-        "app.modules.claude_sidecar.excluded_models.default_auth_dir",
+        "app.modules.claude_sidecar.auth_file.default_auth_dir",
         lambda: tmp_path,
     )
     _reset_fake_sidecar_client()
@@ -1192,7 +1192,7 @@ async def test_put_routing_excluded_models_patches_stored_snapshot(async_client,
 
     path = tmp_path / "claude-a@example.com.json"
     path.write_text('{"excluded_models": []}')
-    monkeypatch.setattr("app.modules.claude_sidecar.excluded_models.default_auth_dir", lambda: tmp_path)
+    monkeypatch.setattr("app.modules.claude_sidecar.auth_file.default_auth_dir", lambda: tmp_path)
 
     async def write_exclusions(self, name, patterns):
         import json
