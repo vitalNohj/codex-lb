@@ -654,7 +654,7 @@ def test_snapshot_backed_auth_row_reports_the_read_result(tmp_path, monkeypatch)
 
     path = tmp_path / "claude-a@example.com.json"
     path.write_text('{"excluded_models": ["fresh-*"]}')
-    monkeypatch.setattr("app.modules.claude_sidecar.excluded_models.default_auth_dir", lambda: tmp_path)
+    monkeypatch.setattr("app.modules.claude_sidecar.auth_file.default_auth_dir", lambda: tmp_path)
     snapshot = SidecarQuotaSnapshot(
         checked_at=datetime(2026, 7, 25, 17, 0, tzinfo=timezone.utc),
         status="healthy",

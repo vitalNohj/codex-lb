@@ -367,7 +367,7 @@ async def test_saved_exclusions_are_readable_back_through_codex_lb(async_client,
     # Point that guard at this run's synthetic directory, which is the auth
     # directory the sidecar under test was actually started with.
     monkeypatch.setattr(
-        "app.modules.claude_sidecar.excluded_models.default_auth_dir",
+        "app.modules.claude_sidecar.auth_file.default_auth_dir",
         lambda: sidecar.auth_dir,
     )
     await _configure_codex_lb(async_client, sidecar.base_url)

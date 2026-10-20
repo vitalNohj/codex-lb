@@ -91,6 +91,7 @@ from app.core.types import JsonValue
 from app.core.utils.time import to_utc_naive, utcnow
 from app.db.models import AccountStatus, CliproxyStickySession, DashboardSettings, StickySessionKind
 from app.db.session import get_background_session, sqlite_writer_section
+from app.modules.claude_sidecar.auth_file import stored_prefix_for_entry
 from app.modules.claude_sidecar.capacity_hold import StoredSnapshotReader
 from app.modules.claude_sidecar.quota import SidecarAuthQuota, SidecarQuotaSnapshot, credential_provider
 from app.modules.cliproxy_accounts.api_keys import (
@@ -1533,15 +1534,13 @@ async def _stored_prefixes(
 
     API-key prefixes are keyed by route identity, not list index. A deletion
     that shifts the list cannot hand one entry's prefix to its neighbor.
+
+    CLIProxyAPI's auth-files listing omits ``prefix``, so an OAuth prefix is
+    read from the auth file itself. Without that read every stored prefix
+    looks empty and is written again whenever the remembered prefix expires.
     """
 
-    oauth: dict[str, str] = {}
-    for entry in await client.list_auth_files():
-        name = entry.get("name")
-        raw_prefix = entry.get("prefix")
-        prefix = prefix_or_none(raw_prefix if isinstance(raw_prefix, str) else None)
-        if isinstance(name, str) and name.strip() and prefix:
-            oauth[name.strip()] = prefix
+    oauth = await asyncio.to_thread(_oauth_prefixes, await client.list_auth_files())
     api: dict[str, str] = {}
     for row in await list_routing_api_keys(client):
         prefix = prefix_or_none(row.prefix)
@@ -1550,6 +1549,24 @@ async def _stored_prefixes(
     taken = {prefix.casefold() for prefix in oauth.values()}
     taken.update(prefix.casefold() for prefix in api.values())
     return oauth, api, taken
+
+
+def _oauth_prefixes(entries: Sequence[Mapping[str, JsonValue]]) -> dict[str, str]:
+    """Map each listed auth-file name to the routable prefix stored for it.
+
+    A name whose prefix is empty or not routable, or whose auth file cannot be
+    read, is left out and gets a generated prefix, as before this read existed.
+    """
+
+    prefixes: dict[str, str] = {}
+    for entry in entries:
+        name = entry.get("name")
+        if not isinstance(name, str) or not name.strip():
+            continue
+        prefix = prefix_or_none(stored_prefix_for_entry(entry))
+        if prefix:
+            prefixes[name.strip()] = prefix
+    return prefixes
 
 
 def _known_prefix(
@@ -1592,6 +1609,8 @@ async def _fill_empty_prefixes(
                 for item in needing:
                     existing = _known_prefix(item, oauth_prefixes, api_prefixes)
                     if existing:
+                        # Already stored: reuse it and send no write, not
+                        # even one carrying the same value.
                         assigned[item.account_id] = existing
                         taken.add(existing.casefold())
                         _remember_prefix(item.account_id, existing)
