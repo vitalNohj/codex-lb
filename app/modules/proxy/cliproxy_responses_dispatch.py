@@ -442,16 +442,21 @@ async def _native_stream(
                     # every later request waits behind a poller that is gone.
                     await await_deferring_cancellation(_CLAUDE_SIDECAR_COOLDOWN_GATE.end_poll(held=held))
                 raise
-    except ClaudeSidecarUnavailableError:
-        await _release_sidecar_reservation(reservation, api_key=log.api_key)
-        await _log_error(log, error_code=_UNAVAILABLE_ERROR_CODE, error_message=_UNAVAILABLE_MESSAGE)
-        settled = True
-        yield _response_failed_frame(
-            openai_error(_UNAVAILABLE_ERROR_CODE, _UNAVAILABLE_MESSAGE, error_type="upstream_error")
-        )
-        return
     except ClaudeSidecarError as exc:
+        if observer.terminal is not None:
+            # The transport failed after the terminal event was read and
+            # relayed: xAI finished and billed the turn and the client has its
+            # terminal frame. ``finally`` charges it, shielded, from what was
+            # observed; nothing is added after the terminal frame.
+            return
         await _release_sidecar_reservation(reservation, api_key=log.api_key)
+        if isinstance(exc, ClaudeSidecarUnavailableError):
+            await _log_error(log, error_code=_UNAVAILABLE_ERROR_CODE, error_message=_UNAVAILABLE_MESSAGE)
+            settled = True
+            yield _response_failed_frame(
+                openai_error(_UNAVAILABLE_ERROR_CODE, _UNAVAILABLE_MESSAGE, error_type="upstream_error")
+            )
+            return
         await _log_upstream_error(log, exc)
         settled = True
         client_error = client_facing_sidecar_error(

@@ -621,3 +621,98 @@ async def test_a_client_leaving_after_an_unterminated_terminal_event_is_still_ch
     assert frames[0].endswith("\n\n")
     assert "response.completed" in frames[0]
     assert outcomes == ["settled"]
+
+
+class _FailAfterClient:
+    """Relays ``chunks``, then the transport fails with ``error``."""
+
+    def __init__(self, chunks: list[bytes], error: Exception) -> None:
+        self.chunks = chunks
+        self.error = error
+
+    def stream_responses(self, payload):
+        del payload
+        chunks, error = self.chunks, self.error
+
+        class _Stream:
+            async def __aenter__(self):
+                async def iterate():
+                    for chunk in chunks:
+                        yield chunk
+                    raise error
+
+                return iterate()
+
+            async def __aexit__(self, *exc):
+                return False
+
+        return _Stream()
+
+
+async def _run_failing_stream(chunks: list[bytes], error: Exception, monkeypatch) -> tuple[list[str], list[str]]:
+    from app.modules.proxy import claude_sidecar_dispatch, cliproxy_responses_dispatch
+
+    monkeypatch.setattr(claude_sidecar_dispatch, "CLAUDE_SIDECAR_COOLDOWN_WAIT_SECONDS", 0.0)
+    outcomes: list[str] = []
+
+    async def fake_settle(reservation, *, log, response, failure):
+        del reservation, log
+        outcomes.append("settled" if failure is None else f"settled-failed:{failure.code}")
+        assert response is not None
+
+    async def fake_release(reservation, *, api_key):
+        del reservation, api_key
+        outcomes.append("released")
+
+    async def fake_log(*args, **kwargs):
+        del args, kwargs
+        outcomes.append("logged-error")
+
+    monkeypatch.setattr(cliproxy_responses_dispatch, "_settle_and_log", fake_settle)
+    monkeypatch.setattr(cliproxy_responses_dispatch, "_release_sidecar_reservation", fake_release)
+    monkeypatch.setattr(cliproxy_responses_dispatch, "_log_error", fake_log)
+    monkeypatch.setattr(cliproxy_responses_dispatch, "_log_upstream_error", fake_log)
+    log = cliproxy_responses_dispatch._LogFields(
+        api_key=None, model="grok-4.3", started_at=0.0, reasoning_effort=None, requested_reasoning_effort=None
+    )
+    frames = [
+        frame
+        async for frame in cliproxy_responses_dispatch._native_stream(
+            {"model": "grok-4.3"},
+            client=cast(Any, _FailAfterClient(chunks, error)),
+            reservation=None,
+            log=log,
+        )
+    ]
+    return frames, outcomes
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "error",
+    [ClaudeSidecarUnavailableError("connection reset"), ClaudeSidecarError(502, "bad gateway")],
+)
+async def test_a_transport_failure_after_the_terminal_event_still_charges_the_turn(
+    error: Exception, monkeypatch
+) -> None:
+    completed = {
+        "type": "response.completed",
+        "response": {"id": "r", "status": "completed", "usage": {"input_tokens": 3, "output_tokens": 2}},
+    }
+    frames, outcomes = await _run_failing_stream([_sse(completed)], error, monkeypatch)
+
+    assert outcomes == ["settled"]
+    # The client already has its terminal frame; nothing contradicts it.
+    assert len(frames) == 1
+    assert "response.completed" in frames[0]
+
+
+@pytest.mark.asyncio
+async def test_a_transport_failure_before_the_terminal_event_releases(monkeypatch) -> None:
+    delta = {"type": "response.output_text.delta", "delta": "hi"}
+    frames, outcomes = await _run_failing_stream(
+        [_sse(delta)], ClaudeSidecarUnavailableError("connection reset"), monkeypatch
+    )
+
+    assert outcomes == ["released", "logged-error"]
+    assert "response.failed" in frames[-1]
