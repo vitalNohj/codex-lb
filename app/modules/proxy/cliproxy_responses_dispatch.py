@@ -409,12 +409,15 @@ async def _native_stream(
                         if frame:
                             yielded = True
                             yield frame
+                    # Observe the tail before handing it on, as every other
+                    # frame is: a client that leaves right after a terminal
+                    # tail must still find the turn observed and charged.
+                    for event in decoder.flush():
+                        observer.observe(event)
                     tail = framer.flush()
                     if tail:
                         yielded = True
                         yield tail
-                    for event in decoder.flush():
-                        observer.observe(event)
                 if wait_seconds > 0.0:
                     await _finish_claude_sidecar_cooldown_attempt(None, deadline=cooldown_deadline, held=held)
                 break

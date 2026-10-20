@@ -605,3 +605,19 @@ async def test_a_client_leaving_mid_turn_releases_the_reservation(monkeypatch) -
 
     assert "output_text.delta" in frames[0]
     assert outcomes == ["released"]
+
+
+@pytest.mark.asyncio
+async def test_a_client_leaving_after_an_unterminated_terminal_event_is_still_charged(monkeypatch) -> None:
+    """The upstream closes right after response.completed, without its blank line."""
+
+    completed = {
+        "type": "response.completed",
+        "response": {"id": "r", "status": "completed", "usage": {"input_tokens": 3, "output_tokens": 2}},
+    }
+    cut = _sse(completed).rstrip(b"\n")
+    frames, outcomes = await _close_after(1, [cut], monkeypatch)
+
+    assert frames[0].endswith("\n\n")
+    assert "response.completed" in frames[0]
+    assert outcomes == ["settled"]
