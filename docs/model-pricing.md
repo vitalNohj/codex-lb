@@ -193,8 +193,13 @@ price remains until that reference supplies another valid parsed price.
   codex-lb does not assume a discount it cannot cite. A cache-read rate in a
   shape codex-lb cannot read makes the whole entry unreadable, so a stored price
   is kept rather than charging cached input at the input rate.
-- Cache writes are not recorded separately, so they cost the input rate even
-  where the provider bills a premium for them.
+- Claude prompt-cache writes that CLIProxyAPI reports are recorded in their own
+  request-log column and cost twice the input rate, which is Anthropic's 1-hour
+  cache-write price. CLIProxyAPI moves Claude Code OAuth requests to the 1-hour
+  cache, and its chat usage does not split writes by duration, so every write
+  is priced at that rate. A Claude API key on the 5-minute cache is billed
+  1.25 times the input rate, so its writes show up slightly overpriced. Other
+  providers report no writes, and their input stays at the input rate.
 - Versions before this rule charged every cached token the full input rate. The
   upgrade corrects the stored costs it can prove came from that rule: request
   logs priced from a matched OpenRouter Claude card, the lifetime totals, and the

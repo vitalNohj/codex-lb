@@ -61,6 +61,31 @@ spec:
           annotations:
             summary: "codex-lb HPA at maximum replicas"
             description: "HPA has been at maximum replicas for 15 minutes"
+        - alert: CodexLBClaudeStickyCacheMiss
+          expr: |
+            (
+              sum by (namespace, job) (
+                rate(codex_lb_cliproxy_claude_sticky_cache_total{result="miss"}[30m])
+              )
+              /
+              sum by (namespace, job) (
+                rate(codex_lb_cliproxy_claude_sticky_cache_total[30m])
+              )
+            ) > 0.5
+            and
+            sum by (namespace, job) (
+              increase(codex_lb_cliproxy_claude_sticky_cache_total[30m])
+            ) >= 10
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Pinned Claude conversations are not reading the prompt cache"
+            description: >-
+              More than half of the Claude turns served on a conversation's existing CLIProxyAPI
+              pin read nothing from the prompt cache. CLIProxyAPI must reach api.anthropic.com
+              directly; a gateway that rewrites the request body in between makes every turn a
+              full cache write.
         {{- with .Values.metrics.prometheusRule.additionalRules }}
         {{- toYaml . | nindent 8 }}
         {{- end }}

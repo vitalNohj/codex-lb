@@ -774,3 +774,95 @@ def test_calculate_costs_uses_service_tier():
     result = calculate_costs(items, DEFAULT_PRICING_MODELS, DEFAULT_MODEL_ALIASES)
 
     assert result.total_usd_7d == pytest.approx(35.0)
+
+
+# Claude prompt-cache writes through CLIProxyAPI. Rates are Anthropic's
+# published Sonnet list prices: $3/M input, $0.30/M cache read, $15/M output;
+# a 1-hour cache write is 2x input ($6/M).
+_CLAUDE_LIKE_PRICE = ModelPrice(input_per_1m=3.0, output_per_1m=15.0, cached_input_per_1m=0.30)
+
+
+def test_cache_writes_are_priced_at_the_one_hour_write_rate() -> None:
+    # CLIProxyAPI's shape: prompt_tokens 1939 = 1 uncached + 1850 read + 88 written.
+    usage = UsageTokens(
+        input_tokens=1939.0,
+        output_tokens=100.0,
+        cached_input_tokens=1850.0,
+        cache_write_input_tokens=88.0,
+    )
+
+    breakdown = calculate_cost_breakdown_from_usage(usage, _CLAUDE_LIKE_PRICE)
+
+    assert breakdown is not None
+    assert breakdown.input_usd == pytest.approx(1 / 1_000_000 * 3.0)
+    assert breakdown.cached_input_usd == pytest.approx(1850 / 1_000_000 * 0.30)
+    assert breakdown.cache_write_input_usd == pytest.approx(88 / 1_000_000 * 6.0)
+    assert breakdown.output_usd == pytest.approx(100 / 1_000_000 * 15.0)
+    assert breakdown.total_usd == pytest.approx(
+        (1 * 3.0 + 1850 * 0.30 + 88 * 6.0 + 100 * 15.0) / 1_000_000,
+    )
+    # The same tokens counted as plain input cost less: the bug this fixes.
+    plain = calculate_cost_from_usage(
+        UsageTokens(input_tokens=1939.0, output_tokens=100.0, cached_input_tokens=1850.0),
+        _CLAUDE_LIKE_PRICE,
+    )
+    assert plain is not None
+    assert breakdown.total_usd == pytest.approx(plain + 88 / 1_000_000 * 3.0)
+
+
+def test_no_cache_writes_leave_the_cost_bit_identical() -> None:
+    usage = UsageTokens(input_tokens=12_345.0, output_tokens=678.0, cached_input_tokens=9_000.0)
+
+    with_zero = calculate_cost_breakdown_from_usage(
+        UsageTokens(
+            input_tokens=12_345.0,
+            output_tokens=678.0,
+            cached_input_tokens=9_000.0,
+            cache_write_input_tokens=0.0,
+        ),
+        _CLAUDE_LIKE_PRICE,
+        precision=6,
+    )
+    without = calculate_cost_breakdown_from_usage(usage, _CLAUDE_LIKE_PRICE, precision=6)
+
+    assert with_zero == without
+    assert without is not None
+    assert without.cache_write_input_usd is None
+
+
+def test_cache_writes_are_clamped_to_the_uncached_part_of_the_prompt() -> None:
+    # A malformed report claiming more writes than the reads leave over cannot
+    # bill more than the whole prompt.
+    usage = UsageTokens(
+        input_tokens=100.0,
+        output_tokens=0.0,
+        cached_input_tokens=60.0,
+        cache_write_input_tokens=500.0,
+    )
+
+    breakdown = calculate_cost_breakdown_from_usage(usage, _CLAUDE_LIKE_PRICE)
+
+    assert breakdown is not None
+    assert breakdown.input_usd == 0.0
+    assert breakdown.cache_write_input_usd == pytest.approx(40 / 1_000_000 * 6.0)
+
+
+def test_cache_write_rate_follows_the_long_context_input_rate() -> None:
+    price = ModelPrice(
+        input_per_1m=3.0,
+        output_per_1m=15.0,
+        cached_input_per_1m=0.30,
+        long_context_threshold_tokens=200_000,
+        long_context_input_per_1m=6.0,
+        long_context_output_per_1m=22.5,
+        long_context_cached_input_per_1m=0.60,
+    )
+
+    breakdown = calculate_cost_breakdown_from_usage(
+        UsageTokens(input_tokens=250_000.0, output_tokens=0.0, cache_write_input_tokens=50_000.0),
+        price,
+    )
+
+    assert breakdown is not None
+    assert breakdown.cache_write_input_usd == pytest.approx(50_000 / 1_000_000 * 12.0)
+    assert breakdown.input_usd == pytest.approx(200_000 / 1_000_000 * 6.0)

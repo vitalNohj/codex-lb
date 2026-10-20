@@ -6,6 +6,7 @@ import pytest
 
 from app.core.clients.claude_sidecar import ClaudeSidecarConfig, ClaudeSidecarError, SidecarPrefix
 from app.core.openai.chat_requests import ChatCompletionsRequest
+from app.core.types import JsonValue
 from app.core.utils.sse import SseJsonDataDecoder
 from app.modules.proxy import claude_sidecar_dispatch as sidecar_dispatch
 from app.modules.proxy.claude_sidecar_dispatch import (
@@ -1298,6 +1299,105 @@ def test_extract_usage_accepts_persistable_token_boundary() -> None:
     assert usage.input_tokens == (1 << 31) - 1
     assert usage.output_tokens == (1 << 31) - 1
     assert usage.cached_input_tokens == (1 << 31) - 1
+
+
+def test_extract_usage_reads_cliproxy_claude_cache_writes() -> None:
+    # CLIProxyAPI v8's Claude -> chat translator reports writes under both
+    # names on the body, the message_delta chunk and the trailing usage chunk
+    # (claude_openai_response.go), with prompt_tokens = uncached + read + write.
+    usage = extract_usage(
+        {
+            "usage": {
+                "prompt_tokens": 12_000,
+                "completion_tokens": 40,
+                "prompt_tokens_details": {
+                    "cached_tokens": 8_000,
+                    "cached_creation_tokens": 3_900,
+                    "cache_write_tokens": 3_900,
+                },
+            }
+        }
+    )
+
+    assert usage is not None
+    assert usage.input_tokens == 12_000
+    assert usage.cached_input_tokens == 8_000
+    assert usage.cache_write_input_tokens == 3_900
+
+
+@pytest.mark.parametrize(
+    ("usage_payload", "expected"),
+    [
+        (
+            {"prompt_tokens": 10, "completion_tokens": 1, "prompt_tokens_details": {"cached_creation_tokens": 7}},
+            7,
+        ),
+        (
+            {"prompt_tokens": 10, "completion_tokens": 1, "prompt_tokens_details": {"cache_creation_tokens": 6}},
+            6,
+        ),
+        (
+            {"input_tokens": 10, "output_tokens": 1, "input_tokens_details": {"cache_write_tokens": 5}},
+            5,
+        ),
+        ({"input_tokens": 10, "output_tokens": 1, "cache_creation_input_tokens": 4}, 4),
+        ({"prompt_tokens": 10, "completion_tokens": 1, "prompt_tokens_details": {"cached_tokens": 2}}, 0),
+    ],
+)
+def test_extract_usage_reads_every_reported_cache_write_shape(
+    usage_payload: dict[str, JsonValue], expected: int
+) -> None:
+    usage = extract_usage({"usage": usage_payload})
+
+    assert usage is not None
+    assert usage.cache_write_input_tokens == expected
+
+
+@pytest.mark.parametrize("value", [-1, 1.5, "3", None])
+def test_extract_usage_drops_an_invalid_cache_write_field_without_losing_required_counts(
+    value: JsonValue,
+) -> None:
+    usage = extract_usage(
+        {
+            "usage": {
+                "prompt_tokens": 10,
+                "completion_tokens": 5,
+                "prompt_tokens_details": {"cached_tokens": 2, "cache_write_tokens": value},
+            }
+        }
+    )
+
+    assert usage is not None
+    assert usage.input_tokens == 10
+    assert usage.cached_input_tokens == 2
+    assert usage.cache_write_input_tokens == 0
+
+
+@pytest.mark.asyncio
+async def test_sidecar_request_cost_prices_cache_writes(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.core.usage.external_pricing.service import CalculatedCost
+    from app.core.usage.pricing import UsageTokens
+    from app.db.models import ExternalPriceStatus
+    from app.modules.proxy import external_pricing_logging
+
+    seen: list[UsageTokens | None] = []
+
+    async def _calculated_cost(**kwargs: object) -> tuple[CalculatedCost, ExternalPriceStatus]:
+        usage = kwargs["usage"]
+        assert usage is None or isinstance(usage, UsageTokens)
+        seen.append(usage)
+        return CalculatedCost(0.25, "vendor/model", "openrouter"), ExternalPriceStatus.RESOLVED
+
+    monkeypatch.setattr(external_pricing_logging, "calculated_cost_for_request", _calculated_cost)
+
+    await _sidecar_request_cost(
+        "cc/model",
+        SidecarUsage(input_tokens=100, output_tokens=5, cached_input_tokens=30, cache_write_input_tokens=60),
+    )
+
+    assert seen == [
+        UsageTokens(input_tokens=100.0, output_tokens=5.0, cached_input_tokens=30.0, cache_write_input_tokens=60.0)
+    ]
 
 
 @pytest.mark.asyncio

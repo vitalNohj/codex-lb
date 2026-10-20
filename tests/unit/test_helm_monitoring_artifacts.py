@@ -89,3 +89,21 @@ def test_grafana_overview_charts_cliproxy_route_outcomes() -> None:
         '(rate(codex_lb_cliproxy_route_outcome_total{namespace="$namespace",job=~"$job"}[5m]))'
     )
     assert len({item["id"] for item in dashboard["panels"]}) == len(dashboard["panels"])
+
+
+def test_claude_sticky_cache_miss_alert_needs_a_sustained_majority_of_misses() -> None:
+    """The miss rate is computed per job, and a handful of turns never fires it."""
+
+    prometheus_rule = (_CHART_DIR / "templates" / "prometheusrule.yaml").read_text()
+    match = re.search(
+        r"(?ms)^\s*- alert: CodexLBClaudeStickyCacheMiss\n\s+expr: \|\n(?P<expr>.*?)(?=^\s+for: 15m$)",
+        prometheus_rule,
+    )
+
+    assert match is not None
+    assert " ".join(match.group("expr").split()) == (
+        '( sum by (namespace, job) ( rate(codex_lb_cliproxy_claude_sticky_cache_total{result="miss"}[30m]) )'
+        " / sum by (namespace, job) ( rate(codex_lb_cliproxy_claude_sticky_cache_total[30m]) ) ) > 0.5"
+        " and sum by (namespace, job) ( increase(codex_lb_cliproxy_claude_sticky_cache_total[30m]) ) >= 10"
+    )
+    assert "api.anthropic.com" in prometheus_rule

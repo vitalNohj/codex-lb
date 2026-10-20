@@ -284,6 +284,14 @@ async def test_leaving_before_the_response_starts_settles_without_waiting_for_gc
 
     dispatch = importlib.import_module(_DISPATCH_MODULES[provider])
     monkeypatch.setattr(dispatch, "ClosingStreamingResponse", _StartsAfterTheClientLeft)
+    if provider == "claude":
+        # A Claude request is sent only with a CLIProxyAPI credential prefix,
+        # and this upstream has no credentials to route to. Name one without
+        # changing the forwarded model, so the request reaches the response.
+        async def _named_credential(body, **_kwargs) -> None:
+            del body
+
+        monkeypatch.setattr(dispatch, "apply_cliproxy_account_route", _named_credential)
     upstream.release.set()  # the upstream answers at once
     key, model = await _configure(live_server, provider, upstream)
 

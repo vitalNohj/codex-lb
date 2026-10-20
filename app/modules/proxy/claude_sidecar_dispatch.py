@@ -46,11 +46,13 @@ from app.modules.claude_sidecar.capacity_hold import (
 )
 from app.modules.claude_sidecar.quota import SidecarQuotaSnapshot
 from app.modules.proxy.cliproxy_account_routing import (
+    CliproxyClaudeRouteRefused,
     CliproxyStickyHints,
     apply_cliproxy_account_route,
     cliproxy_log_attribution,
     cliproxy_sticky_hints,
     rebind_cliproxy_account_route,
+    record_claude_sticky_cache_result,
 )
 from app.modules.proxy.cursor_chat_compat import (
     apply_cursor_usage_fallback_to_response,
@@ -603,6 +605,10 @@ class SidecarUsage:
     output_tokens: int
     cached_input_tokens: int = 0
     cost_usd: float | None = None
+    # Prompt-cache writes. CLIProxyAPI counts them inside ``prompt_tokens``
+    # (prompt = uncached + cache read + cache write), so they are a part of
+    # ``input_tokens`` priced at the cache-write rate, not extra input.
+    cache_write_input_tokens: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -1344,12 +1350,35 @@ async def proxy_chat_to_sidecar(
     # Read the conversation identity from the client request: the sidecar body
     # has already lost ``metadata``. The Responses bridge passes the hints it
     # read before translation.
-    await apply_cliproxy_account_route(
-        sidecar_payload.body,
-        headers=request.headers,
-        client=client,
-        hints=sticky_hints or cliproxy_sticky_hints(payload, api_key_id=api_key.id if api_key else None),
-    )
+    route_hints = sticky_hints or cliproxy_sticky_hints(payload, api_key_id=api_key.id if api_key else None)
+
+    async def route_account() -> None:
+        await apply_cliproxy_account_route(
+            sidecar_payload.body,
+            headers=request.headers,
+            client=client,
+            hints=route_hints,
+        )
+
+    # A Claude request no credential prefix can be named for is refused. While
+    # every Claude auth is under a poller hold no credential is selectable, so
+    # the hold answers first (429 for a far hold) and a near hold is waited
+    # out before the route is tried again.
+    retry_route: Callable[[], Awaitable[None]] | None = None
+    try:
+        await route_account()
+    except CliproxyClaudeRouteRefused as exc:
+        if await claude_capacity_held_until() is None:
+            return await _claude_route_refused_response(
+                exc,
+                reservation=reservation,
+                api_key=api_key,
+                model=effective_model,
+                rate_limit_headers=rate_limit_headers,
+                reasoning_effort=sidecar_payload.effective_reasoning_effort,
+                requested_reasoning_effort=sidecar_payload.requested_reasoning_effort,
+            )
+        retry_route = route_account
     deepseek_scope = deepseek_resolve_scope(
         effective_model=effective_model,
         provider="claude",
@@ -1388,6 +1417,7 @@ async def proxy_chat_to_sidecar(
                 deepseek_scope=deepseek_scope,
                 reasoning_effort=sidecar_payload.effective_reasoning_effort,
                 requested_reasoning_effort=sidecar_payload.requested_reasoning_effort,
+                retry_route=retry_route,
             ),
             abandon=partial(
                 _abandon_unstarted_sidecar_stream,
@@ -1419,6 +1449,18 @@ async def proxy_chat_to_sidecar(
 
     try:
         await _await_claude_capacity(sidecar_payload.body)
+        if retry_route is not None:
+            await retry_route()
+    except CliproxyClaudeRouteRefused as exc:
+        return await _claude_route_refused_response(
+            exc,
+            reservation=reservation,
+            api_key=api_key,
+            model=effective_model,
+            rate_limit_headers=rate_limit_headers,
+            reasoning_effort=sidecar_payload.effective_reasoning_effort,
+            requested_reasoning_effort=sidecar_payload.requested_reasoning_effort,
+        )
     except _ClaudeCapacityUnavailable as exc:
         return await _claude_no_capacity_response(
             exc.outcome,
@@ -1566,6 +1608,7 @@ async def _sidecar_stream_iterator(
     deepseek_scope: DeepSeekScope | None = None,
     reasoning_effort: str | None = None,
     requested_reasoning_effort: str | None = None,
+    retry_route: Callable[[], Awaitable[None]] | None = None,
 ) -> AsyncIterator[bytes]:
     usage: SidecarUsage | None = None
     completed = False
@@ -1578,6 +1621,8 @@ async def _sidecar_stream_iterator(
     last_cooldown_exc: ClaudeSidecarError | None = None
     try:
         await _await_claude_capacity(payload)
+        if retry_route is not None:
+            await retry_route()
         while True:
             if last_cooldown_exc is not None and time.monotonic() >= cooldown_deadline:
                 raise last_cooldown_exc
@@ -1683,6 +1728,18 @@ async def _sidecar_stream_iterator(
         )
         settled = True
         yield _error_sse(exc.outcome.content)
+        yield b"data: [DONE]\n\n"
+    except CliproxyClaudeRouteRefused as exc:
+        refusal = await _release_and_log_claude_route_refused(
+            exc,
+            reservation=reservation,
+            api_key=api_key,
+            model=model,
+            reasoning_effort=reasoning_effort,
+            requested_reasoning_effort=requested_reasoning_effort,
+        )
+        settled = True
+        yield _error_sse(refusal.content)
         yield b"data: [DONE]\n\n"
     except ClaudeSidecarError as exc:
         if cursor_compat and _is_sidecar_context_length_error(exc):
@@ -1847,6 +1904,79 @@ async def _claude_no_capacity_response(
     )
 
 
+CLIPROXY_CLAUDE_ROUTE_REFUSED_ERROR_CODE = "cliproxy_claude_route_unavailable"
+
+
+async def _claude_route_refused_response(
+    exc: CliproxyClaudeRouteRefused,
+    *,
+    reservation: ApiKeyUsageReservationData | None,
+    api_key: ApiKeyData | None,
+    model: str,
+    rate_limit_headers: Mapping[str, str],
+    reasoning_effort: str | None,
+    requested_reasoning_effort: str | None,
+) -> JSONResponse:
+    """Answer a Claude request that has no CLIProxyAPI credential prefix."""
+
+    refusal = await _release_and_log_claude_route_refused(
+        exc,
+        reservation=reservation,
+        api_key=api_key,
+        model=model,
+        reasoning_effort=reasoning_effort,
+        requested_reasoning_effort=requested_reasoning_effort,
+    )
+    return JSONResponse(
+        status_code=refusal.status_code,
+        content=refusal.content,
+        headers=refusal.headers(rate_limit_headers),
+    )
+
+
+async def _release_and_log_claude_route_refused(
+    exc: CliproxyClaudeRouteRefused,
+    *,
+    reservation: ApiKeyUsageReservationData | None,
+    api_key: ApiKeyData | None,
+    model: str,
+    reasoning_effort: str | None,
+    requested_reasoning_effort: str | None,
+) -> ClaudeNoCapacity:
+    """Release and log a refused Claude request; return the client answer.
+
+    Nothing was sent upstream, so the reservation is released rather than
+    settled. When every Claude auth is disabled the answer says so, as it did
+    when CLIProxyAPI's "unknown provider" reply surfaced that state.
+    """
+
+    if no_claude_auth_enabled(await _stored_claude_quota_snapshot()):
+        refusal = claude_no_enabled_account()
+    else:
+        message = (
+            "No CLIProxyAPI credential is available for this Claude request. codex-lb sends Claude "
+            "requests only with an account prefix, so the conversation keeps its prompt cache."
+        )
+        refusal = ClaudeNoCapacity(
+            status_code=503,
+            content=openai_error(CLIPROXY_CLAUDE_ROUTE_REFUSED_ERROR_CODE, message, error_type="upstream_error"),
+            retry_after_seconds=CLAUDE_SIDECAR_NO_CAPACITY_RETRY_AFTER_SECONDS,
+            log_error_code=CLIPROXY_CLAUDE_ROUTE_REFUSED_ERROR_CODE,
+            log_error_message=str(exc),
+        )
+    await _release_and_log_sidecar_request(
+        reservation,
+        api_key=api_key,
+        model=model,
+        started_at=time.monotonic(),
+        error_code=refusal.log_error_code,
+        error_message=refusal.log_error_message,
+        reasoning_effort=reasoning_effort,
+        requested_reasoning_effort=requested_reasoning_effort,
+    )
+    return refusal
+
+
 async def _release_and_log_sidecar_request(
     reservation: ApiKeyUsageReservationData | None,
     *,
@@ -1963,7 +2093,40 @@ def extract_usage(payload: JsonValue) -> SidecarUsage | None:
         output_tokens=output_tokens,
         cached_input_tokens=cached_tokens,
         cost_usd=extract_billed_cost(payload),
+        cache_write_input_tokens=_cache_write_tokens(usage),
     )
+
+
+# Where CLIProxyAPI v8 reports prompt-cache writes on the OpenAI-compatible
+# routes, in preference order. Chat completions (Claude translator) sets
+# ``prompt_tokens_details.cache_write_tokens`` and the legacy alias
+# ``cached_creation_tokens`` on the body, the ``message_delta`` chunk and the
+# trailing usage chunk; the Responses shape uses ``input_tokens_details``; a
+# native Anthropic shape uses ``cache_creation_input_tokens``.
+_CACHE_WRITE_FIELDS: tuple[tuple[str | None, str], ...] = (
+    ("prompt_tokens_details", "cache_write_tokens"),
+    ("prompt_tokens_details", "cached_creation_tokens"),
+    ("prompt_tokens_details", "cache_creation_tokens"),
+    ("input_tokens_details", "cache_write_tokens"),
+    (None, "cache_creation_input_tokens"),
+)
+
+
+def _cache_write_tokens(usage: Mapping[str, JsonValue]) -> int:
+    """The first usable cache-write count, or 0 when none is reported.
+
+    Like ``cached_tokens`` this only refines an input count we already have, so
+    a malformed value is skipped rather than voiding the usage object.
+    """
+
+    for container, key in _CACHE_WRITE_FIELDS:
+        details = usage.get(container) if container is not None else usage
+        if not is_json_mapping(details):
+            continue
+        value = _int_field(details, key)
+        if value is not None:
+            return value
+    return 0
 
 
 def extract_billed_cost(payload: JsonValue) -> float | None:
@@ -2038,16 +2201,26 @@ async def _sidecar_request_cost(model: str, usage: SidecarUsage | None) -> "Exte
     module reaches back into this one for routing identity.
     """
 
-    from app.modules.proxy.external_pricing_logging import (
-        external_request_cost,
-        usage_tokens_from_sidecar,
-    )
+    from app.modules.proxy.external_pricing_logging import external_request_cost
 
     return await external_request_cost(
         provider=CLIPROXY_PRICING_PROVIDER,
         model=model,
-        usage=usage_tokens_from_sidecar(usage),
+        usage=usage_tokens_from_sidecar_usage(usage),
         billed_cost_usd=None,
+    )
+
+
+def usage_tokens_from_sidecar_usage(usage: SidecarUsage | None) -> UsageTokens | None:
+    """Shared token shape for pricing, carrying the cache writes along."""
+
+    if usage is None:
+        return None
+    return UsageTokens(
+        input_tokens=float(usage.input_tokens),
+        output_tokens=float(usage.output_tokens),
+        cached_input_tokens=float(usage.cached_input_tokens),
+        cache_write_input_tokens=float(usage.cache_write_input_tokens),
     )
 
 
@@ -2065,6 +2238,11 @@ async def _log_sidecar_request(
     requested_reasoning_effort: str | None = None,
     cost: "ExternalRequestCost | None" = None,
 ) -> None:
+    if status == "success" and usage is not None:
+        record_claude_sticky_cache_result(
+            input_tokens=usage.input_tokens,
+            cached_input_tokens=usage.cached_input_tokens,
+        )
     try:
         if cost is None:
             cost = await _sidecar_request_cost(model, usage)
@@ -2078,6 +2256,7 @@ async def _log_sidecar_request(
                 input_tokens=usage.input_tokens if usage else None,
                 output_tokens=usage.output_tokens if usage else None,
                 cached_input_tokens=usage.cached_input_tokens if usage else None,
+                cache_write_input_tokens=usage.cache_write_input_tokens if usage else None,
                 latency_ms=max(0, int((time.monotonic() - started_at) * 1000)),
                 status=status,
                 error_code=error_code,
@@ -2095,6 +2274,7 @@ async def _log_sidecar_request(
                 cost_usd=cost.cost_usd,
                 cost_source=cost.cost_source,
                 price_status=cost.price_status,
+                cache_write_input_cost_usd=cost.cache_write_input_cost_usd,
             )
     except Exception:
         logger.warning(

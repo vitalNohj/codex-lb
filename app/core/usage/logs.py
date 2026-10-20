@@ -108,6 +108,24 @@ def cached_input_tokens_from_log(log: RequestLogLike) -> int | None:
     return cached_tokens
 
 
+def cache_write_input_tokens_from_log(log: RequestLogLike) -> int | None:
+    """Prompt-cache write tokens, clamped to what the cache reads left of the input.
+
+    Read through ``getattr`` because only request-log rows carry the column;
+    other log-shaped objects simply report no writes.
+    """
+
+    write_tokens = getattr(log, "cache_write_input_tokens", None)
+    if write_tokens is None:
+        return None
+    write_tokens = max(0, int(write_tokens))
+    input_tokens = log.input_tokens
+    if input_tokens is not None:
+        cached_tokens = cached_input_tokens_from_log(log) or 0
+        write_tokens = min(write_tokens, max(0, int(input_tokens) - cached_tokens))
+    return write_tokens
+
+
 def usage_tokens_from_log(log: RequestLogLike) -> UsageTokens | None:
     input_tokens = log.input_tokens
     if input_tokens is None:
@@ -116,10 +134,12 @@ def usage_tokens_from_log(log: RequestLogLike) -> UsageTokens | None:
     if output_tokens is None:
         return None
     cached_tokens = cached_input_tokens_from_log(log) or 0
+    write_tokens = cache_write_input_tokens_from_log(log) or 0
     return UsageTokens(
         input_tokens=float(input_tokens),
         output_tokens=float(output_tokens),
         cached_input_tokens=float(cached_tokens),
+        cache_write_input_tokens=float(write_tokens),
     )
 
 
@@ -170,6 +190,25 @@ def _totals_match(left: float | None, right: float | None, *, precision: int | N
     return abs(left - right) < (10 ** (-precision)) / 2
 
 
+def _persisted_cache_write_cost(log: RequestLogLike, *, precision: int | None) -> float | None:
+    """The stored cache-write part of a catalog-calculated cost, if any.
+
+    Read through ``getattr`` because only request-log rows carry the column.
+    A billed or unresolved cost has no known split, so it reports none.
+    """
+
+    if getattr(log, "cost_source", None) != CostSource.CATALOG_CALCULATED.value:
+        return None
+    if not cache_write_input_tokens_from_log(log):
+        return None
+    cost = getattr(log, "cache_write_input_cost_usd", None)
+    if cost is None:
+        return None
+    if precision is None:
+        return float(cost)
+    return round(float(cost), precision)
+
+
 def cost_breakdown_from_log(
     log: RequestLogLike,
     *,
@@ -178,6 +217,7 @@ def cost_breakdown_from_log(
     full_breakdown: UsageCostBreakdown | None = None
     input_usd: float | None = None
     cached_input_usd: float | None = None
+    cache_write_input_usd: float | None = None
     output_usd: float | None = None
     raw_total_usd: float | None = None
     total_usd: float | None = None
@@ -193,11 +233,14 @@ def cost_breakdown_from_log(
                 output_usd=None,
                 total_usd=None,
             )
+        # The writer stored the cache-write part of a cost it calculated, at
+        # the rates that priced the row; the rest of the split stays unknown.
         return UsageCostBreakdown(
             input_usd=None,
             cached_input_usd=None,
             output_usd=None,
             total_usd=persisted,
+            cache_write_input_usd=_persisted_cache_write_cost(log, precision=precision),
         )
     if log.model:
         resolved = get_pricing_for_model(log.model, None, None)
@@ -205,6 +248,7 @@ def cost_breakdown_from_log(
             _, price = resolved
             input_tokens = log.input_tokens
             cached_tokens = cached_input_tokens_from_log(log)
+            write_tokens = cache_write_input_tokens_from_log(log) or 0
             output_tokens = output_tokens_from_log(log)
             usage = usage_tokens_from_log(log)
             if usage is not None:
@@ -225,6 +269,7 @@ def cost_breakdown_from_log(
                         input_tokens=float(input_tokens),
                         output_tokens=0.0,
                         cached_input_tokens=float(cached_tokens),
+                        cache_write_input_tokens=float(write_tokens),
                     ),
                     price,
                     service_tier=log.service_tier,
@@ -233,12 +278,14 @@ def cost_breakdown_from_log(
                 if input_breakdown is not None:
                     input_usd = input_breakdown.input_usd
                     cached_input_usd = input_breakdown.cached_input_usd
+                    cache_write_input_usd = input_breakdown.cache_write_input_usd
             if output_tokens is not None:
                 output_breakdown = calculate_cost_breakdown_from_usage(
                     UsageTokens(
                         input_tokens=float(input_tokens or 0),
                         output_tokens=float(output_tokens),
                         cached_input_tokens=float(cached_tokens or 0),
+                        cache_write_input_tokens=float(write_tokens),
                     ),
                     price,
                     service_tier=log.service_tier,
@@ -262,6 +309,7 @@ def cost_breakdown_from_log(
             cached_input_usd=cached_input_usd,
             output_usd=output_usd,
             total_usd=persisted_cost,
+            cache_write_input_usd=cache_write_input_usd,
         )
     if full_breakdown is not None:
         return UsageCostBreakdown(
@@ -269,12 +317,14 @@ def cost_breakdown_from_log(
             cached_input_usd=cached_input_usd,
             output_usd=output_usd,
             total_usd=total_usd,
+            cache_write_input_usd=cache_write_input_usd,
         )
     return UsageCostBreakdown(
         input_usd=input_usd,
         cached_input_usd=cached_input_usd,
         output_usd=output_usd,
         total_usd=None,
+        cache_write_input_usd=cache_write_input_usd,
     )
 
 

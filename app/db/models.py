@@ -675,8 +675,14 @@ class RequestLog(Base):
     input_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     output_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     cached_input_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Prompt-cache write tokens (part of input_tokens); priced at the 1-hour
+    # cache-write rate. Only Claude through CLIProxyAPI reports them.
+    cache_write_input_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     reasoning_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     cost_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # The cache-write part of a catalog-calculated cost_usd, at the rates that
+    # priced the row, so its split shows without consulting the static table.
+    cache_write_input_cost_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
     reference_cost_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
     reasoning_effort: Mapped[str | None] = mapped_column(String, nullable=True)
     requested_reasoning_effort: Mapped[str | None] = mapped_column(String, nullable=True)

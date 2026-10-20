@@ -52,7 +52,7 @@ from app.core.usage.external_pricing.store import (
     PriceRecord,
     normalize_lookup_key,
 )
-from app.core.usage.pricing import UsageTokens, calculate_cost_from_usage
+from app.core.usage.pricing import UsageTokens, calculate_cost_breakdown_from_usage
 from app.db.models import ExternalPriceStatus
 from app.db.session import get_background_session
 
@@ -221,6 +221,9 @@ class CalculatedCost:
     cost_usd: float
     catalog_model: str
     catalog_source: str
+    # The part of ``cost_usd`` charged for prompt-cache writes, at the same
+    # resolved rates; None when the request wrote nothing to the cache.
+    cache_write_input_cost_usd: float | None = None
 
 
 class _StorageResult(Enum):
@@ -434,19 +437,26 @@ async def calculated_cost_for_request(
         # That is missing usage, not an unresolved price, so it renders as ``--``.
         return None, record.status
 
-    usage_components = (usage.input_tokens, usage.output_tokens, usage.cached_input_tokens)
+    usage_components = (
+        usage.input_tokens,
+        usage.output_tokens,
+        usage.cached_input_tokens,
+        usage.cache_write_input_tokens,
+    )
     if any(not math.isfinite(component) or component < 0 for component in usage_components):
         return None, record.status
 
     assert record.price is not None
-    cost = calculate_cost_from_usage(usage, record.price, service_tier=service_tier)
-    if cost is None or not math.isfinite(cost) or cost < 0:
+    breakdown = calculate_cost_breakdown_from_usage(usage, record.price, service_tier=service_tier)
+    cost = breakdown.total_usd if breakdown is not None else None
+    if breakdown is None or cost is None or not math.isfinite(cost) or cost < 0:
         return None, record.status
     return (
         CalculatedCost(
             cost_usd=cost,
             catalog_model=record.catalog_model or record.incoming_model,
             catalog_source=record.catalog_source or "",
+            cache_write_input_cost_usd=breakdown.cache_write_input_usd,
         ),
         record.status,
     )

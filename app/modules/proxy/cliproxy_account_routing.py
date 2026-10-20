@@ -84,7 +84,7 @@ from app.core.balancer.logic import AccountState, RoutingStrategy, select_accoun
 from app.core.clients.claude_sidecar import ClaudeSidecarClient
 from app.core.config.settings import get_settings
 from app.core.config.settings_cache import get_settings_cache
-from app.core.metrics.prometheus import cliproxy_route_outcome_total
+from app.core.metrics.prometheus import cliproxy_claude_sticky_cache_total, cliproxy_route_outcome_total
 from app.core.openai.chat_requests import ChatCompletionsRequest
 from app.core.openai.requests import ResponsesRequest
 from app.core.types import JsonValue
@@ -121,7 +121,15 @@ from app.modules.proxy.sticky_repository import (
 logger = logging.getLogger(__name__)
 
 CliproxyRouteKind = Literal["sticky", "rebind", "selected"]
-CliproxyRouteOutcome = Literal["selected", "sticky", "rebind", "unpinned_no_key", "fail_open", "no_candidate"]
+CliproxyRouteOutcome = Literal[
+    "selected",
+    "sticky",
+    "rebind",
+    "unpinned_no_key",
+    "fail_open",
+    "no_candidate",
+    "refused",
+]
 CliproxyKeySource = Literal[
     "prompt_cache_key",
     "turn_state",
@@ -158,6 +166,12 @@ _IDENTITY_MAX_CHARS = 256
 _NO_CANDIDATE_WARN_SECONDS = 60.0
 _NO_CANDIDATE_WARNED: OrderedDict[str, float] = OrderedDict()
 _NO_CANDIDATE_WARN_LIMIT = 256
+# The largest minimum cacheable prompt Anthropic documents (Opus 4.5/4.6).
+# Below a model's minimum a prompt is silently uncached, which is not a fault,
+# so only prompts at least this long count toward the cache-miss signal.
+CLAUDE_CACHEABLE_PROMPT_TOKENS = 4096
+_CACHE_MISS_WARN_SECONDS = 600.0
+_CACHE_MISS_WARNED: OrderedDict[str, float] = OrderedDict()
 # Session headers in the order CLIProxyAPI's ``ExtractSessionID`` reads them,
 # after the Codex headers this router already honoured. Any other
 # ``x-<vendor>-session-id`` follows, as in LiteLLM's ``session_affinity``.
@@ -425,6 +439,35 @@ async def choose_cliproxy_route(
     return choice, outcome.mutation if use_sticky else None
 
 
+class CliproxyClaudeRouteRefused(Exception):
+    """No CLIProxyAPI credential prefix could be named for a Claude request.
+
+    A plain Claude model name lets CLIProxyAPI pick the credential itself, and
+    with its session affinity off it rotates credentials on every request. Each
+    rotation lands on an account whose prompt cache is cold, so the whole
+    prompt is written to the cache again at twice the input rate. A Claude
+    request is refused instead of being sent without its credential prefix.
+    """
+
+    def __init__(self, model: str, reason: str) -> None:
+        super().__init__(f"no CLIProxyAPI credential prefix for {model}: {reason}")
+        self.model = model
+        self.reason = reason
+
+
+def requires_cliproxy_credential_prefix(model: str) -> bool:
+    """Whether a request for ``model`` must name its CLIProxyAPI credential.
+
+    Claude only: its prompt cache is per Anthropic account, so a request that
+    changes credential pays for a full cache write. The other families keep
+    the fail-open behaviour. Matched on the model leaf containing ``claude``,
+    wider than the family guess, so an alias such as ``cp-claude-sonnet`` is
+    covered too.
+    """
+
+    return "claude" in model.rsplit("/", 1)[-1].casefold()
+
+
 async def apply_cliproxy_account_route(
     body: dict[str, JsonValue],
     *,
@@ -434,20 +477,26 @@ async def apply_cliproxy_account_route(
 ) -> CliproxyDispatchChoice | None:
     """Rewrite ``body['model']`` when capacity routing can name a credential.
 
-    A disabled switch, an unconfigured sidecar, or any selection failure
-    leaves the model unchanged. Every routed request records one
-    ``codex_lb_cliproxy_route_outcome_total`` sample and one
-    ``cliproxy_route_outcome`` log line, so a fail-open is visible.
+    For a Claude model the rewrite is mandatory: a disabled switch, an
+    unconfigured sidecar, no prefixed credential, or a selection failure
+    raises ``CliproxyClaudeRouteRefused`` and the body is left unsent. For
+    other models those cases leave the model unchanged. Every routed request
+    records one ``codex_lb_cliproxy_route_outcome_total`` sample and one
+    ``cliproxy_route_outcome`` log line, so a fail-open or refusal is visible.
     """
 
     _CURRENT_CHOICE.set(None)
     model = body.get("model")
     if not isinstance(model, str) or not model.strip():
         return None
+    prefix_required = requires_cliproxy_credential_prefix(model)
     source: CliproxyKeySource = "unknown"
     try:
         settings = await get_settings_cache().get()
         if not _routing_active(settings):
+            if prefix_required:
+                _record_route_outcome("refused", "disabled", model=model)
+                raise CliproxyClaudeRouteRefused(model, "CLIProxyAPI capacity routing is off")
             return None
         identity = _resolve_sticky_identity(
             hints if hints is not None else cliproxy_sticky_hints_from_body(body),
@@ -456,11 +505,20 @@ async def apply_cliproxy_account_route(
         )
         source = identity.source
         choice = await _select_dispatch(settings, model, client=client, identity=identity)
-    except Exception:
+    except CliproxyClaudeRouteRefused:
+        raise
+    except Exception as exc:
+        if prefix_required:
+            logger.warning("cliproxy capacity route failed; refusing the Claude request", exc_info=True)
+            _record_route_outcome("refused", source, model=model)
+            raise CliproxyClaudeRouteRefused(model, "credential selection failed") from exc
         logger.warning("cliproxy capacity route failed; leaving model unchanged", exc_info=True)
         _record_route_outcome("fail_open", source, model=model)
         return None
     if choice is None:
+        if prefix_required:
+            _record_route_outcome("refused", source, model=model)
+            raise CliproxyClaudeRouteRefused(model, "no prefixed CLIProxyAPI credential serves this model")
         _record_route_outcome("no_candidate", source, model=model)
         return None
     body["model"] = choice.wire_model
@@ -1087,6 +1145,56 @@ def _record_route_outcome(
     )
 
 
+def record_claude_sticky_cache_result(*, input_tokens: int, cached_input_tokens: int) -> None:
+    """Count whether a Claude turn on its conversation's pin read the prompt cache.
+
+    Only a turn served by the credential its conversation was already pinned
+    to counts, with a prompt long enough to cache on every Claude model. Such
+    a turn repeats a prefix that same Anthropic account cached on an earlier
+    turn, so a read of zero means the cache was lost on the way: something
+    between CLIProxyAPI and ``api.anthropic.com`` rewrote the body, or the
+    body itself changed between turns. A conversation idle past the cache TTL
+    also misses once, so the signal is a sustained miss rate, not one miss.
+    """
+
+    choice = _CURRENT_CHOICE.get()
+    if (
+        choice is None
+        or choice.route != "sticky"
+        or choice.fallback
+        or not requires_cliproxy_credential_prefix(choice.requested_model)
+        or input_tokens < CLAUDE_CACHEABLE_PROMPT_TOKENS
+    ):
+        return
+    hit = cached_input_tokens > 0
+    if cliproxy_claude_sticky_cache_total is not None:
+        cliproxy_claude_sticky_cache_total.labels(result="hit" if hit else "miss").inc()
+    if not hit:
+        _warn_sticky_cache_miss(choice, input_tokens=input_tokens)
+
+
+def _warn_sticky_cache_miss(choice: CliproxyDispatchChoice, *, input_tokens: int) -> None:
+    """Warn, at most once every ten minutes per credential, of a pinned cache miss."""
+
+    now = time.monotonic()
+    last = _CACHE_MISS_WARNED.get(choice.account_id)
+    if last is not None and now - last < _CACHE_MISS_WARN_SECONDS:
+        return
+    _CACHE_MISS_WARNED[choice.account_id] = now
+    _CACHE_MISS_WARNED.move_to_end(choice.account_id)
+    while len(_CACHE_MISS_WARNED) > _NO_CANDIDATE_WARN_LIMIT:
+        _CACHE_MISS_WARNED.popitem(last=False)
+    logger.warning(
+        "cliproxy_claude_sticky_cache_miss provider=%s auth_index=%s model=%s input_tokens=%s: a pinned "
+        "Claude conversation read nothing from the prompt cache. CLIProxyAPI must reach api.anthropic.com "
+        "directly; a gateway that rewrites the request body in between makes every turn a full cache write",
+        choice.provider,
+        choice.auth_index,
+        choice.wire_model,
+        input_tokens,
+    )
+
+
 def _warn_no_candidate(candidates: Sequence[CliproxyCandidate], model: str) -> None:
     """Warn, at most once a minute per model, that no prefixed credential serves it."""
 
@@ -1100,12 +1208,17 @@ def _warn_no_candidate(candidates: Sequence[CliproxyCandidate], model: str) -> N
     while len(_NO_CANDIDATE_WARNED) > _NO_CANDIDATE_WARN_LIMIT:
         _NO_CANDIDATE_WARNED.popitem(last=False)
     prefixed = [item for item in candidates if prefix_or_none(item.prefix)]
+    consequence = (
+        "the request is refused"
+        if requires_cliproxy_credential_prefix(model)
+        else "CLIProxyAPI selects the credential itself"
+    )
     logger.warning(
-        "cliproxy capacity routing found no prefixed credential for model=%s credentials=%s prefixed=%s; "
-        "CLIProxyAPI selects the credential itself",
+        "cliproxy capacity routing found no prefixed credential for model=%s credentials=%s prefixed=%s; %s",
         model,
         len(candidates),
         len(prefixed),
+        consequence,
     )
 
 

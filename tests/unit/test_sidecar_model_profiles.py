@@ -6,6 +6,7 @@ from app.modules.proxy.sidecar_model_profiles import (
     apply_sidecar_model_profile,
     canonical_sidecar_model,
     is_known_claude_sidecar_model,
+    set_reasoning_effort_override,
     sidecar_prefixed_model_ids,
 )
 
@@ -92,3 +93,17 @@ def test_sidecar_prefixed_model_ids_include_custom_alias_variants() -> None:
         "cp-claude-opus-4-7",
         "cp_claude-opus-4-7",
     )
+
+
+def test_the_effort_override_lands_in_one_place_whether_or_not_the_client_sent_one() -> None:
+    """The key position must not depend on the client's turn, or the body changes bytes."""
+
+    sent: dict[str, JsonValue] = {"model": "m", "reasoning_effort": "high", "stream": True}
+    absent: dict[str, JsonValue] = {"model": "m", "stream": True}
+    nested: dict[str, JsonValue] = {"model": "m", "reasoning": {"effort": "low"}, "stream": True}
+
+    for body in (sent, absent, nested):
+        set_reasoning_effort_override(body, "medium")
+
+    assert list(sent) == list(absent) == list(nested) == ["model", "stream", "reasoning_effort"]
+    assert sent == absent == nested

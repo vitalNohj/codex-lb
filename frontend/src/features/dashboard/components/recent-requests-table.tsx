@@ -269,8 +269,11 @@ function formatRequestCostSummary(request: RequestLog | null, t: ReturnType<type
   const totalUsd = request.costBreakdown?.totalUsd ?? request.costUsd;
   const segments: string[] = [];
   const cachedInputTokens = request.cachedInputTokens ?? 0;
+  const cacheWriteInputTokens = request.cacheWriteInputTokens ?? 0;
   const nonCachedInputTokens =
-    request.inputTokens == null ? null : Math.max(0, request.inputTokens - cachedInputTokens);
+    request.inputTokens == null
+      ? null
+      : Math.max(0, request.inputTokens - cachedInputTokens - cacheWriteInputTokens);
 
   if (nonCachedInputTokens != null && request.costBreakdown?.inputUsd != null) {
     segments.push(
@@ -292,6 +295,16 @@ function formatRequestCostSummary(request: RequestLog | null, t: ReturnType<type
     );
   }
 
+  if (cacheWriteInputTokens > 0 && request.costBreakdown?.cacheWriteInputUsd != null) {
+    segments.push(
+      t("dashboard.requestDetails.costSegment", {
+        count: formatCompactNumber(cacheWriteInputTokens),
+        label: t("common.units.cacheWrite"),
+        cost: formatCurrency(request.costBreakdown.cacheWriteInputUsd),
+      }),
+    );
+  }
+
   if (request.outputTokens != null && request.costBreakdown?.outputUsd != null) {
     segments.push(
       t("dashboard.requestDetails.costSegment", {
@@ -308,6 +321,21 @@ function formatRequestCostSummary(request: RequestLog | null, t: ReturnType<type
 
   if (totalUsd == null) {
     return segments.join(" + ");
+  }
+
+  // An externally priced row stores only its total and the cache-write part,
+  // so the segments name part of the total rather than sum to it.
+  const breakdown = request.costBreakdown;
+  const onlyCacheWriteIsKnown =
+    breakdown?.cacheWriteInputUsd != null &&
+    breakdown.inputUsd == null &&
+    breakdown.cachedInputUsd == null &&
+    breakdown.outputUsd == null;
+  if (onlyCacheWriteIsKnown) {
+    return t("dashboard.requestDetails.costIncludes", {
+      total: formatCurrency(totalUsd),
+      segments: segments.join(" + "),
+    });
   }
 
   return `${formatCurrency(totalUsd)} = ${segments.join(" + ")}`;

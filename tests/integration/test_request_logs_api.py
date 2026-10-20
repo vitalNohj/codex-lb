@@ -113,6 +113,7 @@ async def test_request_logs_api_returns_recent(async_client, db_setup):
         "cachedInputUsd": None,
         "outputUsd": None,
         "totalUsd": None,
+        "cacheWriteInputUsd": None,
     }
     assert latest["transport"] == "websocket"
     assert latest["requestKind"] == "normal"
@@ -133,6 +134,7 @@ async def test_request_logs_api_returns_recent(async_client, db_setup):
         "cachedInputUsd": None,
         "outputUsd": pytest.approx(0.002),
         "totalUsd": pytest.approx(0.002125),
+        "cacheWriteInputUsd": None,
     }
     assert older["transport"] == "http"
     assert older["requestKind"] == "normal"

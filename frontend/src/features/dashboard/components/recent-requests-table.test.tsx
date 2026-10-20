@@ -992,6 +992,125 @@ describe("RecentRequestsTable", () => {
     expect(costSection).toHaveTextContent("400 Output ($0.004)");
   });
 
+  it("splits cache-write tokens out of input in the cost section", () => {
+    render(
+      <RecentRequestsTable
+        {...PAGINATION_PROPS}
+        accounts={[]}
+        requests={[
+          {
+            requestedAt: ISO,
+            accountId: "acc-cost",
+            planType: "plus",
+            apiKeyName: "Key Cost",
+            apiKeyId: "key-cost",
+            requestId: "req-cost-write",
+            requestKind: "normal",
+            model: "claude-sonnet-4-5",
+            source: null,
+            serviceTier: null,
+            requestedServiceTier: null,
+            actualServiceTier: null,
+            transport: "http",
+            ...NULL_USERAGENT_METADATA,
+            status: "ok",
+            errorCode: null,
+            errorMessage: null,
+            ...NULL_FAILURE_METADATA,
+            tokens: 1400,
+            inputTokens: 1000,
+            outputTokens: 400,
+            outputTokensRaw: null,
+            latencyFirstTokenMs: null,
+            latencyQueueMs: null,
+            cachedInputTokens: 200,
+            cacheWriteInputTokens: 300,
+            reasoningEffort: null,
+            requestedReasoningEffort: null,
+            costUsd: 0.016,
+            costBreakdown: {
+              inputUsd: 0.004,
+              cachedInputUsd: 0.002,
+              cacheWriteInputUsd: 0.006,
+              outputUsd: 0.004,
+              totalUsd: 0.016,
+            },
+            latencyMs: 100,
+          },
+        ]}
+      />,
+    );
+
+    const dialog = openRequestDetails();
+    const costSection = within(dialog).getByText("Cost").closest("div.space-y-2");
+
+    expect(costSection).toHaveTextContent("$0.02 =");
+    expect(costSection).toHaveTextContent("500 Input ($0.004)");
+    expect(costSection).toHaveTextContent("200 Cached ($0.002)");
+    expect(costSection).toHaveTextContent("300 Cache write ($0.006)");
+    expect(costSection).toHaveTextContent("400 Output ($0.004)");
+  });
+
+  it("shows the cache-write part of a catalog-priced CLIProxyAPI cost without inventing the rest", () => {
+    render(
+      <RecentRequestsTable
+        {...PAGINATION_PROPS}
+        accounts={[]}
+        requests={[
+          {
+            requestedAt: ISO,
+            accountId: "acc-cost",
+            planType: "plus",
+            apiKeyName: "Key Cost",
+            apiKeyId: "key-cost",
+            requestId: "req-cost-write-catalog",
+            requestKind: "normal",
+            model: "claude-sonnet-4-5",
+            source: null,
+            serviceTier: null,
+            requestedServiceTier: null,
+            actualServiceTier: null,
+            transport: "http",
+            ...NULL_USERAGENT_METADATA,
+            status: "ok",
+            errorCode: null,
+            errorMessage: null,
+            ...NULL_FAILURE_METADATA,
+            tokens: 1400,
+            inputTokens: 1000,
+            outputTokens: 400,
+            outputTokensRaw: null,
+            latencyFirstTokenMs: null,
+            latencyQueueMs: null,
+            cachedInputTokens: 200,
+            cacheWriteInputTokens: 300,
+            reasoningEffort: null,
+            requestedReasoningEffort: null,
+            costUsd: 0.016,
+            costSource: "catalog_calculated",
+            priceStatus: "resolved",
+            costBreakdown: {
+              inputUsd: null,
+              cachedInputUsd: null,
+              cacheWriteInputUsd: 0.006,
+              outputUsd: null,
+              totalUsd: 0.016,
+            },
+            latencyMs: 100,
+          },
+        ]}
+      />,
+    );
+
+    const dialog = openRequestDetails();
+    const costSection = within(dialog).getByText("Cost").closest("div.space-y-2");
+
+    expect(costSection).toHaveTextContent("$0.02, including 300 Cache write ($0.006)");
+    expect(costSection).not.toHaveTextContent("$0.02 =");
+    expect(costSection).not.toHaveTextContent("Input (");
+    expect(costSection).not.toHaveTextContent("Output (");
+  });
+
   it("shows the full user agent in request details when present", () => {
     render(
       <RecentRequestsTable

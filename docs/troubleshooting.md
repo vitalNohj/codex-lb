@@ -9,6 +9,12 @@ codex-lb refreshes usage on its own schedule and treats upstream samples conserv
 **Why does `/v1/responses` return a quota error instead of waiting for recovery?**
 See the [Responses capacity recovery contract](https://github.com/Soju06/codex-lb/blob/main/openspec/specs/responses-api-compat/spec.md#requirement-capacity-recovery-preserves-terminal-errors-and-bounds-silent-waits) for terminal error classification, silent-wait limits, and `Retry-After` behavior. Error propagation does not restore exhausted upstream account capacity.
 
+**Why do Claude requests through CLIProxyAPI fail with `cliproxy_claude_route_unavailable`?**
+codex-lb sends a Claude request only with its CLIProxyAPI credential prefix, so the conversation stays on the account holding its prompt cache. The `503` means no prefixed credential could serve it: CLIProxyAPI capacity routing is off, no prefixed credential lists the model, or the selection failed. The `cliproxy_route_outcome` log line and `codex_lb_cliproxy_route_outcome_total{outcome="refused"}` say which. See [Claude prompt caching through CLIProxyAPI](../README.md#claude-prompt-caching-through-cliproxyapi).
+
+**Why do pinned Claude conversations show no cached input tokens?**
+CLIProxyAPI must reach `api.anthropic.com` directly. A gateway that rewrites request bodies in between makes every Claude turn a full cache write, which the `CodexLBClaudeStickyCacheMiss` alert and the `cliproxy_claude_sticky_cache_miss` log line report. Prompts under 4,096 tokens are not counted, because a prompt below its model's minimum is never cached. A conversation idle past the cache TTL misses once, which does not reach the alert's rate.
+
 ## Streaming
 
 **Codex CLI falls back to POST instead of WebSockets.**

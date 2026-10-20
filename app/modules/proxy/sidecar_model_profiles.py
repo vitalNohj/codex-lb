@@ -121,6 +121,10 @@ def set_reasoning_effort_override(body: dict[str, JsonValue], effort: str | None
         reasoning_dict.pop("effort", None)
         if not reasoning_dict:
             body.pop("reasoning", None)
+    # Re-insert so the key lands in the same place whether or not the client
+    # sent an effort this turn: the forwarded body stays byte-identical
+    # across the turns of one conversation.
+    body.pop("reasoning_effort", None)
     body["reasoning_effort"] = normalized
 
 
