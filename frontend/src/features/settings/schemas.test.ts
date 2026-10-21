@@ -86,6 +86,9 @@ describe("DashboardSettingsSchema", () => {
     expect(parsed.limitWarmupEnabled).toBe(false);
     expect(parsed.limitWarmupWindows).toBe("both");
     expect(parsed.limitWarmupStaggeredIdleEnabled).toBe(true);
+    expect(parsed.dashboardLayout.conversations).toBe(false);
+    expect(parsed.dashboardLayout.requests).toBe(true);
+    expect(parsed.dashboardLayout.requestLogs).toBe(true);
   });
 
   it("parses sidecar settings fields", () => {

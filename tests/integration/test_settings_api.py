@@ -1526,3 +1526,61 @@ async def test_full_put_with_persisted_auto_redeem_allowed_while_polling_disable
 
     assert response.status_code == 200
     assert response.json()["autoRedeemResetCreditsBeforeExpiry"] is True
+
+
+@pytest.mark.asyncio
+async def test_dashboard_layout_defaults_hidden_conversations_and_round_trips(async_client):
+    response = await async_client.get("/api/settings")
+    assert response.status_code == 200
+    layout = response.json()["dashboardLayout"]
+    assert layout == {
+        "requests": True,
+        "tokens": True,
+        "estimatedCost": True,
+        "conversations": False,
+        "errorRate": True,
+        "usage": True,
+        "accounts": True,
+        "requestLogs": True,
+    }
+
+    response = await async_client.put("/api/settings", json={"stickyThreadsEnabled": False})
+    assert response.status_code == 200
+    assert response.json()["dashboardLayout"]["conversations"] is False
+
+    response = await async_client.put("/api/settings", json={"dashboardLayout": {"conversations": True}})
+    assert response.status_code == 200
+    updated = response.json()["dashboardLayout"]
+    assert updated["conversations"] is True
+    assert updated["requests"] is True
+    assert updated["requestLogs"] is True
+
+    async with SessionLocal() as session:
+        row = await session.get(DashboardSettings, 1)
+        assert row is not None
+        stored = json.loads(row.dashboard_layout_json)
+        assert stored["conversations"] is True
+        assert stored["requests"] is True
+        assert stored["estimated_cost"] is True
+
+    response = await async_client.get("/api/settings")
+    assert response.status_code == 200
+    assert response.json()["dashboardLayout"]["conversations"] is True
+
+    response = await async_client.put(
+        "/api/settings",
+        json={"dashboardLayout": {"conversations": False, "requestLogs": False}},
+    )
+    assert response.status_code == 200
+    body = response.json()["dashboardLayout"]
+    assert body["conversations"] is False
+    assert body["requestLogs"] is False
+    assert body["accounts"] is True
+    assert body["usage"] is True
+
+    response = await async_client.put("/api/settings", json={"dashboardLayout": {"conversations": "maybe"}})
+    assert response.status_code == 422
+    response = await async_client.get("/api/settings")
+    assert response.status_code == 200
+    assert response.json()["dashboardLayout"]["conversations"] is False
+    assert response.json()["dashboardLayout"]["requestLogs"] is False

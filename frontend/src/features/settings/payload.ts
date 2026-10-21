@@ -135,6 +135,7 @@ export function buildSettingsUpdateRequest(
     opencodeGoSidecarRequestTimeoutSeconds: settings.opencodeGoSidecarRequestTimeoutSeconds,
     opencodeGoSidecarModelsCacheTtlSeconds: settings.opencodeGoSidecarModelsCacheTtlSeconds,
     guestAccessEnabled: settings.guestAccessEnabled,
+    dashboardLayout: settings.dashboardLayout,
     hideUpstreamQuotaFromApiKeys: settings.hideUpstreamQuotaFromApiKeys,
     ...patch,
   };

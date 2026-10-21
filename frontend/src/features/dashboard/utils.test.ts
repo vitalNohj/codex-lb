@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { DEFAULT_DASHBOARD_LAYOUT } from "@/features/dashboard/layout";
 import type { AccountSummary, Depletion } from "@/features/dashboard/schemas";
 import {
   accountTypeKey,
@@ -1545,5 +1546,48 @@ describe("buildDashboardView", () => {
     const convStat = view.stats.find((s) => s.label.includes("Active Conversations"));
     expect(convStat).toBeDefined();
     expect(convStat?.meta).toBe("Avg req/conv —");
+  });
+
+  it("hides the conversations card when the server layout turns it off", () => {
+    const overview = createDashboardOverview({
+      summary: {
+        primaryWindow: {
+          remainingPercent: 80,
+          capacityCredits: 100,
+          remainingCredits: 80,
+          resetAt: null,
+          windowMinutes: 300,
+        },
+        secondaryWindow: null,
+        cost: { currency: "USD", totalUsd: 12.5 },
+        metrics: {
+          requests: 500,
+          tokens: 2000,
+          cachedInputTokens: 300,
+          errorRate: 0.02,
+          errorCount: 10,
+          topError: null,
+          conversations: 4,
+          conversationRequests: 10,
+        },
+      },
+    } as Parameters<typeof buildDashboardView>[0]);
+
+    const hidden = buildDashboardView(overview, createDefaultRequestLogs(), {
+      dashboardLayout: DEFAULT_DASHBOARD_LAYOUT,
+    });
+    expect(hidden.stats.some((stat) => stat.id === "conversations")).toBe(false);
+    expect(hidden.stats.some((stat) => stat.id === "requests")).toBe(true);
+
+    const shown = buildDashboardView(overview, createDefaultRequestLogs(), {
+      dashboardLayout: { ...DEFAULT_DASHBOARD_LAYOUT, conversations: true },
+    });
+    expect(shown.stats.find((stat) => stat.id === "conversations")?.value).toBe("4");
+
+    const withoutRequests = buildDashboardView(overview, createDefaultRequestLogs(), {
+      dashboardLayout: { ...DEFAULT_DASHBOARD_LAYOUT, requests: false },
+    });
+    expect(withoutRequests.stats.some((stat) => stat.id === "requests")).toBe(false);
+    expect(withoutRequests.stats).toHaveLength(hidden.stats.length - 1);
   });
 });

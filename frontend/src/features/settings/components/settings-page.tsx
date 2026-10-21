@@ -4,6 +4,7 @@ import {
   ArrowRightLeft,
   Boxes,
   KeySquare,
+  LayoutDashboard,
   Palette,
   Settings,
   ShieldCheck,
@@ -24,6 +25,7 @@ import { shouldExpandAdvancedSettings } from "@/features/settings/advanced-setti
 import { AdvancedSettingsGroup } from "@/features/settings/components/advanced-settings-group";
 import { AliasSettings } from "@/features/settings/components/alias-settings";
 import { AppearanceSettings } from "@/features/settings/components/appearance-settings";
+import { DashboardLayoutSettings } from "@/features/settings/components/dashboard-layout-settings";
 import { DataRetentionSettings } from "@/features/settings/components/data-retention-settings";
 import { FreeModelDiscoveryPanel } from "@/features/settings/components/free-model-discovery-panel";
 import { SidecarIntegrationsCard } from "@/features/settings/components/sidecar-integrations";
@@ -62,6 +64,7 @@ const SECTION_NAV: SectionNavItem[] = [
   { id: "external-integrations-group", label: "Integrations", icon: Boxes },
   { id: "alias-settings", label: "Model aliasing", icon: ArrowRightLeft },
   { id: "appearance-settings", label: "Appearance", icon: Palette },
+  { id: "dashboard-settings", label: "Dashboard", icon: LayoutDashboard },
   { id: "account-settings", label: "Accounts", icon: Activity },
   { id: "security-settings", label: "Security", icon: ShieldCheck },
   { id: "api-keys-settings", label: "API keys", icon: KeySquare },
@@ -303,6 +306,10 @@ export function SettingsPage() {
 
             <SectionGroup id="appearance-settings" title="Appearance">
               <AppearanceSettings />
+            </SectionGroup>
+
+            <SectionGroup id="dashboard-settings" title="Dashboard">
+              <DashboardLayoutSettings settings={settings} busy={controlsDisabled} onSave={handleSave} />
             </SectionGroup>
 
             <SectionGroup id="account-settings" title="Accounts">

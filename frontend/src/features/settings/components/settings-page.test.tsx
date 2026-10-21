@@ -216,8 +216,44 @@ describe("SettingsPage", () => {
     const navigation = screen.getByRole("navigation", { name: "Settings sections" });
     expect(navigation.querySelector('a[href="#external-integrations-group"]')).toBeInTheDocument();
     expect(navigation.querySelector('a[href="#appearance-settings"]')).toBeInTheDocument();
+    expect(navigation.querySelector('a[href="#dashboard-settings"]')).toBeInTheDocument();
+    expect(screen.getByRole("switch", { name: "Show the active conversations card" })).not.toBeChecked();
+    expect(screen.getByRole("switch", { name: "Show the requests card" })).toBeChecked();
     expect(navigation.querySelector('a[href="#api-keys-settings"]')).toBeInTheDocument();
     expect(screen.getByText("Sidecar Integrations").compareDocumentPosition(screen.getByText("Appearance Settings")) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("saves the active conversations toggle on the server settings payload", async () => {
+    const user = userEvent.setup();
+    const mutateAsync = vi.fn().mockResolvedValue(undefined);
+    useSettingsMock.mockReturnValue({
+      settingsQuery: {
+        data: settings,
+        error: null,
+        refetch: vi.fn().mockResolvedValue(undefined),
+      },
+      updateSettingsMutation: {
+        isPending: false,
+        error: null,
+        mutateAsync,
+      },
+    });
+    renderSettings();
+
+    await user.click(screen.getByRole("switch", { name: "Show the active conversations card" }));
+
+    expect(mutateAsync).toHaveBeenCalledWith({
+      dashboardLayout: expect.objectContaining({
+        conversations: true,
+        requests: true,
+        tokens: true,
+        estimatedCost: true,
+        errorRate: true,
+        usage: true,
+        accounts: true,
+        requestLogs: true,
+      }),
+    });
   });
 
   it("scrolls to a section from the navigation without writing the location hash", async () => {

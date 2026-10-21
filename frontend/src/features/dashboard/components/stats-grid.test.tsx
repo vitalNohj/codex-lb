@@ -4,6 +4,9 @@ import { Activity, AlertTriangle, Coins, DollarSign, Flame } from "lucide-react"
 import { describe, expect, it } from "vitest";
 
 import { StatsGrid } from "@/features/dashboard/components/stats-grid";
+import { DEFAULT_DASHBOARD_LAYOUT } from "@/features/dashboard/layout";
+import { buildDashboardView } from "@/features/dashboard/utils";
+import { createDashboardOverview, createDefaultRequestLogs } from "@/test/mocks/factories";
 
 const EMPTY_TREND: { value: number }[] = [];
 const SAMPLE_TREND = [{ value: 1 }, { value: 2 }, { value: 3 }];
@@ -72,5 +75,52 @@ describe("StatsGrid", () => {
     );
 
     expect(screen.getByText("Empty")).toBeInTheDocument();
+  });
+
+  it("renders nothing when every card is hidden", () => {
+    const { container } = render(<StatsGrid stats={[]} />);
+    expect(container).toBeEmptyDOMElement();
+  });
+
+  it("renders the active conversations card only when the layout includes it", () => {
+    const overview = createDashboardOverview({
+      summary: {
+        primaryWindow: {
+          remainingPercent: 80,
+          capacityCredits: 100,
+          remainingCredits: 80,
+          resetAt: null,
+          windowMinutes: 300,
+        },
+        secondaryWindow: null,
+        cost: { currency: "USD", totalUsd: 12.5 },
+        metrics: {
+          requests: 500,
+          tokens: 2000,
+          cachedInputTokens: 300,
+          errorRate: 0.02,
+          errorCount: 10,
+          topError: null,
+          conversations: 4,
+          conversationRequests: 10,
+        },
+      },
+    });
+
+    const hidden = buildDashboardView(overview, createDefaultRequestLogs(), {
+      dashboardLayout: DEFAULT_DASHBOARD_LAYOUT,
+    });
+    const { unmount } = render(<StatsGrid stats={hidden.stats} />);
+    expect(screen.queryByTestId("dashboard-stat-conversations")).not.toBeInTheDocument();
+    expect(screen.getByTestId("dashboard-stat-requests")).toBeInTheDocument();
+    expect(screen.getByTestId("stats-grid").childElementCount).toBe(hidden.stats.length);
+    unmount();
+
+    const shown = buildDashboardView(overview, createDefaultRequestLogs(), {
+      dashboardLayout: { ...DEFAULT_DASHBOARD_LAYOUT, conversations: true },
+    });
+    render(<StatsGrid stats={shown.stats} />);
+    expect(screen.getByTestId("dashboard-stat-conversations")).toHaveTextContent("4");
+    expect(screen.getByTestId("stats-grid").childElementCount).toBe(shown.stats.length);
   });
 });

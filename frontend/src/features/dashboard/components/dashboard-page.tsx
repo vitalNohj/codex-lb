@@ -31,7 +31,9 @@ import { useAuthStore } from "@/features/auth/hooks/use-auth";
 import { useDashboard, useDashboardProjections } from "@/features/dashboard/hooks/use-dashboard";
 import { useConversations } from "@/features/dashboard/hooks/use-conversations";
 import { useRequestLogs } from "@/features/dashboard/hooks/use-request-logs";
+import { DEFAULT_DASHBOARD_LAYOUT } from "@/features/dashboard/layout";
 import { accountTypeKey, buildDashboardView } from "@/features/dashboard/utils";
+import { useSettings } from "@/features/settings/hooks/use-settings";
 import {
   DEFAULT_OVERVIEW_TIMEFRAME,
   parseDashboardView,
@@ -63,6 +65,8 @@ export function DashboardPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const queryClient = useQueryClient();
   const isDark = useThemeStore((s) => s.theme === "dark");
+  const { settingsQuery } = useSettings();
+  const dashboardLayout = settingsQuery.data?.dashboardLayout ?? DEFAULT_DASHBOARD_LAYOUT;
   const showAccountBurnrate = useDashboardPreferencesStore((s) => s.accountBurnrateEnabled);
   const accountViewMode = useDashboardPreferencesStore((s) => s.accountViewMode);
   const requestLogViewMode = useDashboardPreferencesStore((s) => s.requestLogViewMode);
@@ -224,10 +228,11 @@ export function DashboardPage() {
       {
         isDark,
         showAccountBurnrate,
+        dashboardLayout,
       },
       projectionsQuery.data,
     );
-  }, [overview, logPage, isDark, showAccountBurnrate, projectionsQuery.data, resolvedLanguage]);
+  }, [overview, logPage, isDark, showAccountBurnrate, dashboardLayout, projectionsQuery.data, resolvedLanguage]);
 
   const visibleAccounts = useMemo(
     () =>
@@ -577,22 +582,36 @@ export function DashboardPage() {
       ) : splitViewEnabled ? (
         <div className="space-y-8" data-testid="dashboard-split-view">
           {/* Overview band: KPIs and usage share one row once the screen is wide enough. */}
-          <div className="grid gap-4 4xl:grid-cols-2 4xl:items-start">
-            <StatsGrid stats={view.stats} fluidColumns />
-            {usageBlock}
-          </div>
-          {/* Accounts on the left, request logs on the right. */}
-          <div className="grid gap-8 3xl:grid-cols-2 3xl:items-start">
-            {accountsSection}
-            {requestsSection}
-          </div>
+          {view.stats.length > 0 || dashboardLayout.usage ? (
+            <div
+              data-testid="dashboard-overview-band"
+              className={`grid gap-4${
+                view.stats.length > 0 && dashboardLayout.usage ? " 4xl:grid-cols-2 4xl:items-start" : ""
+              }`}
+            >
+              <StatsGrid stats={view.stats} fluidColumns />
+              {dashboardLayout.usage ? usageBlock : null}
+            </div>
+          ) : null}
+          {/* Accounts on the left, request logs on the right. A hidden section must not leave an empty cell. */}
+          {dashboardLayout.accounts || dashboardLayout.requestLogs ? (
+            <div
+              data-testid="dashboard-sections"
+              className={`grid gap-8${
+                dashboardLayout.accounts && dashboardLayout.requestLogs ? " 3xl:grid-cols-2 3xl:items-start" : ""
+              }`}
+            >
+              {dashboardLayout.accounts ? accountsSection : null}
+              {dashboardLayout.requestLogs ? requestsSection : null}
+            </div>
+          ) : null}
         </div>
       ) : (
         <>
           <StatsGrid stats={view.stats} />
-          {usageBlock}
-          {accountsSection}
-          {requestsSection}
+          {dashboardLayout.usage ? usageBlock : null}
+          {dashboardLayout.accounts ? accountsSection : null}
+          {dashboardLayout.requestLogs ? requestsSection : null}
         </>
       )}
 
