@@ -23,6 +23,32 @@ describe("buildSettingsUpdateRequest", () => {
 
     expect(payload.expectedVersion).toBe(7);
     expect(payload.apiKeyAuthEnabled).toBe(false);
+    expect("dashboardLayout" in payload).toBe(false);
+  });
+
+  it("keeps a dashboard layout patch limited to the flags the caller set", () => {
+    const settings = DashboardSettingsSchema.parse({
+      stickyThreadsEnabled: true,
+      upstreamStreamTransport: "default",
+      preferEarlierResetAccounts: false,
+      routingStrategy: "round_robin",
+      openaiCacheAffinityMaxAgeSeconds: 300,
+      dashboardSessionTtlSeconds: 43200,
+      importWithoutOverwrite: true,
+      totpRequiredOnLogin: true,
+      totpConfigured: false,
+      apiKeyAuthEnabled: true,
+      dashboardLayout: {
+        requests: false,
+        conversations: false,
+      },
+    });
+
+    const payload = buildSettingsUpdateRequest(settings, {
+      dashboardLayout: { conversations: true },
+    });
+
+    expect(payload.dashboardLayout).toEqual({ conversations: true });
   });
 
   it("omits expectedVersion when the loaded settings carry no version", () => {

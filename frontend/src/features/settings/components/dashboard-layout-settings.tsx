@@ -21,7 +21,10 @@ export function DashboardLayoutSettings({ settings, busy, onSave }: DashboardLay
   const layout = settings.dashboardLayout;
 
   const saveFlag = (key: keyof DashboardLayoutVisibility, checked: boolean) => {
-    void onSave({ dashboardLayout: { ...layout, [key]: checked } });
+    // The server merges the flags present in this object. Sending the whole
+    // snapshot would let a stale browser undo another browser's layout changes,
+    // including when a conflict retry resends this same payload.
+    void onSave({ dashboardLayout: { [key]: checked } });
   };
 
   return (

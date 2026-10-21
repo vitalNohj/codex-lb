@@ -152,6 +152,67 @@ describe("useSettings", () => {
     }
   });
 
+  it("retries a one-flag dashboard layout patch without expanding the stale snapshot", async () => {
+    const queryClient = createTestQueryClient();
+    const loaded = createDashboardSettings({
+      version: 3,
+      dashboardLayout: {
+        requests: true,
+        tokens: true,
+        estimatedCost: true,
+        conversations: false,
+        errorRate: true,
+        usage: true,
+        accounts: true,
+        requestLogs: false,
+      },
+    });
+    const afterConflict = createDashboardSettings({ version: 4, dashboardLayout: loaded.dashboardLayout });
+    const saved = createDashboardSettings({
+      version: 5,
+      dashboardLayout: { ...loaded.dashboardLayout, conversations: true },
+    });
+    server.use(http.get("*/api/settings", () => HttpResponse.json(loaded)));
+
+    const updateSpy = vi
+      .spyOn(settingsApi, "updateSettings")
+      .mockRejectedValueOnce(
+        new ApiError({
+          message: "Settings were modified since this form was loaded; reload and retry",
+          status: 409,
+          code: "settings_conflict",
+        }),
+      )
+      .mockResolvedValueOnce(saved);
+    const getSpy = vi.spyOn(settingsApi, "getSettings");
+
+    try {
+      const { result } = renderHook(() => useSettings(), {
+        wrapper: createWrapper(queryClient),
+      });
+
+      await waitFor(() => expect(result.current.settingsQuery.isSuccess).toBe(true));
+      getSpy.mockResolvedValueOnce(afterConflict);
+
+      await result.current.updateSettingsMutation.mutateAsync({
+        dashboardLayout: { conversations: true },
+      });
+
+      expect(updateSpy).toHaveBeenCalledTimes(2);
+      expect(updateSpy).toHaveBeenNthCalledWith(1, {
+        dashboardLayout: { conversations: true },
+        expectedVersion: 3,
+      });
+      expect(updateSpy).toHaveBeenNthCalledWith(2, {
+        dashboardLayout: { conversations: true },
+        expectedVersion: 4,
+      });
+    } finally {
+      updateSpy.mockRestore();
+      getSpy.mockRestore();
+    }
+  });
+
   it("fetches settings before PUT when the query cache is cold", async () => {
     const queryClient = createTestQueryClient();
     const loaded = createDashboardSettings({ version: 3, stickyThreadsEnabled: false });

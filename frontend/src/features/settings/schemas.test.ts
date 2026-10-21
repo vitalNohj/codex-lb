@@ -91,6 +91,14 @@ describe("DashboardSettingsSchema", () => {
     expect(parsed.dashboardLayout.requestLogs).toBe(true);
   });
 
+  it("keeps a dashboard layout update limited to the flags that were sent", () => {
+    const parsed = SettingsUpdateRequestSchema.parse({
+      dashboardLayout: { conversations: true },
+    });
+
+    expect(parsed.dashboardLayout).toEqual({ conversations: true });
+  });
+
   it("parses sidecar settings fields", () => {
     const parsed = DashboardSettingsSchema.parse({
       stickyThreadsEnabled: true,

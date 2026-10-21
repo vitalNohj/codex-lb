@@ -243,16 +243,7 @@ describe("SettingsPage", () => {
     await user.click(screen.getByRole("switch", { name: "Show the active conversations card" }));
 
     expect(mutateAsync).toHaveBeenCalledWith({
-      dashboardLayout: expect.objectContaining({
-        conversations: true,
-        requests: true,
-        tokens: true,
-        estimatedCost: true,
-        errorRate: true,
-        usage: true,
-        accounts: true,
-        requestLogs: true,
-      }),
+      dashboardLayout: { conversations: true },
     });
   });
 
