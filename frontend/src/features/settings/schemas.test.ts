@@ -86,6 +86,17 @@ describe("DashboardSettingsSchema", () => {
     expect(parsed.limitWarmupEnabled).toBe(false);
     expect(parsed.limitWarmupWindows).toBe("both");
     expect(parsed.limitWarmupStaggeredIdleEnabled).toBe(true);
+    expect(parsed.dashboardLayout.conversations).toBe(false);
+    expect(parsed.dashboardLayout.requests).toBe(true);
+    expect(parsed.dashboardLayout.requestLogs).toBe(true);
+  });
+
+  it("keeps a dashboard layout update limited to the flags that were sent", () => {
+    const parsed = SettingsUpdateRequestSchema.parse({
+      dashboardLayout: { conversations: true },
+    });
+
+    expect(parsed.dashboardLayout).toEqual({ conversations: true });
   });
 
   it("parses sidecar settings fields", () => {

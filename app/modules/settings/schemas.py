@@ -347,6 +347,28 @@ def _normalize_model_alias_pools(value: dict[str, Any] | None) -> dict[str, Mode
     return pools
 
 
+class DashboardLayoutVisibilitySchema(DashboardModel):
+    requests: bool = True
+    tokens: bool = True
+    estimated_cost: bool = True
+    conversations: bool = False
+    error_rate: bool = True
+    usage: bool = True
+    accounts: bool = True
+    request_logs: bool = True
+
+
+class DashboardLayoutVisibilityUpdate(DashboardModel):
+    requests: bool | None = None
+    tokens: bool | None = None
+    estimated_cost: bool | None = None
+    conversations: bool | None = None
+    error_rate: bool | None = None
+    usage: bool | None = None
+    accounts: bool | None = None
+    request_logs: bool | None = None
+
+
 class DashboardSettingsResponse(DashboardModel):
     sticky_threads_enabled: bool
     cliproxy_capacity_routing_enabled: bool = True
@@ -509,6 +531,7 @@ class DashboardSettingsResponse(DashboardModel):
     # model's default route. Same full model may sit on several cards; the star
     # decides which one owns the bare model id.
     sidecar_full_model_stars: dict[str, str] = Field(default_factory=dict)
+    dashboard_layout: DashboardLayoutVisibilitySchema = Field(default_factory=DashboardLayoutVisibilitySchema)
     guest_access_enabled: bool
     guest_password_configured: bool
     version: int = Field(ge=1)
@@ -654,6 +677,7 @@ class DashboardSettingsUpdateRequest(DashboardModel):
     # saving without star knowledge cannot erase them), present map = replace
     # the stored one, filtered against the cards this save configures.
     sidecar_full_model_stars: dict[str, str] | None = Field(default=None, max_length=256)
+    dashboard_layout: DashboardLayoutVisibilityUpdate | None = None
 
     @field_validator("request_log_retention_override_days")
     @classmethod

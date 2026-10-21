@@ -34,18 +34,23 @@ export type StatsGridProps = {
 };
 
 export function StatsGrid({ stats, fluidColumns = false }: StatsGridProps) {
+  if (stats.length === 0) {
+    return null;
+  }
+
   const columnsClass = fluidColumns
     ? "grid-cols-[repeat(auto-fit,minmax(min(100%,14rem),1fr))]"
     : cn("sm:grid-cols-2", stats.length >= 5 ? "xl:grid-cols-5" : "xl:grid-cols-4");
 
   return (
-    <div className={cn("grid gap-3", columnsClass)}>
+    <div className={cn("grid gap-3", columnsClass)} data-testid="stats-grid">
       {stats.map((stat, index) => {
         const Icon = stat.icon;
         const accent = ACCENT_STYLES[index % ACCENT_STYLES.length];
         return (
           <div
-            key={stat.label}
+            key={stat.id ?? stat.label}
+            data-testid={stat.id ? `dashboard-stat-${stat.id}` : undefined}
             className="animate-fade-in-up card-hover rounded-xl border bg-card p-4"
             style={{ animationDelay: `${index * 75}ms` }}
           >

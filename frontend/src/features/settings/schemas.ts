@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import { DEFAULT_DASHBOARD_LAYOUT } from "@/features/dashboard/layout";
 import { ExcludedModelsStateSchema } from "@/features/settings/lib/excluded-models-state";
 
 const RoutingStrategySchema = z.enum([
@@ -162,6 +163,28 @@ export const ClaudeSidecarAuthPlanSchema = z.object({
   planType: ClaudeSidecarPlanTypeSchema,
   primaryTokenBudget: z.number().int().positive().nullable().optional(),
   secondaryTokenBudget: z.number().int().positive().nullable().optional(),
+});
+
+export const DashboardLayoutSchema = z.object({
+  requests: z.boolean().optional().default(DEFAULT_DASHBOARD_LAYOUT.requests),
+  tokens: z.boolean().optional().default(DEFAULT_DASHBOARD_LAYOUT.tokens),
+  estimatedCost: z.boolean().optional().default(DEFAULT_DASHBOARD_LAYOUT.estimatedCost),
+  conversations: z.boolean().optional().default(DEFAULT_DASHBOARD_LAYOUT.conversations),
+  errorRate: z.boolean().optional().default(DEFAULT_DASHBOARD_LAYOUT.errorRate),
+  usage: z.boolean().optional().default(DEFAULT_DASHBOARD_LAYOUT.usage),
+  accounts: z.boolean().optional().default(DEFAULT_DASHBOARD_LAYOUT.accounts),
+  requestLogs: z.boolean().optional().default(DEFAULT_DASHBOARD_LAYOUT.requestLogs),
+});
+
+export const DashboardLayoutUpdateSchema = z.object({
+  requests: z.boolean().optional(),
+  tokens: z.boolean().optional(),
+  estimatedCost: z.boolean().optional(),
+  conversations: z.boolean().optional(),
+  errorRate: z.boolean().optional(),
+  usage: z.boolean().optional(),
+  accounts: z.boolean().optional(),
+  requestLogs: z.boolean().optional(),
 });
 
 export const DashboardSettingsSchema = z
@@ -354,6 +377,7 @@ export const DashboardSettingsSchema = z
       .optional()
       .default(null),
     opencodeGoSidecarLastModelCount: z.number().int().nonnegative().nullable().optional().default(null),
+    dashboardLayout: DashboardLayoutSchema.optional().default(DEFAULT_DASHBOARD_LAYOUT),
     guestAccessEnabled: z.boolean().optional().default(false),
     guestPasswordConfigured: z.boolean().optional().default(false),
     limitWarmupStaggeredIdleEnabled: z.boolean().optional().default(false),
@@ -512,6 +536,7 @@ export const SettingsUpdateRequestSchema = z
     opencodeGoSidecarRequestTimeoutSeconds: z.number().positive().optional(),
     opencodeGoSidecarModelsCacheTtlSeconds: z.number().nonnegative().optional(),
     guestAccessEnabled: z.boolean().optional(),
+    dashboardLayout: DashboardLayoutUpdateSchema.optional(),
     limitWarmupStaggeredIdleEnabled: z.boolean().optional(),
     // Tri-state overrides: absent = unchanged, null = clear (inherit env
     // alias), value = store the override.

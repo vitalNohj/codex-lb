@@ -14,6 +14,7 @@ import { useAuthStore } from "@/features/auth/hooks/use-auth";
 import { useDashboard, useDashboardProjections } from "@/features/dashboard/hooks/use-dashboard";
 import { useRequestLogs } from "@/features/dashboard/hooks/use-request-logs";
 import { useConversations } from "@/features/dashboard/hooks/use-conversations";
+import { DEFAULT_DASHBOARD_LAYOUT } from "@/features/dashboard/layout";
 import { buildDashboardView } from "@/features/dashboard/utils";
 import type { AccountListSort } from "@/features/dashboard/components/account-list";
 import { useDashboardPreferencesStore } from "@/hooks/use-dashboard-preferences";
@@ -27,6 +28,7 @@ const {
   requestFiltersSpy,
   conversationsViewSpy,
   recentRequestsTableSpy,
+  useSettingsMock,
 } = vi.hoisted(() => ({
   accountCardsSpy: vi.fn(),
   accountListSpy: vi.fn(),
@@ -34,6 +36,9 @@ const {
   requestFiltersSpy: vi.fn(),
   conversationsViewSpy: vi.fn(),
   recentRequestsTableSpy: vi.fn(),
+  useSettingsMock: vi.fn(() => ({
+    settingsQuery: { data: undefined },
+  })),
 }));
 
 vi.mock("@/features/accounts/hooks/use-accounts", () => ({
@@ -55,6 +60,10 @@ vi.mock("@/features/dashboard/hooks/use-request-logs", async (importOriginal) =>
 
 vi.mock("@/features/dashboard/hooks/use-conversations", () => ({
   useConversations: vi.fn(),
+}));
+
+vi.mock("@/features/settings/hooks/use-settings", () => ({
+  useSettings: () => useSettingsMock(),
 }));
 
 vi.mock("@/features/dashboard/utils", async () => {
@@ -196,6 +205,10 @@ describe("DashboardPage", () => {
     useRequestLogsMock.mockReset();
     useConversationsMock.mockReset();
     buildDashboardViewMock.mockReset();
+    useSettingsMock.mockReset();
+    useSettingsMock.mockReturnValue({
+      settingsQuery: { data: undefined },
+    });
     useDashboardPreferencesStore.setState({
       accountBurnrateEnabled: true,
       accountViewMode: "cards",
@@ -1133,5 +1146,44 @@ describe("DashboardPage", () => {
       conversationId: null,
       offset: 0,
     });
+  });
+
+  it("drops a hidden dashboard section out of the split-view grid", () => {
+    useDashboardPreferencesStore.setState({ splitViewEnabled: true, initialized: true });
+    useSettingsMock.mockReturnValue({
+      settingsQuery: {
+        data: {
+          dashboardLayout: {
+            ...DEFAULT_DASHBOARD_LAYOUT,
+            requestLogs: false,
+            usage: false,
+          },
+        },
+      },
+    });
+    mockReadyDashboard();
+    buildDashboardViewMock.mockReturnValue({
+      stats: [{ label: "Requests", value: "1", icon: () => null, trend: [], trendColor: "#000" }],
+      weeklyCreditPace: null,
+      primaryUsageItems: [],
+      secondaryUsageItems: [],
+      primaryTotal: 0,
+      secondaryTotal: 0,
+      safeLinePrimary: null,
+      safeLineSecondary: null,
+      requestLogs: [],
+    } as ReturnType<typeof buildDashboardView>);
+
+    renderWithProviders(<DashboardPage />);
+
+    expect(screen.queryByRole("heading", { name: "Request Logs" })).not.toBeInTheDocument();
+    expect(screen.queryByTestId("usage-donuts")).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Accounts" })).toBeInTheDocument();
+    const sections = screen.getByTestId("dashboard-sections");
+    expect(sections.className).not.toContain("grid-cols-2");
+    expect(sections.childElementCount).toBe(1);
+    const overview = screen.getByTestId("dashboard-overview-band");
+    expect(overview.className).not.toContain("grid-cols-2");
+    expect(within(overview).getByTestId("stats-grid")).toBeInTheDocument();
   });
 });

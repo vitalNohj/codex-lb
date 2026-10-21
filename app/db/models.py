@@ -29,6 +29,10 @@ from sqlalchemy import Enum as SqlEnum
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 from app.core.auth.dashboard_session_ttl import DEFAULT_DASHBOARD_SESSION_TTL_SECONDS
+from app.modules.settings.dashboard_layout import (
+    DEFAULT_DASHBOARD_LAYOUT_JSON,
+    sql_dashboard_layout_default,
+)
 
 
 class Base(DeclarativeBase):
@@ -1911,6 +1915,14 @@ class DashboardSettings(Base):
     hourly_rollup_retention_days: Mapped[int | None] = mapped_column(
         Integer,
         nullable=True,
+    )
+    # Operator visibility for dashboard cards and sections. The JSON default
+    # hides active conversations and leaves every other card and section on.
+    dashboard_layout_json: Mapped[str] = mapped_column(
+        Text,
+        default=DEFAULT_DASHBOARD_LAYOUT_JSON,
+        server_default=literal_column(sql_dashboard_layout_default()),
+        nullable=False,
     )
     version: Mapped[int] = mapped_column(
         Integer,

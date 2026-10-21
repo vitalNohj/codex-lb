@@ -135,6 +135,8 @@ export function buildSettingsUpdateRequest(
     opencodeGoSidecarRequestTimeoutSeconds: settings.opencodeGoSidecarRequestTimeoutSeconds,
     opencodeGoSidecarModelsCacheTtlSeconds: settings.opencodeGoSidecarModelsCacheTtlSeconds,
     guestAccessEnabled: settings.guestAccessEnabled,
+    // Layout toggles send only the flag that changed. Copying the loaded
+    // snapshot here would let a stale browser undo another browser's layout.
     hideUpstreamQuotaFromApiKeys: settings.hideUpstreamQuotaFromApiKeys,
     ...patch,
   };

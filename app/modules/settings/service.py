@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 
 from app.core.clients.claude_sidecar import SidecarPrefix
@@ -22,6 +22,11 @@ from app.modules.proxy.sidecar_routing import (
     apply_full_model_stars,
     parse_full_model_stars,
     resolve_sidecar_pool_target,
+)
+from app.modules.settings.dashboard_layout import (
+    DashboardLayoutVisibility,
+    dump_dashboard_layout,
+    parse_dashboard_layout,
 )
 from app.modules.settings.model_alias_pools import (
     MAX_ALIAS_LENGTH,
@@ -196,6 +201,7 @@ class DashboardSettingsData:
     hourly_rollup_retention_override_days: int | None
     version: int
     cliproxy_capacity_routing_enabled: bool = True
+    dashboard_layout: DashboardLayoutVisibility = field(default_factory=DashboardLayoutVisibility)
 
 
 @dataclass(frozen=True, slots=True)
@@ -331,6 +337,7 @@ class DashboardSettingsUpdateData:
     hourly_rollup_retention_override_days: int | None = None
     clear_hourly_rollup_retention_override: bool = False
     cliproxy_capacity_routing_enabled: bool | None = None
+    dashboard_layout: DashboardLayoutVisibility | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -604,6 +611,9 @@ class SettingsService:
             clear_usage_history_retention=payload.clear_usage_history_retention_override,
             clear_hourly_rollup_retention=payload.clear_hourly_rollup_retention_override,
             sidecar_full_model_stars_json=_dump_full_model_stars(effective_full_model_stars),
+            dashboard_layout_json=(
+                dump_dashboard_layout(payload.dashboard_layout) if payload.dashboard_layout is not None else None
+            ),
         )
         return self._to_data(row)
 
@@ -783,6 +793,7 @@ class SettingsService:
             hourly_rollup_retention_override_days=row.hourly_rollup_retention_days,
             version=row.version,
             cliproxy_capacity_routing_enabled=row.cliproxy_capacity_routing_enabled,
+            dashboard_layout=parse_dashboard_layout(row.dashboard_layout_json),
         )
 
 

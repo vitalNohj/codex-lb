@@ -1,5 +1,6 @@
 import { Activity, AlertTriangle, Coins, DollarSign, Flame, MessageSquare, type LucideIcon } from "lucide-react";
 
+import { DEFAULT_DASHBOARD_LAYOUT, type DashboardLayoutVisibility } from "@/features/dashboard/layout";
 import i18n from "@/i18n";
 import type {
   AccountSummary,
@@ -93,6 +94,7 @@ export type RemainingItem = {
 };
 
 export type DashboardStat = {
+  id?: "requests" | "tokens" | "estimatedCost" | "conversations" | "accountBurn" | "errorRate";
   label: string;
   value: string;
   meta?: string;
@@ -162,18 +164,37 @@ export type DashboardView = {
 type DashboardViewOptions = {
   isDark?: boolean;
   showAccountBurnrate?: boolean;
+  dashboardLayout?: DashboardLayoutVisibility;
 };
 
-function resolveDashboardViewOptions(optionsOrIsDark: DashboardViewOptions | boolean): Required<DashboardViewOptions> {
+type ResolvedDashboardViewOptions = {
+  isDark: boolean;
+  showAccountBurnrate: boolean;
+  dashboardLayout: DashboardLayoutVisibility;
+};
+
+/**
+ * Callers that do not pass a layout (existing tests and helpers) keep every
+ * card, including active conversations when the metric exists. The dashboard
+ * page always passes the server layout, whose default hides that card.
+ */
+const LAYOUT_WHEN_UNSPECIFIED: DashboardLayoutVisibility = {
+  ...DEFAULT_DASHBOARD_LAYOUT,
+  conversations: true,
+};
+
+function resolveDashboardViewOptions(optionsOrIsDark: DashboardViewOptions | boolean): ResolvedDashboardViewOptions {
   if (typeof optionsOrIsDark === "boolean") {
     return {
       isDark: optionsOrIsDark,
       showAccountBurnrate: true,
+      dashboardLayout: LAYOUT_WHEN_UNSPECIFIED,
     };
   }
   return {
     isDark: optionsOrIsDark.isDark ?? false,
     showAccountBurnrate: optionsOrIsDark.showAccountBurnrate ?? true,
+    dashboardLayout: optionsOrIsDark.dashboardLayout ?? LAYOUT_WHEN_UNSPECIFIED,
   };
 }
 
@@ -822,7 +843,7 @@ export function buildDashboardView(
   optionsOrIsDark: DashboardViewOptions | boolean = false,
   projections?: DashboardProjections,
 ): DashboardView {
-  const { isDark, showAccountBurnrate } = resolveDashboardViewOptions(optionsOrIsDark);
+  const { isDark, showAccountBurnrate, dashboardLayout } = resolveDashboardViewOptions(optionsOrIsDark);
   const primaryWindow = overview.windows.primary;
   const secondaryWindow = overview.windows.secondary;
   const metrics = overview.summary.metrics;
@@ -854,8 +875,10 @@ export function buildDashboardView(
   const comparison = overview.summary.comparison;
   const canCompare = comparison?.canCompare ?? false;
 
-  const stats: DashboardStat[] = [
-    {
+  const stats: DashboardStat[] = [];
+  if (dashboardLayout.requests) {
+    stats.push({
+      id: "requests",
       label: t("dashboard.stats.requests", { timeframe: timeframeLabel }),
       value: formatCompactNumber(metrics?.requests ?? 0),
       meta: requestMeta,
@@ -863,8 +886,11 @@ export function buildDashboardView(
       icon: Activity,
       trend: trendPointsToValues(trends.requests),
       trendColor: TREND_COLORS[0],
-    },
-    {
+    });
+  }
+  if (dashboardLayout.tokens) {
+    stats.push({
+      id: "tokens",
       label: t("dashboard.stats.tokens", { timeframe: timeframeLabel }),
       value: formatCompactNumber(metrics?.tokens ?? 0),
       meta: formatCachedTokensMeta(metrics?.tokens, metrics?.cachedInputTokens),
@@ -872,8 +898,11 @@ export function buildDashboardView(
       icon: Coins,
       trend: trendPointsToValues(trends.tokens),
       trendColor: TREND_COLORS[1],
-    },
-    {
+    });
+  }
+  if (dashboardLayout.estimatedCost) {
+    stats.push({
+      id: "estimatedCost",
       label: t("dashboard.stats.estimatedCost", { timeframe: timeframeLabel }),
       value: formatCurrency(cost),
       meta: costMeta,
@@ -881,17 +910,18 @@ export function buildDashboardView(
       icon: DollarSign,
       trend: trendPointsToValues(trends.cost),
       trendColor: TREND_COLORS[2],
-    },
-  ];
+    });
+  }
 
   const conversationCount = metrics?.conversations !== null && metrics?.conversations !== undefined ? metrics.conversations : null;
-  if (conversationCount !== null) {
+  if (dashboardLayout.conversations && conversationCount !== null) {
     const averageRequestsPerConversation =
       conversationCount > 0
         ? ((metrics?.conversationRequests ?? 0) / conversationCount).toFixed(1)
         : "—";
 
     stats.push({
+      id: "conversations",
       label: t("dashboard.stats.conversations", { timeframe: timeframeLabel }),
       value: formatNumber(conversationCount),
       meta: t("dashboard.stats.avgRequestsPerConversation", {
@@ -905,6 +935,7 @@ export function buildDashboardView(
 
   if (showAccountBurnrate) {
     stats.push({
+      id: "accountBurn",
       label: t("dashboard.stats.accountBurnProjection", { primary: primaryBurnLabel, secondary: secondaryBurnLabel }),
       value: `${formatBurnEquivalent(primaryBurnEquivalent)} / ${formatBurnEquivalent(secondaryBurnEquivalent)}`,
       meta: t("dashboard.stats.projectedAccountEquivalents", {
@@ -919,19 +950,22 @@ export function buildDashboardView(
     });
   }
 
-  stats.push({
-    label: t("dashboard.stats.errorRate", { timeframe: timeframeLabel }),
-    value: formatRate(metrics?.errorRate ?? null),
-    meta: metrics?.topError
-      ? t("dashboard.stats.topError", { error: metrics.topError })
-      : t("dashboard.stats.errorsInTimeframe", {
-          count: formatCompactNumber(metrics?.errorCount ?? Math.round((metrics?.errorRate ?? 0) * (metrics?.requests ?? 0))),
-          timeframe: timeframeLabel,
-        }),
-    icon: AlertTriangle,
-    trend: trendPointsToValues(trends.errorRate),
-    trendColor: TREND_COLORS[4],
-  });
+  if (dashboardLayout.errorRate) {
+    stats.push({
+      id: "errorRate",
+      label: t("dashboard.stats.errorRate", { timeframe: timeframeLabel }),
+      value: formatRate(metrics?.errorRate ?? null),
+      meta: metrics?.topError
+        ? t("dashboard.stats.topError", { error: metrics.topError })
+        : t("dashboard.stats.errorsInTimeframe", {
+            count: formatCompactNumber(metrics?.errorCount ?? Math.round((metrics?.errorRate ?? 0) * (metrics?.requests ?? 0))),
+            timeframe: timeframeLabel,
+          }),
+      icon: AlertTriangle,
+      trend: trendPointsToValues(trends.errorRate),
+      trendColor: TREND_COLORS[4],
+    });
+  }
 
   const rawPrimaryItems = buildRemainingItems(overview.accounts, primaryWindow, "primary", isDark);
   const secondaryUsageItems = buildRemainingItems(overview.accounts, secondaryWindow, "secondary", isDark);

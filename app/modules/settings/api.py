@@ -44,6 +44,7 @@ from app.modules.proxy.account_cache import (
 )
 from app.modules.proxy.alias_pool_attempts import get_alias_pool_cooldowns
 from app.modules.proxy.custom_alias_catalog import reconcile_custom_alias_catalog
+from app.modules.settings.dashboard_layout import DashboardLayoutVisibility, merge_dashboard_layout
 from app.modules.settings.model_alias_pools import ModelAliasPool
 from app.modules.settings.schemas import (
     AccountProxyBindingRequest,
@@ -52,6 +53,8 @@ from app.modules.settings.schemas import (
     AliasPoolsHealthResponse,
     AliasPoolTargetHealth,
     CustomAliasCatalogEntrySchema,
+    DashboardLayoutVisibilitySchema,
+    DashboardLayoutVisibilityUpdate,
     DashboardSettingsResponse,
     DashboardSettingsUpdateRequest,
     ModelAliasPoolSchema,
@@ -160,6 +163,35 @@ router = APIRouter(
     tags=["dashboard"],
     dependencies=[Depends(validate_dashboard_session), Depends(set_dashboard_error_format)],
 )
+
+
+def _layout_schema(layout: DashboardLayoutVisibility) -> DashboardLayoutVisibilitySchema:
+    return DashboardLayoutVisibilitySchema(
+        requests=layout.requests,
+        tokens=layout.tokens,
+        estimated_cost=layout.estimated_cost,
+        conversations=layout.conversations,
+        error_rate=layout.error_rate,
+        usage=layout.usage,
+        accounts=layout.accounts,
+        request_logs=layout.request_logs,
+    )
+
+
+def _merged_dashboard_layout(
+    current: DashboardLayoutVisibility,
+    patch: DashboardLayoutVisibilityUpdate | None,
+) -> DashboardLayoutVisibility | None:
+    if patch is None:
+        return None
+    updates: dict[str, bool] = {}
+    for name in patch.model_fields_set:
+        value = getattr(patch, name)
+        if isinstance(value, bool):
+            updates[name] = value
+    if not updates:
+        return None
+    return merge_dashboard_layout(current, updates)
 
 
 def _dashboard_settings_response(settings) -> DashboardSettingsResponse:
@@ -301,6 +333,7 @@ def _dashboard_settings_response(settings) -> DashboardSettingsResponse:
         ollama_sidecar_last_model_count=settings.ollama_sidecar_last_model_count,
         ollama_sidecar_default_reasoning_effort=settings.ollama_sidecar_default_reasoning_effort,
         sidecar_full_model_stars=settings.sidecar_full_model_stars,
+        dashboard_layout=_layout_schema(settings.dashboard_layout),
         guest_access_enabled=settings.guest_access_enabled,
         guest_password_configured=settings.guest_password_configured,
         limit_warmup_staggered_idle_enabled=settings.limit_warmup_staggered_idle_enabled,
@@ -1495,6 +1528,7 @@ async def update_settings(
                 sidecar_full_model_stars=(
                     payload.sidecar_full_model_stars if "sidecar_full_model_stars" in payload.model_fields_set else None
                 ),
+                dashboard_layout=_merged_dashboard_layout(current.dashboard_layout, payload.dashboard_layout),
             ),
             # CAS anchor: omitted fields above were merged from `current`
             # (version checked against expectedVersion when supplied), so the
@@ -1677,6 +1711,7 @@ async def update_settings(
             "request_log_retention_override_days",
             "usage_history_retention_override_days",
             "hourly_rollup_retention_override_days",
+            "dashboard_layout",
         )
         if getattr(current, field_name) != getattr(updated, field_name)
     ]

@@ -24,6 +24,7 @@ from app.db.models import (
     ClaudeSonnet55PinOwnership,
     DashboardSettings,
 )
+from app.modules.settings.dashboard_layout import DEFAULT_DASHBOARD_LAYOUT_JSON
 
 _SETTINGS_ID = 1
 _UNSET = object()
@@ -251,6 +252,7 @@ class SettingsRepository:
             request_log_retention_days=None,
             usage_history_retention_days=None,
             hourly_rollup_retention_days=None,
+            dashboard_layout_json=DEFAULT_DASHBOARD_LAYOUT_JSON,
         )
         self._session.add(row)
         try:
@@ -588,6 +590,7 @@ class SettingsRepository:
         clear_request_log_retention: bool = False,
         clear_usage_history_retention: bool = False,
         clear_hourly_rollup_retention: bool = False,
+        dashboard_layout_json: str | None = None,
         expected_version: int | None = None,
     ) -> DashboardSettings:
         settings = await self.get_or_create()
@@ -903,6 +906,8 @@ class SettingsRepository:
             settings.hourly_rollup_retention_days = None
         elif hourly_rollup_retention_days is not None:
             settings.hourly_rollup_retention_days = hourly_rollup_retention_days
+        if dashboard_layout_json is not None:
+            settings.dashboard_layout_json = dashboard_layout_json
         # Force the optimistic-version CAS to run even when the payload makes no
         # net change. `version_id_col` only raises `StaleDataError` when the
         # flush emits an ORM UPDATE; a full-row save that assigns values all
