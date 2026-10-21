@@ -22,8 +22,16 @@ import pytest
 from sqlalchemy import select
 
 import app.modules.proxy.service as proxy_service
+from app.core.crypto import TokenEncryptor
 from app.core.utils.time import utcnow
-from app.db.models import ApiKey, ApiKeyUsageReservation, LimitWindow
+from app.db.models import (
+    Account,
+    AccountStatus,
+    ApiKey,
+    ApiKeyUsageReservation,
+    LimitWindow,
+    QuotaPlannerDecision,
+)
 from app.db.session import SessionLocal
 from app.dependencies import _proxy_repo_context
 from app.modules.api_keys.limit_windows import LIFETIME_RESET_AT
@@ -33,6 +41,9 @@ from app.modules.api_keys.service import (
     ApiKeysService,
     ApiKeyUnpricedModelError,
 )
+from app.modules.quota_planner.logic import PlannerSettings
+from app.modules.quota_planner.repository import QuotaPlannerRepository
+from app.modules.quota_planner.warmup import QuotaWarmupService
 from app.modules.request_logs.repository import RequestLogsRepository
 
 pytestmark = pytest.mark.integration
@@ -336,6 +347,64 @@ async def test_the_route_price_check_decides_for_a_shared_cost_budget_key(async_
         assert await service.enforce_limits_for_request(key_id, request_model=_UNPRICED_MODEL, model_is_priced=priced)
         with pytest.raises(ApiKeyUnpricedModelError):
             await service.enforce_limits_for_request(key_id, request_model=_PRICED_MODEL, model_is_priced=unpriced)
+
+
+@pytest.mark.asyncio
+async def test_a_warmup_on_an_unpriced_model_with_a_shared_cost_budget_key_is_skipped(async_client, monkeypatch):
+    # The warmup service shares one session with API-key admission, and the
+    # refusal rolls that session back; the decision must still be marked
+    # skipped rather than failing on the rolled-back (expired) decision row.
+    key_id, _ = await _create_key(async_client, name="warmup-unpriced", shared=True, limits=[_lifetime_cost()])
+    encryptor = TokenEncryptor()
+    async with SessionLocal() as session:
+        account = Account(
+            id="acc-warm-unpriced",
+            email="warm-unpriced@example.test",
+            plan_type="plus",
+            access_token_encrypted=encryptor.encrypt("access"),
+            refresh_token_encrypted=encryptor.encrypt("refresh"),
+            id_token_encrypted=encryptor.encrypt("id"),
+            last_refresh=utcnow(),
+            status=AccountStatus.ACTIVE,
+        )
+        session.add(account)
+        repo = QuotaPlannerRepository(session)
+        await repo.upsert_settings(
+            PlannerSettings(
+                mode="auto",
+                allow_synthetic_traffic=True,
+                dry_run=False,
+                max_warmup_credits_per_day=1.0,
+                warmup_model_preference=_UNPRICED_MODEL,
+            )
+        )
+        await repo.add_window_observation(
+            account_id=account.id,
+            model=_UNPRICED_MODEL,
+            source="warmup_probe",
+            confidence="observed",
+        )
+        service = QuotaWarmupService(session)
+
+        async def fail_send(self, *, account, model, request_id):
+            del self, account, model, request_id
+            raise AssertionError("an unpriced model should be skipped before the warmup probe is sent")
+
+        monkeypatch.setattr(QuotaWarmupService, "_send_warmup_probe", fail_send)
+
+        result = await service.warm_now(
+            account_id=account.id,
+            model=_UNPRICED_MODEL,
+            api_key_id=key_id,
+            force_probe=True,
+        )
+
+    assert result.status == "skipped"
+    assert result.reason == "api_key_model_not_priced"
+    async with SessionLocal() as session:
+        decision = await session.get(QuotaPlannerDecision, result.decision_id)
+    assert decision is not None
+    assert decision.status == "skipped"
 
 
 # --- abandoned streams ----------------------------------------------------------
