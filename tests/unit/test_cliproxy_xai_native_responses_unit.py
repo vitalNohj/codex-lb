@@ -563,8 +563,13 @@ async def _close_after(frames_wanted: int, chunks: list[bytes], monkeypatch) -> 
         del args, kwargs
         outcomes.append("released")
 
+    async def fake_charge(*args, **kwargs):
+        del args, kwargs
+        outcomes.append("charged-reservation")
+
     monkeypatch.setattr(cliproxy_responses_dispatch, "_settle_and_log", fake_settle)
     monkeypatch.setattr(cliproxy_responses_dispatch, "_release_and_log_sidecar_request", fake_release)
+    monkeypatch.setattr(cliproxy_responses_dispatch, "_charge_and_log_sidecar_request", fake_charge)
     log = cliproxy_responses_dispatch._LogFields(
         api_key=None, model="grok-4.3", started_at=0.0, reasoning_effort=None, requested_reasoning_effort=None
     )
@@ -598,13 +603,15 @@ async def test_a_client_leaving_after_the_terminal_event_is_still_charged(monkey
 
 
 @pytest.mark.asyncio
-async def test_a_client_leaving_mid_turn_releases_the_reservation(monkeypatch) -> None:
+async def test_a_client_leaving_mid_turn_is_charged_its_reservation(monkeypatch) -> None:
+    """xAI is generating, and billing, once it streams; a disconnect must not spend quota free."""
+
     delta = {"type": "response.output_text.delta", "delta": "hi"}
     completed = {"type": "response.completed", "response": {"id": "r", "usage": {"input_tokens": 3}}}
     frames, outcomes = await _close_after(1, [_sse(delta), _sse(completed)], monkeypatch)
 
     assert "output_text.delta" in frames[0]
-    assert outcomes == ["released"]
+    assert outcomes == ["charged-reservation"]
 
 
 @pytest.mark.asyncio

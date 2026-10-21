@@ -462,6 +462,32 @@ async def calculated_cost_for_request(
     )
 
 
+async def model_has_known_price(*, provider: str, model: str) -> bool:
+    """Whether a request for ``model`` on ``provider`` would be priced right now.
+
+    Answers from persisted state, exactly as ``calculated_cost_for_request``
+    would price it, so an admission check and the settlement that follows agree.
+    A model never seen before is not priced yet; its lookup is scheduled in the
+    background, so a later request can find the answer. An unreadable store is
+    treated as unpriced: it cannot prove the request would be metered.
+    """
+
+    if not is_external_priced_provider(provider):
+        return False
+    provider_key, model_key = normalize_lookup_key(provider, model)
+    if not model_key:
+        return False
+    record = await _read_record(provider_key, model_key)
+    if isinstance(record, _StorageResult):
+        return False
+    if record is None or (record.retry_due() and not record.is_priced):
+        await _coordinator.submit(
+            (provider_key, model_key),
+            lambda: _run_lookup(provider_key, model_key, raw_incoming_model=model),
+        )
+    return record is not None and record.is_priced
+
+
 async def _read_record(provider_key: str, model_key: str) -> PriceRecord | None | _StorageResult:
     try:
         async with get_background_session() as session:

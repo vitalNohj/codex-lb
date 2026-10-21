@@ -24,6 +24,7 @@ from app.modules.api_keys.service import (
     ApiKeyRateLimitExceededError,
     ApiKeyRequestUsageBudget,
     ApiKeysService,
+    ApiKeyUnpricedModelError,
 )
 from app.modules.request_logs.repository import RequestLogsRepository
 from app.modules.usage.repository import UsageRepository
@@ -180,8 +181,25 @@ class QuotaWarmupService:
                     fallback_status="skipped",
                     fallback_reason="api_key_invalid",
                 )
+            except ApiKeyUnpricedModelError:
+                row = await self._planner.update_decision_status(
+                    decision.id,
+                    status="skipped",
+                    reason="api_key_model_not_priced",
+                    expected_status="executing",
+                )
+                return await self._result_from_update_or_current(
+                    decision_id=decision.id,
+                    row=row,
+                    fallback_status="skipped",
+                    fallback_reason="api_key_model_not_priced",
+                )
             except ApiKeyRateLimitExceededError as exc:
-                reason = f"api_key_rate_limit_exceeded:{exc.reset_at.isoformat()}Z"
+                reason = (
+                    "api_key_rate_limit_exceeded:lifetime"
+                    if exc.reset_at is None
+                    else f"api_key_rate_limit_exceeded:{exc.reset_at.isoformat()}Z"
+                )
                 row = await self._planner.update_decision_status(
                     decision.id,
                     status="skipped",

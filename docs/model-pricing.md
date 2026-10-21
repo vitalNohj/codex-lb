@@ -55,6 +55,12 @@ are unaffected. Because there is no trustworthy cost to accrue, cost-based quota
 enforcement fails open for that request; token-based quota enforcement continues
 normally.
 
+The one exception is a **shared** API key with a cost limit. That key was handed
+to someone else to spend a budget, and an unpriced model would be served free
+against it, so the key refuses the model with `403 model_not_priced` before
+anything is sent upstream. A model seen for the first time is refused until its
+price lookup lands. See [API Keys](api-keys.md#one-time-budgets).
+
 ## How a price is found
 
 Resolution stops at the first match:

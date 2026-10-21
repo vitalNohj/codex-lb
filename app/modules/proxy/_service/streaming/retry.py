@@ -34,6 +34,7 @@ from app.core.utils.retry import backoff_seconds
 from app.core.utils.sse import format_sse_event
 from app.db.models import Account, StickySessionKind
 from app.modules.api_keys.service import ApiKeyData, ApiKeyUsageReservationData
+from app.modules.proxy._service.api_key_usage import stream_abandoned_after_start
 from app.modules.proxy._service.observability import (
     _maybe_log_proxy_request_shape,
     _record_continuity_fail_closed,
@@ -3191,7 +3192,15 @@ class _StreamingRetryMixin:
             ):
 
                 async def _release_reservation_then_drain_backoffs() -> None:
-                    released = await proxy._release_unsettled_stream_api_key_usage(
+                    # A stream the client abandoned after the upstream started
+                    # is charged its reservation; anything else never reached
+                    # the upstream's billing and is released.
+                    settle_unsettled = (
+                        proxy._charge_abandoned_stream_api_key_usage
+                        if stream_abandoned_after_start(settlement)
+                        else proxy._release_unsettled_stream_api_key_usage
+                    )
+                    released = await settle_unsettled(
                         api_key=api_key,
                         api_key_reservation=api_key_reservation,
                         request_id=request_id,

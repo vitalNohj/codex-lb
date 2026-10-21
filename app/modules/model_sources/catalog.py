@@ -274,6 +274,25 @@ def source_model_cost_usd(
     )
 
 
+def source_model_has_price(source: ModelSource, model: str) -> bool:
+    """Whether the source declares any rate that settlement can charge ``model`` at.
+
+    The same entry lookup ``source_model_cost_usd`` and
+    ``source_model_audio_cost_usd`` use, so a model this calls priced is one
+    whose usage those functions price.
+    """
+    entry = next(
+        (candidate for candidate in source.models if candidate.model == model and candidate.is_enabled),
+        None,
+    )
+    if entry is None:
+        return False
+    return any(
+        rate is not None
+        for rate in (entry.input_per_1m, entry.cached_input_per_1m, entry.output_per_1m, entry.audio_per_minute)
+    )
+
+
 def source_model_audio_cost_usd(source: ModelSource, model: str, audio_seconds: float) -> float | None:
     """Price transcribed audio against the source model's per-minute rate.
 

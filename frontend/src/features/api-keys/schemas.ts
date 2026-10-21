@@ -1,7 +1,8 @@
 import { z } from "zod";
 
 export const LIMIT_TYPES = ["total_tokens", "input_tokens", "output_tokens", "cost_usd", "credits"] as const;
-export const LIMIT_WINDOWS = ["daily", "weekly", "monthly", "5h", "7d"] as const;
+// "lifetime" is a one-time budget: it never resets, and raising its maximum tops it up.
+export const LIMIT_WINDOWS = ["daily", "weekly", "monthly", "5h", "7d", "lifetime"] as const;
 
 export type LimitType = (typeof LIMIT_TYPES)[number];
 export type LimitWindowType = (typeof LIMIT_WINDOWS)[number];
@@ -13,7 +14,8 @@ const LimitRuleSchema = z.object({
   maxValue: z.number(),
   currentValue: z.number(),
   modelFilter: z.string().nullable(),
-  resetAt: z.iso.datetime({ offset: true }),
+  // Null for a lifetime limit, which never resets.
+  resetAt: z.iso.datetime({ offset: true }).nullable(),
 });
 
 export const LimitRuleCreateSchema = z.object({

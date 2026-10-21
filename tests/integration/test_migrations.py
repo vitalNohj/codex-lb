@@ -5243,3 +5243,72 @@ async def test_is_shared_migration_defaults_false_and_round_trips_without_touchi
         }
     finally:
         await engine.dispose()
+
+
+_LIFETIME_WINDOW_REVISION = "20261021_000000_add_lifetime_api_key_limit_window"
+_LIFETIME_WINDOW_PARENT = "20261020_010000_add_api_key_is_shared"
+
+
+@pytest.mark.asyncio
+async def test_lifetime_limit_window_migration_round_trips_on_sqlite(tmp_path):
+    """SQLite stores the window as text: up and down change no schema, and a lifetime row survives."""
+    from alembic import command
+
+    from app.db.migrate import _build_alembic_config
+
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'lifetime-limit-window.sqlite'}"
+    await to_thread.run_sync(lambda: run_upgrade(db_url, _LIFETIME_WINDOW_PARENT, bootstrap_legacy=True))
+    engine = create_async_engine(db_url, future=True)
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        await to_thread.run_sync(lambda: run_upgrade(db_url, _LIFETIME_WINDOW_REVISION, bootstrap_legacy=False))
+        async with session_factory() as session:
+            await session.execute(
+                text(
+                    "INSERT INTO api_keys (id, name, key_hash, key_prefix, is_active, created_at)"
+                    " VALUES ('key_life', 'key_life', 'hash_life', 'sk-life', 1, '2026-10-21 00:00:00')"
+                )
+            )
+            await session.execute(
+                text(
+                    "INSERT INTO api_key_limits (api_key_id, limit_type, limit_window, max_value,"
+                    " current_value, reset_at) VALUES ('key_life', 'cost_usd', 'lifetime', 5000000, 0,"
+                    " '9999-12-31 00:00:00')"
+                )
+            )
+            await session.commit()
+
+        await to_thread.run_sync(lambda: command.downgrade(_build_alembic_config(db_url), _LIFETIME_WINDOW_PARENT))
+        await to_thread.run_sync(lambda: run_upgrade(db_url, _LIFETIME_WINDOW_REVISION, bootstrap_legacy=False))
+        async with session_factory() as session:
+            window = (
+                await session.execute(text("SELECT limit_window FROM api_key_limits WHERE api_key_id = 'key_life'"))
+            ).scalar_one()
+        assert window == "lifetime"
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(
+    not _is_postgresql_database_url(_DATABASE_URL),
+    reason="PostgreSQL-only enum migration test",
+)
+async def test_postgresql_lifetime_limit_window_migration_adds_the_enum_value(db_setup):
+    from alembic import command
+
+    from app.db.migrate import _build_alembic_config
+
+    result = await run_startup_migrations(_DATABASE_URL)
+    assert result.current_revision == _HEAD_REVISION
+
+    async def _enum_values() -> list[str]:
+        async with SessionLocal() as session:
+            rows = await session.execute(text("SELECT unnest(enum_range(NULL::limit_window))::text"))
+            return [str(row[0]) for row in rows]
+
+    assert "lifetime" in await _enum_values()
+    # The downgrade cannot drop an enum value in place, and a rerun is a no-op.
+    await to_thread.run_sync(lambda: command.downgrade(_build_alembic_config(_DATABASE_URL), _LIFETIME_WINDOW_PARENT))
+    await to_thread.run_sync(lambda: run_upgrade(_DATABASE_URL, "head", bootstrap_legacy=False))
+    assert (await _enum_values()).count("lifetime") == 1

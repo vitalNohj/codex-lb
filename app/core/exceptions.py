@@ -58,6 +58,20 @@ class ProxyRateLimitError(AppError):
     error_type = "rate_limit_error"
 
 
+class ProxyBudgetExhaustedError(ProxyRateLimitError):
+    """A key's one-time (lifetime) budget is used up.
+
+    It never resets on its own, so retrying cannot help. That makes it a
+    payment problem rather than a rate: send 402, which clients treat as
+    terminal, instead of a 429 they would retry. It stays a
+    ``ProxyRateLimitError`` so every limit-rejection path handles it the same.
+    """
+
+    status_code = 402
+    code = "insufficient_quota"
+    error_type = "insufficient_quota"
+
+
 class ProxyUpstreamError(AppError):
     status_code = 503
     code = "upstream_error"

@@ -5,6 +5,7 @@ import json
 import secrets
 import time
 import uuid
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
@@ -25,7 +26,13 @@ from app.core.utils.time import to_utc_naive, utcnow
 from app.db.models import Account, AccountStatus, ApiKey, ApiKeyLimit, LimitType, LimitWindow, ModelSource, UsageHistory
 from app.db.session import sqlite_writer_section
 from app.modules.api_keys.last_used_coalescer import ApiKeyLastUsedCoalescer, get_api_key_last_used_coalescer
-from app.modules.api_keys.limit_windows import advance_limit_reset, limit_window_delta, next_limit_reset
+from app.modules.api_keys.limit_windows import (
+    advance_limit_reset,
+    is_lifetime_window,
+    limit_window_delta,
+    next_limit_reset,
+    public_limit_reset_at,
+)
 from app.modules.api_keys.repository import (
     _UNSET,
     ApiKeyTrendBucket,
@@ -228,8 +235,44 @@ class ApiKeyValidationError(ValueError):
     pass
 
 
+class ApiKeyUnpricedModelError(ValueError):
+    """A shared key with a cost budget asked for a model that has no known price.
+
+    Its spend could not be measured against the budget, so the request is
+    refused before anything is sent upstream.
+    """
+
+    def __init__(self, model: str | None) -> None:
+        shown = model or "(none)"
+        super().__init__(
+            f"Model {shown!r} has no known price, so this shared API key's cost budget cannot meter it. "
+            "Choose a priced model."
+        )
+        self.model = model
+
+
+ModelPricedCheck = Callable[[], Awaitable[bool]]
+"""Answers whether the request's model has a known price on the route serving it.
+
+Called only when a price matters: the key is shared and has a cost limit. The
+caller supplies it because only the dispatch path knows which price table
+(static, external catalog, or model-source catalog) will charge the request.
+"""
+
+
+def static_model_is_priced(model: str | None) -> bool:
+    """Whether settlement can price ``model`` from the static table."""
+    return bool(model) and get_pricing_for_model(model or "") is not None
+
+
 class ApiKeyRateLimitExceededError(ValueError):
-    def __init__(self, *, message: str, reset_at: datetime) -> None:
+    """A key's limit is used up.
+
+    ``reset_at`` is when the limit next resets, or ``None`` for a one-time
+    (lifetime) budget that never resets on its own.
+    """
+
+    def __init__(self, *, message: str, reset_at: datetime | None) -> None:
         super().__init__(message)
         self.reset_at = reset_at
 
@@ -259,7 +302,8 @@ class LimitRuleData:
     max_value: int
     current_value: int
     model_filter: str | None
-    reset_at: datetime
+    # None for a lifetime limit, which never resets.
+    reset_at: datetime | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -703,6 +747,7 @@ class ApiKeysService:
                 submitted_limits=submitted_limits,
                 existing_limits=existing_limits,
                 reset_usage=payload.reset_usage,
+                key_created_at=existing.created_at,
                 repository=self._repository,
             )
         elif payload.reset_usage:
@@ -872,7 +917,22 @@ class ApiKeysService:
         request_model: str | None,
         request_service_tier: str | None = None,
         request_usage_budget: ApiKeyRequestUsageBudget | None = None,
+        model_is_priced: ModelPricedCheck | None = None,
     ) -> ApiKeyUsageReservationData | None:
+        """Admit one request against the key's limits and reserve its estimate.
+
+        A shared key with any ``cost_usd`` limit refuses a model that has no
+        known price (``ApiKeyUnpricedModelError``): its spend could not be
+        measured, so it would be free against the budget. ``model_is_priced``
+        answers that for the route serving the request; without it the static
+        price table decides. Keys that are not shared, or have no cost limit,
+        are served as before.
+        """
+        if model_is_priced is None:
+
+            async def model_is_priced() -> bool:
+                return static_model_is_priced(request_model)
+
         for attempt in range(_SQLITE_BUSY_RETRY_ATTEMPTS):
             try:
                 return await self._enforce_limits_for_request_once(
@@ -880,6 +940,7 @@ class ApiKeysService:
                     request_model=request_model,
                     request_service_tier=request_service_tier,
                     request_usage_budget=request_usage_budget,
+                    model_is_priced=model_is_priced,
                 )
             except OperationalError as exc:
                 await self._repository.rollback()
@@ -896,6 +957,7 @@ class ApiKeysService:
         request_model: str | None,
         request_service_tier: str | None,
         request_usage_budget: ApiKeyRequestUsageBudget | None,
+        model_is_priced: ModelPricedCheck,
     ) -> ApiKeyUsageReservationData | None:
         now = utcnow()
         async with sqlite_writer_section():
@@ -915,6 +977,8 @@ class ApiKeysService:
             reservation_id: str | None = None
             normalized_usage_budget = _normalize_request_usage_budget(request_usage_budget)
             try:
+                if _meters_cost_for_sharing(refreshed) and not await model_is_priced():
+                    raise ApiKeyUnpricedModelError(request_model)
                 for limit in refreshed.limits:
                     if not _limit_applies_for_request(limit, request_model=request_model):
                         continue
@@ -1170,6 +1234,71 @@ class ApiKeysService:
 
         raise RuntimeError("unreachable")
 
+    async def charge_reserved_usage(self, reservation_id: str) -> None:
+        """Settle a reservation by charging exactly what it reserved.
+
+        For a request the client abandoned after the upstream started
+        generating: the upstream is billing it, but no final usage arrived, so
+        the admission estimate is the best measure of what it spent. Releasing
+        instead would let a disconnect spend the key's quota for free.
+        """
+        for attempt in range(_SQLITE_BUSY_RETRY_ATTEMPTS):
+            try:
+                await self._charge_reserved_usage_once(reservation_id)
+                return
+            except OperationalError as exc:
+                await self._repository.rollback()
+                if not _is_sqlite_database_locked(exc) or attempt == _SQLITE_BUSY_RETRY_ATTEMPTS - 1:
+                    raise
+                await asyncio.sleep(_SQLITE_BUSY_RETRY_BASE_SECONDS * (2**attempt))
+
+        raise RuntimeError("unreachable")
+
+    async def _charge_reserved_usage_once(self, reservation_id: str) -> None:
+        async with sqlite_writer_section():
+            reservation = await self._repository.get_usage_reservation(reservation_id)
+            if reservation is None or reservation.status != "reserved":
+                return
+
+            claimed = await self._repository.transition_usage_reservation_status(
+                reservation_id,
+                expected_status="reserved",
+                new_status="settling",
+            )
+            if not claimed:
+                await self._repository.rollback()
+                return
+
+            try:
+                # The counters already hold the reserved amounts, so charging
+                # them leaves the counters alone and records them as actual.
+                for item in reservation.items:
+                    await self._repository.upsert_reservation_item_actual(
+                        reservation_id,
+                        item=item,
+                        actual_delta=item.reserved_delta,
+                    )
+                # Every cost limit reserves the same request estimate, so the
+                # request's cost is that one amount, not their sum.
+                reserved_cost = max(
+                    (item.reserved_delta for item in reservation.items if item.limit_type == LimitType.COST_USD),
+                    default=0,
+                )
+                await self._repository.settle_usage_reservation(
+                    reservation_id,
+                    status="finalized",
+                    input_tokens=None,
+                    output_tokens=None,
+                    cached_input_tokens=None,
+                    cost_microdollars=reserved_cost or None,
+                )
+                await self._repository.commit()
+            except Exception:
+                await self._repository.rollback()
+                raise
+
+        await self._last_used_coalescer.record(reservation.api_key_id, utcnow())
+
     async def _release_usage_reservation_once(self, reservation_id: str) -> None:
         async with sqlite_writer_section():
             reservation = await self._repository.get_usage_reservation(reservation_id)
@@ -1272,7 +1401,7 @@ class ApiKeysService:
                 current_value=max(0, min(limit.current_value, limit.max_value)),
                 remaining_value=max(0, limit.max_value - max(0, min(limit.current_value, limit.max_value))),
                 model_filter=limit.model_filter,
-                reset_at=limit.reset_at,
+                reset_at=public_limit_reset_at(limit.limit_window, limit.reset_at),
                 source="api_key_limit",
             )
             for limit in refreshed.limits
@@ -1349,7 +1478,8 @@ class ApiKeySelfLimitData:
     current_value: int
     remaining_value: int
     model_filter: str | None
-    reset_at: datetime
+    # None for a lifetime limit, which never resets.
+    reset_at: datetime | None
     source: str = "api_key_limit"
 
 
@@ -1624,7 +1754,7 @@ def _to_limit_rule_data(limit: ApiKeyLimit) -> LimitRuleData:
         max_value=limit.max_value,
         current_value=limit.current_value,
         model_filter=limit.model_filter,
-        reset_at=limit.reset_at,
+        reset_at=public_limit_reset_at(limit.limit_window, limit.reset_at),
     )
 
 
@@ -1642,7 +1772,7 @@ async def _lazy_reset_expired_limits(
 ) -> bool:
     reset_performed = False
     for limit in limits:
-        if limit.reset_at >= now:
+        if limit.reset_at >= now or is_lifetime_window(limit.limit_window):
             continue
         new_reset_at = advance_limit_reset(limit.reset_at, now, limit.limit_window)
         await repository.reset_limit(
@@ -1654,10 +1784,25 @@ async def _lazy_reset_expired_limits(
     return reset_performed
 
 
+def _meters_cost_for_sharing(row: ApiKey) -> bool:
+    """Whether this key must only serve models whose cost it can measure.
+
+    A shared key with a cost budget was handed to someone else to spend that
+    budget. A model with no known price would be served free against it, so
+    such a key refuses one. Any other key keeps serving every model.
+    """
+    return row.is_shared and any(limit.limit_type == LimitType.COST_USD for limit in row.limits)
+
+
 def _rate_limit_exceeded_error(limit: ApiKeyLimit) -> ApiKeyRateLimitExceededError:
+    model_suffix = f" for model {limit.model_filter}" if limit.model_filter else ""
+    if is_lifetime_window(limit.limit_window):
+        return ApiKeyRateLimitExceededError(
+            message=f"API key {limit.limit_type.value} lifetime budget exhausted{model_suffix}",
+            reset_at=None,
+        )
     return ApiKeyRateLimitExceededError(
-        message=f"API key {limit.limit_type.value} {limit.limit_window.value} limit exceeded"
-        + (f" for model {limit.model_filter}" if limit.model_filter else ""),
+        message=f"API key {limit.limit_type.value} {limit.limit_window.value} limit exceeded{model_suffix}",
         reset_at=limit.reset_at,
     )
 
@@ -1910,6 +2055,7 @@ async def _build_limit_rows_for_update(
     submitted_limits: list[LimitRuleInput],
     existing_limits: list[ApiKeyLimit],
     reset_usage: bool,
+    key_created_at: datetime,
     repository: ApiKeysRepositoryProtocol | None = None,
 ) -> list[ApiKeyLimit]:
     existing_by_key = {_limit_identity_from_row(limit): limit for limit in existing_limits}
@@ -1919,13 +2065,23 @@ async def _build_limit_rows_for_update(
     for submitted in submitted_limits:
         identity = _limit_identity_from_input(submitted)
         matched = existing_by_key.get(identity)
-        if reset_usage:
+        # Reset usage never clears a lifetime budget: it is one-time spend, and
+        # raising its maximum is the top-up.
+        if reset_usage and not is_lifetime_window(LimitWindow(submitted.limit_window)):
             rows.append(_limit_input_to_row(submitted, key_id, now))
             continue
         if matched is None:
             if repository is None:
                 raise TypeError("repository is required to backfill new API key limit usage")
-            rows.append(await _new_limit_input_to_backfilled_row(submitted, key_id, now, repository))
+            rows.append(
+                await _new_limit_input_to_backfilled_row(
+                    submitted,
+                    key_id,
+                    now,
+                    repository,
+                    key_created_at=key_created_at,
+                )
+            )
             continue
         rows.append(
             _limit_input_to_row(
@@ -1944,11 +2100,19 @@ async def _new_limit_input_to_backfilled_row(
     key_id: str,
     now: datetime,
     repository: ApiKeysRepositoryProtocol,
+    *,
+    key_created_at: datetime,
 ) -> ApiKeyLimit:
+    """A limit added to an existing key starts at the usage already in its window.
+
+    A lifetime budget's window is the key's whole life, so everything the key
+    spent since it was created counts against it.
+    """
     limit_type = LimitType(submitted.limit_type)
     window = LimitWindow(submitted.limit_window)
     reset_at = next_limit_reset(now, window)
-    since = now - limit_window_delta(window)
+    delta = limit_window_delta(window)
+    since = key_created_at if delta is None else now - delta
     current_value = await repository.get_limit_usage_value(
         key_id,
         limit_type=limit_type,
@@ -1973,15 +2137,17 @@ def _build_reset_limit_rows(
 ) -> list[ApiKeyLimit]:
     rows: list[ApiKeyLimit] = []
     for existing in existing_limits:
+        # A lifetime budget keeps its spend; see _build_limit_rows_for_update.
+        lifetime = is_lifetime_window(existing.limit_window)
         rows.append(
             ApiKeyLimit(
                 api_key_id=key_id,
                 limit_type=existing.limit_type,
                 limit_window=existing.limit_window,
                 max_value=existing.max_value,
-                current_value=0,
+                current_value=existing.current_value if lifetime else 0,
                 model_filter=existing.model_filter,
-                reset_at=next_limit_reset(now, existing.limit_window),
+                reset_at=existing.reset_at if lifetime else next_limit_reset(now, existing.limit_window),
             )
         )
     return rows

@@ -46,6 +46,26 @@ describe("LimitRuleCard", () => {
     expect(screen.getByDisplayValue("5")).toBeInTheDocument();
   });
 
+  it("shows a one-time budget as a window that never resets", () => {
+    renderWithProviders(
+      <LimitRuleCard rule={costRule({ limitWindow: "lifetime" })} onChange={vi.fn()} onRemove={vi.fn()} />,
+    );
+
+    expect(screen.getByText("One-time (never resets)")).toBeInTheDocument();
+  });
+
+  it("offers the one-time window", async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    renderWithProviders(<LimitRuleCard rule={costRule()} onChange={onChange} onRemove={vi.fn()} />);
+
+    const [, windowSelect] = screen.getAllByRole("combobox");
+    await user.click(windowSelect);
+    await user.click(await screen.findByRole("option", { name: "One-time (never resets)" }));
+
+    expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ limitWindow: "lifetime" }));
+  });
+
   it("displays empty string when maxValue is zero", () => {
     renderWithProviders(
       <LimitRuleCard rule={tokenRule({ maxValue: 0 })} onChange={vi.fn()} onRemove={vi.fn()} />,

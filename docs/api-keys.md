@@ -21,7 +21,7 @@ The protected proxy routes covered by this setting are:
 
 ## Creating keys
 
-Dashboard → API Keys → Create. The full key is shown **only once** at creation. Keys support optional expiration, model restrictions, and rate limits (tokens / cost per day / week / month).
+Dashboard → API Keys → Create. The full key is shown **only once** at creation. Keys support optional expiration, model restrictions, and rate limits (tokens / cost per day / week / month, or a one-time budget that never resets).
 
 Keys can also be scoped to specific accounts, so a key draws quota only from the accounts assigned to it:
 
@@ -69,6 +69,17 @@ Turn on **Shared key** (create and edit dialogs) for a key you give to a friend 
 - Proxied responses carry no `x-codex-*` quota headers.
 
 While the toggle is on, the usage-sections picker is disabled. The sections are kept, so turning the toggle off restores what the key saw before. Shared keys carry a **Shared** badge in the key lists. New and existing keys are unshared.
+
+### One-time budgets
+
+A limit with the window **One-time (never resets)** (`lifetime` in the API) is a budget spent once. It is never reset by the hourly sweep, at admission, or by **Reset usage**; raise its maximum to top it up. Added to an existing key, it starts at everything the key has spent since it was created (as far back as request logs are kept).
+
+- When it runs out, requests get `402 insufficient_quota` ("API key cost_usd lifetime budget exhausted"), with no reset time, because waiting does not help. `/v1/usage` shows the limit with `reset_at: null`.
+- The final request in flight can take the budget a little past its maximum. Requests are not cut off mid-stream.
+- A stream the client abandons after the upstream started answering is charged the amount reserved for it at admission, so disconnecting does not spend the budget for free. Before the upstream answers anything, the reservation is released.
+- A **shared** key with any cost limit refuses a model that has no known price (`403 model_not_priced`), since its spend could not be measured. Unshared keys, and shared keys without a cost limit, keep serving every model. See [Model pricing](model-pricing.md).
+
+Every account stays available to the key: the budget limits how much it spends, not where it is served.
 
 ## Reasoning effort policies
 

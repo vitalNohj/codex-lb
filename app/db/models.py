@@ -2232,6 +2232,7 @@ class LimitWindow(str, Enum):
     MONTHLY = "monthly"
     FIVE_HOURS = "5h"
     SEVEN_DAYS = "7d"
+    LIFETIME = "lifetime"
 
 
 class ApiKeyLimit(Base):

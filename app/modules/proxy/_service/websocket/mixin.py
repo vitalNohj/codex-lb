@@ -6465,7 +6465,13 @@ class _WebSocketMixin:
                     exc_info=True,
                 )
             try:
-                await proxy._release_websocket_request_state_reservation(request_state)
+                # A request the client abandoned after the upstream started
+                # streaming it is charged its reservation, not released: the
+                # upstream bills it, and a disconnect must not spend quota free.
+                if status == "cancelled" and request_state.downstream_visible:
+                    await proxy._charge_websocket_request_state_reservation(request_state)
+                else:
+                    await proxy._release_websocket_request_state_reservation(request_state)
             except Exception:
                 reservation_release_succeeded = False
                 _facade().logger.warning(

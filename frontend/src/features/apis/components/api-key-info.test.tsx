@@ -154,9 +154,32 @@ describe("ApiKeyInfo", () => {
 		);
 
 		expect(screen.getByText("2 configured")).toBeInTheDocument();
-		expect(screen.getByText(/Total Tokens \(weekly, gpt-5.1\)/)).toBeInTheDocument();
+		expect(screen.getByText(/Total Tokens \(Weekly, gpt-5.1\)/)).toBeInTheDocument();
 		expect(screen.getByText(/750K \/ 1M/)).toBeInTheDocument();
-		expect(screen.getByText(/Cost \(USD\) \(monthly, all\)/)).toBeInTheDocument();
+		expect(screen.getByText(/Cost \(USD\) \(Monthly, all\)/)).toBeInTheDocument();
 		expect(screen.getByText(/\$1.50 \/ \$5.00/)).toBeInTheDocument();
+	});
+
+	it("labels a one-time budget, which has no reset time", () => {
+		render(
+			<ApiKeyInfo
+				apiKey={createApiKey({
+					limits: [
+						{
+							id: 1,
+							limitType: "cost_usd",
+							limitWindow: "lifetime",
+							maxValue: 5_000_000,
+							currentValue: 1_250_000,
+							modelFilter: null,
+							resetAt: null,
+						},
+					],
+				})}
+			/>,
+		);
+
+		expect(screen.getByText(/Cost \(USD\) \(One-time \(never resets\), all\)/)).toBeInTheDocument();
+		expect(screen.getByText(/\$1.25 \/ \$5.00/)).toBeInTheDocument();
 	});
 });

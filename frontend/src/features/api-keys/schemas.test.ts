@@ -44,6 +44,36 @@ describe("ApiKeySchema", () => {
     expect(parsed.trafficClass).toBe("foreground");
   });
 
+  it("parses a lifetime limit, which has no reset time", () => {
+    const parsed = ApiKeySchema.parse({
+      id: "key-1",
+      name: "Friend Key",
+      keyPrefix: "sk-live",
+      allowedModels: null,
+      expiresAt: null,
+      isActive: true,
+      createdAt: ISO,
+      lastUsedAt: null,
+      limits: [
+        {
+          id: 1,
+          limitType: "cost_usd",
+          limitWindow: "lifetime",
+          maxValue: 5_000_000,
+          currentValue: 0,
+          modelFilter: null,
+          resetAt: null,
+        },
+      ],
+    });
+
+    expect(parsed.limits[0].limitWindow).toBe("lifetime");
+    expect(parsed.limits[0].resetAt).toBeNull();
+    expect(LimitRuleCreateSchema.parse({ limitType: "cost_usd", limitWindow: "lifetime", maxValue: 5 }).limitWindow).toBe(
+      "lifetime",
+    );
+  });
+
   it("defaults limits to empty array when not provided", () => {
     const parsed = ApiKeySchema.parse({
       id: "key-1",
