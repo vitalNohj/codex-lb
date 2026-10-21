@@ -6161,7 +6161,7 @@ async def _source_audio_transcription_response(
         api_key,
         request_model=model,
         request_service_tier=None,
-        model_is_priced=source_price_check(source, model),
+        model_is_priced=source_price_check(source, model, transcription=True),
     )
     try:
         result = await forward_source_audio_transcription(

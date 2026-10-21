@@ -63,11 +63,15 @@ def pool_price_check(routes: Sequence[tuple[str, str]]) -> ModelPricedCheck:
     return check
 
 
-def source_price_check(source: ModelSource, model: str) -> ModelPricedCheck:
-    """The admission price check for a request served by a model source."""
+def source_price_check(source: ModelSource, model: str, *, transcription: bool = False) -> ModelPricedCheck:
+    """The admission price check for a request served by a model source.
+
+    Only a transcription settles from the source's per-minute audio rate; every
+    other source endpoint needs a token rate.
+    """
 
     async def check() -> bool:
-        return source_model_has_price(source, model)
+        return source_model_has_price(source, model, accepts_audio_rate=transcription)
 
     return check
 

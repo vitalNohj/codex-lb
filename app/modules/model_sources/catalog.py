@@ -274,12 +274,14 @@ def source_model_cost_usd(
     )
 
 
-def source_model_has_price(source: ModelSource, model: str) -> bool:
-    """Whether the source declares any rate that settlement can charge ``model`` at.
+def source_model_has_price(source: ModelSource, model: str, *, accepts_audio_rate: bool) -> bool:
+    """Whether the source declares a rate that settlement can charge ``model`` at.
 
-    The same entry lookup ``source_model_cost_usd`` and
-    ``source_model_audio_cost_usd`` use, so a model this calls priced is one
-    whose usage those functions price.
+    Token rates price every endpoint (``source_model_cost_usd``). The
+    per-minute audio rate prices only a transcription that reports its
+    duration (``source_model_audio_cost_usd``), so it counts only when
+    ``accepts_audio_rate`` says the caller settles that way; a token-metered
+    endpoint with just an audio rate would otherwise settle at $0.
     """
     entry = next(
         (candidate for candidate in source.models if candidate.model == model and candidate.is_enabled),
@@ -287,10 +289,9 @@ def source_model_has_price(source: ModelSource, model: str) -> bool:
     )
     if entry is None:
         return False
-    return any(
-        rate is not None
-        for rate in (entry.input_per_1m, entry.cached_input_per_1m, entry.output_per_1m, entry.audio_per_minute)
-    )
+    if any(rate is not None for rate in (entry.input_per_1m, entry.cached_input_per_1m, entry.output_per_1m)):
+        return True
+    return accepts_audio_rate and entry.audio_per_minute is not None
 
 
 def source_model_audio_cost_usd(source: ModelSource, model: str, audio_seconds: float) -> float | None:
