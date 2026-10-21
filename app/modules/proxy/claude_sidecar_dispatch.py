@@ -1794,8 +1794,12 @@ async def _sidecar_stream_iterator(
         # that re-cancels every plain await - so the release and the log must
         # finish shielded, or the reservation stays held with no log row.
         settled = True
+        # Once the upstream has streamed anything it is generating, and billing,
+        # the turn, so a client that leaves then is charged its reservation;
+        # before that nothing was spent and it is released.
+        settle_interrupted = _charge_and_log_sidecar_request if yielded else _release_and_log_sidecar_request
         await await_deferring_cancellation(
-            _release_and_log_sidecar_request(
+            settle_interrupted(
                 reservation,
                 api_key=api_key,
                 model=model,
@@ -1991,6 +1995,36 @@ async def _release_and_log_sidecar_request(
     requested_reasoning_effort: str | None,
 ) -> None:
     await _release_sidecar_reservation(reservation, api_key=api_key)
+    await _log_sidecar_request(
+        api_key=api_key,
+        model=model,
+        started_at=started_at,
+        status="error",
+        error_code=error_code,
+        error_message=error_message,
+        reasoning_effort=reasoning_effort,
+        requested_reasoning_effort=requested_reasoning_effort,
+    )
+
+
+async def _charge_and_log_sidecar_request(
+    reservation: ApiKeyUsageReservationData | None,
+    *,
+    api_key: ApiKeyData | None,
+    model: str,
+    started_at: float,
+    error_code: str,
+    error_message: str,
+    reasoning_effort: str | None,
+    requested_reasoning_effort: str | None,
+) -> None:
+    """Like ``_release_and_log_sidecar_request``, but charge the reservation.
+
+    For a stream the client abandoned after the upstream started it: the
+    upstream bills the turn, but no final usage will arrive, so the admission
+    estimate is charged rather than nothing.
+    """
+    await _charge_sidecar_reservation(reservation, api_key=api_key)
     await _log_sidecar_request(
         api_key=api_key,
         model=model,
@@ -2383,6 +2417,27 @@ async def _finalize_or_release_sidecar_reservation(
     except Exception:
         logger.warning(
             "failed to settle Claude sidecar API key reservation key_id=%s request_id=%s",
+            api_key.id if api_key else None,
+            get_request_id(),
+            exc_info=True,
+        )
+
+
+async def _charge_sidecar_reservation(
+    reservation: ApiKeyUsageReservationData | None,
+    *,
+    api_key: ApiKeyData | None,
+) -> None:
+    """Settle a reservation at exactly what it reserved."""
+
+    if reservation is None:
+        return
+    try:
+        async with get_background_session() as session:
+            await ApiKeysService(ApiKeysRepository(session)).charge_reserved_usage(reservation.reservation_id)
+    except Exception:
+        logger.warning(
+            "failed to charge Claude sidecar API key reservation key_id=%s request_id=%s",
             api_key.id if api_key else None,
             get_request_id(),
             exc_info=True,

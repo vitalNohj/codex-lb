@@ -75,6 +75,7 @@ async def test_build_limit_rows_for_update_raises_typed_validation_error_on_dupl
             submitted_limits=[rule, rule],
             existing_limits=[],
             reset_usage=False,
+            key_created_at=__import__("datetime").datetime(2026, 5, 1),
         )
     assert "duplicate" in str(info.value).lower()
     assert "('total_tokens', 'daily', None)" in str(info.value)

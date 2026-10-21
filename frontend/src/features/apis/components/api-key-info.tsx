@@ -1,6 +1,7 @@
 import { useTranslation } from "react-i18next";
 
 import type { ApiKey, LimitType } from "@/features/api-keys/schemas";
+import { limitWindowLabel } from "@/features/api-keys/limit-windows";
 import { useDateDisplayFormatStore, type DateDisplayFormat } from "@/hooks/use-date-format";
 import { cn } from "@/lib/utils";
 import {
@@ -176,7 +177,7 @@ export function ApiKeyInfo({
 							<div key={limit.id} className="space-y-1 pl-2">
 								<div className="flex items-center justify-between gap-2 text-xs tabular-nums">
 									<span className="text-muted-foreground">
-										{t(`apis.keyInfo.limitTypes.${limit.limitType}`, { defaultValue: LIMIT_TYPE_LABEL[limit.limitType] })} ({limit.limitWindow},{" "}
+										{t(`apis.keyInfo.limitTypes.${limit.limitType}`, { defaultValue: LIMIT_TYPE_LABEL[limit.limitType] })} ({limitWindowLabel(limit.limitWindow, t)},{" "}
 										{modelFilter})
 									</span>
 									<span className="font-medium">

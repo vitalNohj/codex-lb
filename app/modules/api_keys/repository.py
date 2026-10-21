@@ -171,8 +171,8 @@ class ApiKeysRepository:
     async def get_for_limit_enforcement(self, key_id: str) -> ApiKey | None:
         """Admission-path load for ``enforce_limits_for_request``.
 
-        The enforcement transaction reads only ``is_active``/``expires_at``
-        plus the ``limits`` collection, so this skips the
+        The enforcement transaction reads only ``is_active``/``expires_at``/
+        ``is_shared`` plus the ``limits`` collection, so this skips the
         ``account_assignments``/``source_assignments`` selectin round trips
         that ``get_by_id`` pays on every proxied request. ``raiseload`` keeps
         the narrowing fail-loud: any future enforcement code that touches an
@@ -199,7 +199,7 @@ class ApiKeysRepository:
             select(ApiKey)
             .execution_options(populate_existing=True)
             .options(
-                load_only(ApiKey.is_active, ApiKey.expires_at, raiseload=True),
+                load_only(ApiKey.is_active, ApiKey.expires_at, ApiKey.is_shared, raiseload=True),
                 selectinload(ApiKey.limits),
                 raiseload(ApiKey.account_assignments),
                 raiseload(ApiKey.source_assignments),
@@ -586,6 +586,8 @@ class ApiKeysRepository:
                     ApiKeyLimit.limit_window,
                 )
                 .where(ApiKeyLimit.reset_at < now)
+                # A lifetime budget never resets, whatever its reset_at says.
+                .where(ApiKeyLimit.limit_window != LimitWindow.LIFETIME)
                 .order_by(ApiKeyLimit.reset_at.asc(), ApiKeyLimit.id.asc())
                 .limit(_EXPIRED_LIMIT_RESET_BATCH_SIZE)
             )

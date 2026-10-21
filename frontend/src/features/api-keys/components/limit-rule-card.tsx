@@ -19,6 +19,7 @@ import {
   type LimitType,
   type LimitWindowType,
 } from "@/features/api-keys/schemas";
+import { limitWindowLabel } from "@/features/api-keys/limit-windows";
 
 const LIMIT_TYPE_LABELS: Record<LimitType, string> = {
   total_tokens: "Total Tokens",
@@ -26,14 +27,6 @@ const LIMIT_TYPE_LABELS: Record<LimitType, string> = {
   output_tokens: "Output Tokens",
   cost_usd: "Cost ($)",
   credits: "Credits",
-};
-
-const WINDOW_LABELS: Record<LimitWindowType, string> = {
-  daily: "Daily",
-  weekly: "Weekly",
-  monthly: "Monthly",
-  "5h": "5h",
-  "7d": "7d",
 };
 
 const LIMIT_TYPE_SET: ReadonlySet<string> = new Set(LIMIT_TYPES);
@@ -135,7 +128,7 @@ export function LimitRuleCard({ rule, onChange, onRemove }: LimitRuleCardProps) 
             <SelectContent>
               {LIMIT_WINDOWS.map((k) => (
                 <SelectItem key={k} value={k}>
-                  {t(`apiKeys.limitWindows.${k}`, { defaultValue: WINDOW_LABELS[k] })}
+                  {limitWindowLabel(k, t)}
                 </SelectItem>
               ))}
             </SelectContent>

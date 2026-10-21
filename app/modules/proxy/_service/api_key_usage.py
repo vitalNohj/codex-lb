@@ -11,7 +11,7 @@ import anyio
 
 from app.core.clients.proxy import ProxyResponseError
 from app.core.errors import openai_error
-from app.core.exceptions import ProxyAuthError, ProxyRateLimitError
+from app.core.exceptions import ProxyAuthError, ProxyBudgetExhaustedError, ProxyModelNotAllowed, ProxyRateLimitError
 from app.core.openai.models import CompactResponsePayload
 from app.core.utils.request_id import get_request_id
 from app.db.models import Account
@@ -21,7 +21,9 @@ from app.modules.api_keys.service import (
     ApiKeyRateLimitExceededError,
     ApiKeyRequestUsageBudget,
     ApiKeysService,
+    ApiKeyUnpricedModelError,
     ApiKeyUsageReservationData,
+    ModelPricedCheck,
 )
 from app.modules.proxy._service.support import (
     _ApiKeyReservationTouchState,
@@ -33,6 +35,33 @@ from app.modules.proxy._service.support import (
 from app.modules.proxy.repo_bundle import ProxyRepoFactory
 
 logger = logging.getLogger("app.modules.proxy.service")
+
+
+def stream_abandoned_after_start(settlement: _StreamSettlement) -> bool:
+    """Whether the client walked away from a stream the upstream had started.
+
+    The upstream is generating, and billing, as soon as it streams anything
+    back, but no final usage will arrive. Releasing the reservation would let a
+    disconnect spend the key's quota for free, so it is charged instead.
+    """
+    return settlement.status == "cancelled" and settlement.downstream_visible
+
+
+def proxy_error_for_unpriced_model(exc: ApiKeyUnpricedModelError) -> ProxyModelNotAllowed:
+    """The client-facing error for a model a cost-budgeted shared key cannot meter."""
+    return ProxyModelNotAllowed(str(exc), code="model_not_priced")
+
+
+def proxy_error_for_exceeded_limit(exc: ApiKeyRateLimitExceededError) -> ProxyRateLimitError:
+    """The client-facing error for a request a key limit refused.
+
+    A resetting limit is a rate: 429 with the time it resets. A lifetime budget
+    never resets, so it is a terminal 402 with no reset time.
+    """
+    if exc.reset_at is None:
+        return ProxyBudgetExhaustedError(f"{exc}. Raise the key's budget to continue.")
+    return ProxyRateLimitError(f"{exc}. Usage resets at {exc.reset_at.isoformat()}Z.")
+
 
 _API_KEY_RESERVATION_HEARTBEAT_SECONDS = 300.0
 _STREAM_API_KEY_RELEASE_RETRY_BASE_SECONDS = 0.1
@@ -99,6 +128,7 @@ class _ApiKeyUsageMixin:
         request_model: str | None,
         request_service_tier: str | None,
         request_usage_budget: ApiKeyRequestUsageBudget | None = None,
+        model_is_priced: ModelPricedCheck | None = None,
     ) -> ApiKeyUsageReservationData | None:
         if api_key is None:
             return None
@@ -113,10 +143,12 @@ class _ApiKeyUsageMixin:
                         request_model=request_model,
                         request_service_tier=request_service_tier,
                         request_usage_budget=request_usage_budget,
+                        model_is_priced=model_is_priced,
                     )
                 except ApiKeyRateLimitExceededError as exc:
-                    message = f"{exc}. Usage resets at {exc.reset_at.isoformat()}Z."
-                    raise ProxyRateLimitError(message) from exc
+                    raise proxy_error_for_exceeded_limit(exc) from exc
+                except ApiKeyUnpricedModelError as exc:
+                    raise proxy_error_for_unpriced_model(exc) from exc
                 except ApiKeyInvalidError as exc:
                     raise ProxyAuthError(str(exc)) from exc
 
@@ -132,6 +164,33 @@ class _ApiKeyUsageMixin:
                 service = _service_api_keys_service()(repos.api_keys)
                 await service.release_usage_reservation(reservation.reservation_id)
 
+    async def _charge_websocket_reservation(
+        self,
+        reservation: ApiKeyUsageReservationData | None,
+    ) -> None:
+        if reservation is None:
+            return
+        proxy = cast(_ApiKeyUsageServiceProtocol, self)
+        with anyio.CancelScope(shield=True):
+            async with proxy._repo_factory() as repos:
+                service = _service_api_keys_service()(repos.api_keys)
+                await service.charge_reserved_usage(reservation.reservation_id)
+
+    async def _charge_websocket_request_state_reservation(
+        self,
+        request_state: _WebSocketRequestState,
+    ) -> None:
+        """Charge the reservation of a request the client abandoned after it started.
+
+        The upstream is billing a response it already streamed, but no final
+        usage will arrive; releasing would let a disconnect spend quota free.
+        Otherwise settles exactly like ``_release_websocket_request_state_reservation``.
+        """
+        self._cancel_request_state_api_key_reservation_heartbeat(request_state)
+        await self._charge_websocket_reservation(request_state.api_key_reservation)
+        request_state.api_key_reservation = None
+        await self._confirm_websocket_request_state_settlement(request_state)
+
     async def _release_websocket_request_state_reservation(
         self,
         request_state: _WebSocketRequestState,
@@ -139,6 +198,12 @@ class _ApiKeyUsageMixin:
         self._cancel_request_state_api_key_reservation_heartbeat(request_state)
         await self._release_websocket_reservation(request_state.api_key_reservation)
         request_state.api_key_reservation = None
+        await self._confirm_websocket_request_state_settlement(request_state)
+
+    async def _confirm_websocket_request_state_settlement(
+        self,
+        request_state: _WebSocketRequestState,
+    ) -> None:
         lifecycle = request_state.deferred_account_backoff_lifecycle
         if lifecycle is not None:
             lifecycle.settlement_confirmed = True
@@ -441,6 +506,8 @@ class _ApiKeyUsageMixin:
                             cached_input_tokens=settlement.cached_input_tokens or 0,
                             service_tier=settlement.service_tier,
                         )
+                    elif stream_abandoned_after_start(settlement):
+                        await api_keys_service.charge_reserved_usage(reservation_id)
                     else:
                         await api_keys_service.release_usage_reservation(reservation_id)
                 return True
@@ -578,6 +645,38 @@ class _ApiKeyUsageMixin:
                 )
 
         task.add_done_callback(_cleanup_done)
+
+    async def _charge_abandoned_stream_api_key_usage(
+        self,
+        *,
+        api_key: ApiKeyData,
+        api_key_reservation: ApiKeyUsageReservationData,
+        request_id: str,
+    ) -> bool:
+        """Charge the reservation of a stream the client abandoned after it started.
+
+        Falls back to releasing it when the charge cannot be written, so the
+        reservation never stays held. Returns whether the reservation settled.
+        """
+        proxy = cast(_ApiKeyUsageServiceProtocol, self)
+        try:
+            with anyio.CancelScope(shield=True):
+                async with proxy._repo_factory() as repos:
+                    api_keys_service = _service_api_keys_service()(repos.api_keys)
+                    await api_keys_service.charge_reserved_usage(api_key_reservation.reservation_id)
+            return True
+        except Exception:
+            logger.warning(
+                "Failed to charge abandoned stream API key reservation key_id=%s request_id=%s",
+                api_key.id,
+                request_id,
+                exc_info=True,
+            )
+        return await self._release_unsettled_stream_api_key_usage(
+            api_key=api_key,
+            api_key_reservation=api_key_reservation,
+            request_id=request_id,
+        )
 
     async def _release_unsettled_stream_api_key_usage(
         self,

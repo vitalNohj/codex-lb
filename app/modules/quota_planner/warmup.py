@@ -24,6 +24,7 @@ from app.modules.api_keys.service import (
     ApiKeyRateLimitExceededError,
     ApiKeyRequestUsageBudget,
     ApiKeysService,
+    ApiKeyUnpricedModelError,
 )
 from app.modules.request_logs.repository import RequestLogsRepository
 from app.modules.usage.repository import UsageRepository
@@ -102,6 +103,10 @@ class QuotaWarmupService:
                 reason=decision.reason or f"decision_{decision.status}",
                 executed_at=decision.executed_at,
             )
+        # API-key admission below shares this session and rolls it back on any
+        # refusal, which expires every loaded row; reading ``decision.id`` after
+        # that would lazy-load from sync code and raise ``MissingGreenlet``.
+        decision_id = decision.id
         allowed, reason = await self._execution_gate(
             settings=settings,
             account=account,
@@ -110,13 +115,13 @@ class QuotaWarmupService:
         )
         if not allowed:
             row = await self._planner.update_decision_status(
-                decision.id,
+                decision_id,
                 status="skipped",
                 reason=reason,
                 expected_status="planned",
             )
             if row is None:
-                current = await self._planner.get_decision(decision.id)
+                current = await self._planner.get_decision(decision_id)
                 if current is not None:
                     return WarmupExecutionResult(
                         decision_id=current.id,
@@ -125,20 +130,20 @@ class QuotaWarmupService:
                         executed_at=current.executed_at,
                     )
             return WarmupExecutionResult(
-                decision_id=decision.id,
+                decision_id=decision_id,
                 status=row.status if row else "skipped",
                 reason=reason,
             )
         assert account is not None
 
         claimed = await self._planner.claim_warmup_decision(
-            decision.id,
+            decision_id,
             since=_local_midnight(),
             max_warmups=settings.max_warmups_per_day,
             max_credits=settings.max_warmup_credits_per_day,
         )
         if claimed is None:
-            return await self._resolve_refused_claim(decision_id=decision.id, settings=settings)
+            return await self._resolve_refused_claim(decision_id=decision_id, settings=settings)
 
         reservation_id: str | None = None
         if api_key_id is not None:
@@ -156,40 +161,57 @@ class QuotaWarmupService:
                 reservation_id = reservation.reservation_id if reservation is not None else None
             except ApiKeyNotFoundError:
                 row = await self._planner.update_decision_status(
-                    decision.id,
+                    decision_id,
                     status="skipped",
                     reason="api_key_not_found",
                     expected_status="executing",
                 )
                 return await self._result_from_update_or_current(
-                    decision_id=decision.id,
+                    decision_id=decision_id,
                     row=row,
                     fallback_status="skipped",
                     fallback_reason="api_key_not_found",
                 )
             except ApiKeyInvalidError:
                 row = await self._planner.update_decision_status(
-                    decision.id,
+                    decision_id,
                     status="skipped",
                     reason="api_key_invalid",
                     expected_status="executing",
                 )
                 return await self._result_from_update_or_current(
-                    decision_id=decision.id,
+                    decision_id=decision_id,
                     row=row,
                     fallback_status="skipped",
                     fallback_reason="api_key_invalid",
                 )
-            except ApiKeyRateLimitExceededError as exc:
-                reason = f"api_key_rate_limit_exceeded:{exc.reset_at.isoformat()}Z"
+            except ApiKeyUnpricedModelError:
                 row = await self._planner.update_decision_status(
-                    decision.id,
+                    decision_id,
+                    status="skipped",
+                    reason="api_key_model_not_priced",
+                    expected_status="executing",
+                )
+                return await self._result_from_update_or_current(
+                    decision_id=decision_id,
+                    row=row,
+                    fallback_status="skipped",
+                    fallback_reason="api_key_model_not_priced",
+                )
+            except ApiKeyRateLimitExceededError as exc:
+                reason = (
+                    "api_key_rate_limit_exceeded:lifetime"
+                    if exc.reset_at is None
+                    else f"api_key_rate_limit_exceeded:{exc.reset_at.isoformat()}Z"
+                )
+                row = await self._planner.update_decision_status(
+                    decision_id,
                     status="skipped",
                     reason=reason,
                     expected_status="executing",
                 )
                 return await self._result_from_update_or_current(
-                    decision_id=decision.id,
+                    decision_id=decision_id,
                     row=row,
                     fallback_status="skipped",
                     fallback_reason=reason,
@@ -233,14 +255,14 @@ class QuotaWarmupService:
                 confidence="observed",
             )
             row = await self._planner.update_decision_status(
-                decision.id,
+                decision_id,
                 status="executed",
                 reason="warmup_executed",
                 executed_at=utcnow(),
                 expected_status="executing",
             )
             return await self._result_from_update_or_current(
-                decision_id=decision.id,
+                decision_id=decision_id,
                 row=row,
                 fallback_status="executed",
                 fallback_reason="warmup_executed",
@@ -286,14 +308,14 @@ class QuotaWarmupService:
                 confidence="failed",
             )
             row = await self._planner.update_decision_status(
-                decision.id,
+                decision_id,
                 status="failed",
                 reason=f"warmup_failed:{type(exc).__name__}",
                 executed_at=utcnow(),
                 expected_status="executing",
             )
             return await self._result_from_update_or_current(
-                decision_id=decision.id,
+                decision_id=decision_id,
                 row=row,
                 fallback_status="failed",
                 fallback_reason=f"warmup_failed:{type(exc).__name__}",

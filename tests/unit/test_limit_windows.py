@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+from typing import cast
 
 import pytest
 
 from app.db.models import LimitWindow
 from app.modules.api_keys.limit_windows import (
+    LIFETIME_RESET_AT,
     advance_limit_reset,
     limit_window_delta,
     next_limit_reset,
+    public_limit_reset_at,
 )
 
 pytestmark = pytest.mark.unit
@@ -119,3 +122,23 @@ def test_advance_limit_reset_lands_in_future_for_every_window(window: LimitWindo
     result = advance_limit_reset(reset_at, NOW, window)
 
     assert result > NOW
+
+
+def test_lifetime_window_never_resets() -> None:
+    assert limit_window_delta(LimitWindow.LIFETIME) is None
+    assert next_limit_reset(NOW, LimitWindow.LIFETIME) == LIFETIME_RESET_AT
+    # Even a stamp far in the past advances to the sentinel, never by a window.
+    assert advance_limit_reset(NOW - timedelta(days=365), NOW, LimitWindow.LIFETIME) == LIFETIME_RESET_AT
+    assert LIFETIME_RESET_AT > NOW + timedelta(days=365 * 1000)
+
+
+def test_public_reset_time_hides_the_lifetime_sentinel() -> None:
+    assert public_limit_reset_at(LimitWindow.LIFETIME, LIFETIME_RESET_AT) is None
+    assert public_limit_reset_at(LimitWindow.DAILY, NOW) == NOW
+
+
+def test_unknown_window_raises_instead_of_falling_back_to_seven_days() -> None:
+    with pytest.raises(ValueError, match="Unsupported API key limit window"):
+        limit_window_delta(cast(LimitWindow, "fortnightly"))
+    with pytest.raises(ValueError, match="Unsupported API key limit window"):
+        next_limit_reset(NOW, cast(LimitWindow, "fortnightly"))

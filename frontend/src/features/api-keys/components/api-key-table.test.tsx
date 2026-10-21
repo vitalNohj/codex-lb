@@ -47,6 +47,38 @@ describe("ApiKeyTable", () => {
     expect(within(secondRow).getByText("No Limit")).toBeInTheDocument();
   });
 
+  it("marks a one-time budget in the limit summary so it does not read as periodic", () => {
+    const keys = [
+      createApiKey({
+        id: "budget-key",
+        name: "Budget key",
+        limits: [
+          {
+            id: 7,
+            limitType: "cost_usd",
+            limitWindow: "lifetime",
+            maxValue: 5_000_000,
+            currentValue: 1_250_000,
+            modelFilter: null,
+            resetAt: null,
+          },
+        ],
+      }),
+    ];
+    renderWithProviders(
+      <ApiKeyTable
+        keys={keys}
+        busy={false}
+        onEdit={vi.fn()}
+        onDelete={vi.fn()}
+        onRegenerate={vi.fn()}
+      />,
+    );
+
+    const row = screen.getAllByRole("row")[1];
+    expect(within(row).getByText("Cost: $1.25/$5.00 one-time")).toBeInTheDocument();
+  });
+
   it("badges shared keys only", () => {
     const keys = [
       createApiKey({ id: "shared-key", name: "Friend key", isShared: true }),

@@ -43,6 +43,7 @@ import type {
 } from "@/features/api-keys/schemas";
 import { parseDate } from "@/utils/formatters";
 
+import { limitWindowLabel } from "@/features/api-keys/limit-windows";
 import { hasLimitRuleChanges, normalizeLimitRules } from "./limit-rules-utils";
 
 const TRANSPORT_POLICY_FOLLOW_GLOBAL = "follow_global";
@@ -452,12 +453,13 @@ function ApiKeyEditForm({ apiKey, busy, onSubmit, onClose }: ApiKeyEditFormProps
 }
 
 function LimitUsageBar({ limit }: { limit: ApiKey["limits"][number] }) {
+  const { t } = useTranslation();
   const isCost = limit.limitType === "cost_usd";
   const percent = limit.maxValue > 0 ? Math.min(100, (limit.currentValue / limit.maxValue) * 100) : 0;
   const current = isCost ? `$${(limit.currentValue / 1_000_000).toFixed(2)}` : formatTokenCount(limit.currentValue);
   const max = isCost ? `$${(limit.maxValue / 1_000_000).toFixed(2)}` : formatTokenCount(limit.maxValue);
   const typeLabel = LIMIT_TYPE_SHORT[limit.limitType];
-  const windowLabel = limit.limitWindow;
+  const windowLabel = limitWindowLabel(limit.limitWindow, t);
   const modelLabel = limit.modelFilter || "all";
 
   return (

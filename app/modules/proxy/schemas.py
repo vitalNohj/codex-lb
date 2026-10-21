@@ -259,7 +259,8 @@ class V1UsageLimitResponse(BaseModel):
     current_value: int
     remaining_value: int
     model_filter: str | None = None
-    reset_at: str
+    # None for a lifetime (one-time) API key limit, which never resets.
+    reset_at: str | None
     source: str = "api_key_limit"
 
 

@@ -52,6 +52,7 @@ from app.modules.proxy.claude_sidecar_dispatch import (
     _CLAUDE_SIDECAR_COOLDOWN_GATE,
     SidecarUsage,
     _abandon_unstarted_sidecar_stream,
+    _charge_and_log_sidecar_request,
     _finalize_or_release_sidecar_reservation,
     _finish_claude_sidecar_cooldown_attempt,
     _log_sidecar_request,
@@ -529,8 +530,12 @@ async def _native_stream(
                 )
             )
             raise
+        # Mid-turn, the upstream is already generating and billing the turn, so
+        # a client that leaves is charged its reservation. Before anything was
+        # relayed nothing was spent, and the reservation is released.
+        settle_interrupted = _charge_and_log_sidecar_request if yielded else _release_and_log_sidecar_request
         await await_deferring_cancellation(
-            _release_and_log_sidecar_request(
+            settle_interrupted(
                 reservation,
                 api_key=log.api_key,
                 model=log.model,

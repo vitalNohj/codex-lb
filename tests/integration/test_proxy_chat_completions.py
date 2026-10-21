@@ -727,7 +727,9 @@ async def test_v1_chat_completions_cursor_late_context_limit_returns_usage_strea
 async def test_v1_chat_completions_cursor_uses_default_api_key_reservation(async_client, monkeypatch):
     observed = {}
 
-    async def fake_enforce_request_limits(api_key, *, request_model, request_service_tier, request_usage_budget=None):
+    async def fake_enforce_request_limits(
+        api_key, *, request_model, request_service_tier, request_usage_budget=None, model_is_priced=None
+    ):
         observed["request_usage_budget"] = request_usage_budget
         return None
 
@@ -757,7 +759,9 @@ async def test_v1_chat_completions_cursor_uses_default_api_key_reservation(async
 async def test_v1_chat_completions_non_cursor_uses_estimated_api_key_reservation(async_client, monkeypatch):
     observed = {}
 
-    async def fake_enforce_request_limits(api_key, *, request_model, request_service_tier, request_usage_budget=None):
+    async def fake_enforce_request_limits(
+        api_key, *, request_model, request_service_tier, request_usage_budget=None, model_is_priced=None
+    ):
         observed["request_usage_budget"] = request_usage_budget
         return None
 

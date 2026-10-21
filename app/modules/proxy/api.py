@@ -184,7 +184,9 @@ from app.modules.api_keys.service import (
     ApiKeyRequestUsageBudget,
     ApiKeySelfLimitData,
     ApiKeysService,
+    ApiKeyUnpricedModelError,
     ApiKeyUsageReservationData,
+    ModelPricedCheck,
     _compute_pooled_credits,
 )
 from app.modules.api_keys.visibility import (
@@ -239,6 +241,7 @@ from app.modules.openai_compat.endpoints import is_openai_compat_provider
 from app.modules.proxy import affinity as proxy_affinity_module
 from app.modules.proxy import images_service as images_service_module
 from app.modules.proxy import service as proxy_service_module
+from app.modules.proxy._service.api_key_usage import proxy_error_for_exceeded_limit, proxy_error_for_unpriced_model
 from app.modules.proxy._service.support import (
     _bind_propagated_capacity_startup_ready,
     _bind_propagated_capacity_startup_wait,
@@ -262,6 +265,12 @@ from app.modules.proxy.alias_pool_dispatch import (
     AliasPoolUnavailable,
     authorize_pool_targets,
     dispatch_chat_with_failover,
+)
+from app.modules.proxy.api_key_pricing import (
+    never_charged,
+    pool_price_check,
+    route_price_check,
+    source_price_check,
 )
 from app.modules.proxy.api_key_usage import estimate_api_key_request_usage
 from app.modules.proxy.claude_sidecar_dispatch import (
@@ -1292,6 +1301,7 @@ async def _opencode_go_responses_dispatch_or_none(
         request_model=effective_model,
         request_service_tier=responses_payload.service_tier,
         request_usage_budget=None,
+        model_is_priced=route_price_check("opencode_go", effective_model),
     )
     settings = get_settings()
     return await proxy_responses_to_opencode_go(
@@ -1345,6 +1355,7 @@ async def _omniroute_responses_dispatch_or_none(
         request_model=effective_model,
         request_service_tier=responses_payload.service_tier,
         request_usage_budget=None,
+        model_is_priced=route_price_check("omniroute", effective_model),
     )
     settings = get_settings()
     return await proxy_responses_to_omniroute(
@@ -1426,6 +1437,7 @@ async def _chat_provider_responses_dispatch_or_none(
         request_model=effective_model,
         request_service_tier=responses_payload.service_tier,
         request_usage_budget=None,
+        model_is_priced=route_price_check(decision.provider, effective_model),
     )
     settings = get_settings()
     record_cliproxy_xai_responses_route(decision.provider, decision.wire_model, BRIDGE_ROUTE)
@@ -1483,6 +1495,7 @@ async def _cliproxy_native_responses_dispatch(
         request_model=effective_model,
         request_service_tier=responses_payload.service_tier,
         request_usage_budget=None,
+        model_is_priced=route_price_check("claude", effective_model),
     )
     return await proxy_responses_to_cliproxy_native(
         request,
@@ -2654,7 +2667,7 @@ def _to_v1_usage_limit_response(limit: ApiKeySelfLimitData) -> V1UsageLimitRespo
         current_value=current_value,
         remaining_value=max(0, limit.max_value - current_value),
         model_filter=limit.model_filter,
-        reset_at=limit.reset_at.isoformat() + "Z",
+        reset_at=None if limit.reset_at is None else limit.reset_at.isoformat() + "Z",
         source=limit.source,
     )
 
@@ -2877,10 +2890,13 @@ def _select_codex_usage_limit(
 def _codex_usage_window_snapshot(limit: V1UsageLimitResponse | None) -> RateLimitWindowSnapshotData | None:
     if limit is None or limit.max_value <= 0:
         return None
+    used_percent = max(0, min(100, int((limit.current_value / limit.max_value) * 100)))
+    if limit.reset_at is None:
+        # A lifetime budget has no window length and never resets.
+        return RateLimitWindowSnapshotData(used_percent=used_percent)
     reset_at = datetime.fromisoformat(limit.reset_at.replace("Z", "+00:00"))
     reset_epoch = int(reset_at.timestamp())
     now_epoch = int(time.time())
-    used_percent = max(0, min(100, int((limit.current_value / limit.max_value) * 100)))
     window_seconds = {"5h": 18000, "daily": 86400, "7d": 604800, "weekly": 604800, "monthly": 2592000}.get(
         limit.limit_window
     )
@@ -3044,6 +3060,7 @@ async def backend_files_create(
         api_key,
         request_model=_FILES_CREATE_LIMIT_MODEL,
         request_service_tier=None,
+        model_is_priced=never_charged,
     )
     try:
         result = await context.service.create_file(
@@ -3091,6 +3108,7 @@ async def backend_files_finalize(
         api_key,
         request_model=_FILES_FINALIZE_LIMIT_MODEL,
         request_service_tier=None,
+        model_is_priced=never_charged,
     )
     try:
         result = await context.service.finalize_file(
@@ -3766,12 +3784,12 @@ async def _proxy_images_generation_request(
             request_model=effective_model,
             request_service_tier=None,
         )
-    except ProxyRateLimitError:
+    except ProxyRateLimitError as exc:
         record_images_route_observability(
             route=route,
             model=public_model,
             stream=stream_requested,
-            status=429,
+            status=exc.status_code,
             outcome="rate_limited",
             started_at=started_at,
         )
@@ -4072,12 +4090,12 @@ async def _proxy_images_edit_request(
             request_model=effective_model,
             request_service_tier=None,
         )
-    except ProxyRateLimitError:
+    except ProxyRateLimitError as exc:
         record_images_route_observability(
             route=route,
             model=public_model,
             stream=stream_requested,
-            status=429,
+            status=exc.status_code,
             outcome="rate_limited",
             started_at=started_at,
         )
@@ -4295,6 +4313,7 @@ async def _build_codex_models_response(api_key: ApiKeyData | None) -> Response:
         api_key,
         request_model=None,
         request_service_tier=None,
+        model_is_priced=never_charged,
     )
     try:
         return await _build_codex_models_response_body(api_key)
@@ -4486,6 +4505,7 @@ async def _build_models_response(api_key: ApiKeyData | None) -> Response:
         api_key,
         request_model=None,
         request_service_tier=None,
+        model_is_priced=never_charged,
     )
     try:
         return await _build_models_response_body(api_key)
@@ -5492,11 +5512,20 @@ async def v1_chat_completions(
             api_key=api_key,
             routing_entries=tuple(routing_entries),
         )
+        # Failover can serve any authorized target, and each one settles under
+        # its own integration's price with the target as its model. A target
+        # that no longer routes is never served, so it needs no price.
+        pool_routes = [
+            (target_decision.provider, target)
+            for target in authorized_pool.targets
+            if (target_decision := resolve_sidecar_pool_target(target, tuple(routing_entries))) is not None
+        ]
         reservation = await _enforce_request_limits(
             api_key,
             request_model=metering_model,
             request_service_tier=payload.service_tier,
             request_usage_budget=None,
+            model_is_priced=pool_price_check(pool_routes),
         )
 
         async def _dispatch_pool_target(target: str, attribution: ChatRequestAttribution) -> Response:
@@ -5620,6 +5649,7 @@ async def v1_chat_completions(
             request_model=metering_model,
             request_service_tier=payload.service_tier,
             request_usage_budget=None,
+            model_is_priced=route_price_check(decision.provider, effective_model),
         )
         attribution = (
             ChatRequestAttribution.aliased(alias=metering_model, target=effective_model)
@@ -5801,6 +5831,7 @@ async def v1_chat_completions(
         request_model=request_model,
         request_service_tier=responses_payload.service_tier,
         request_usage_budget=None if cursor_compat_client else estimate_api_key_request_usage(responses_payload),
+        model_is_priced=source_price_check(source, request_model) if source is not None else None,
     )
     if source is not None:
         return await _source_chat_completion_response(
@@ -6045,6 +6076,7 @@ async def _source_embeddings_response(
         api_key,
         request_model=model,
         request_service_tier=None,
+        model_is_priced=source_price_check(source, model),
     )
     outbound = payload.model_dump(exclude_none=True)
     outbound["model"] = model
@@ -6129,6 +6161,7 @@ async def _source_audio_transcription_response(
         api_key,
         request_model=model,
         request_service_tier=None,
+        model_is_priced=source_price_check(source, model, transcription=True),
     )
     try:
         result = await forward_source_audio_transcription(
@@ -6330,6 +6363,7 @@ async def _source_responses_response(
         request_model=payload.model,
         request_service_tier=payload.service_tier,
         request_usage_budget=estimate_api_key_request_usage(payload),
+        model_is_priced=source_price_check(source, payload.model),
     )
     source_payload = payload.model_dump_for_forwarding()
     preserve_materialized_provider_alias = payload._codex_lb_provider_reasoning_effort_materialized and (
@@ -9255,7 +9289,14 @@ async def _enforce_request_limits(
     request_model: str | None,
     request_service_tier: str | None,
     request_usage_budget: ApiKeyRequestUsageBudget | None = None,
+    model_is_priced: ModelPricedCheck | None = None,
 ) -> ApiKeyUsageReservationData | None:
+    """Admit one request against the key's limits.
+
+    ``model_is_priced`` is the price check for the route serving the request
+    (see ``app.modules.proxy.api_key_pricing``); ``None`` means it settles from
+    the static price table.
+    """
     if api_key is None:
         return None
 
@@ -9267,10 +9308,12 @@ async def _enforce_request_limits(
                 request_model=request_model,
                 request_service_tier=request_service_tier,
                 request_usage_budget=request_usage_budget,
+                model_is_priced=model_is_priced,
             )
         except ApiKeyRateLimitExceededError as exc:
-            message = f"{exc}. Usage resets at {exc.reset_at.isoformat()}Z."
-            raise ProxyRateLimitError(message) from exc
+            raise proxy_error_for_exceeded_limit(exc) from exc
+        except ApiKeyUnpricedModelError as exc:
+            raise proxy_error_for_unpriced_model(exc) from exc
         except ApiKeyInvalidError as exc:
             raise ProxyAuthError(str(exc)) from exc
 

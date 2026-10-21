@@ -9,6 +9,7 @@ from app.db.models import ModelSource, ModelSourceModel
 from app.modules.model_sources.catalog import (
     DEFAULT_SOURCE_CONTEXT_WINDOW,
     source_model_audio_cost_usd,
+    source_model_has_price,
     source_model_reasoning_levels,
     source_model_request_overrides,
     source_model_supported_tool_types,
@@ -51,6 +52,27 @@ def test_source_model_audio_cost_usd_none_without_rate() -> None:
 def test_source_model_audio_cost_usd_zero_for_nonpositive_duration() -> None:
     source = _audio_source(0.006)
     assert source_model_audio_cost_usd(source, "whisper-large-v3", 0.0) == 0.0
+
+
+def test_an_audio_rate_prices_only_a_transcription() -> None:
+    source = _audio_source(0.006)
+    # A transcription settles from the duration at the per-minute rate...
+    assert source_model_has_price(source, "whisper-large-v3", accepts_audio_rate=True) is True
+    # ...but a token-metered endpoint cannot, so an audio-only rate is no price there.
+    assert source_model_has_price(source, "whisper-large-v3", accepts_audio_rate=False) is False
+
+
+def test_a_token_rate_prices_every_source_endpoint() -> None:
+    source = _audio_source(None)
+    source.models[0].input_per_1m = 0.5
+    assert source_model_has_price(source, "whisper-large-v3", accepts_audio_rate=False) is True
+    assert source_model_has_price(source, "whisper-large-v3", accepts_audio_rate=True) is True
+
+
+def test_an_unrated_or_unknown_source_model_has_no_price() -> None:
+    source = _audio_source(None)
+    assert source_model_has_price(source, "whisper-large-v3", accepts_audio_rate=True) is False
+    assert source_model_has_price(source, "not-listed", accepts_audio_rate=True) is False
 
 
 def test_source_models_to_upstream_models_preserves_source_identity() -> None:

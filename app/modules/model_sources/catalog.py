@@ -274,6 +274,26 @@ def source_model_cost_usd(
     )
 
 
+def source_model_has_price(source: ModelSource, model: str, *, accepts_audio_rate: bool) -> bool:
+    """Whether the source declares a rate that settlement can charge ``model`` at.
+
+    Token rates price every endpoint (``source_model_cost_usd``). The
+    per-minute audio rate prices only a transcription that reports its
+    duration (``source_model_audio_cost_usd``), so it counts only when
+    ``accepts_audio_rate`` says the caller settles that way; a token-metered
+    endpoint with just an audio rate would otherwise settle at $0.
+    """
+    entry = next(
+        (candidate for candidate in source.models if candidate.model == model and candidate.is_enabled),
+        None,
+    )
+    if entry is None:
+        return False
+    if any(rate is not None for rate in (entry.input_per_1m, entry.cached_input_per_1m, entry.output_per_1m)):
+        return True
+    return accepts_audio_rate and entry.audio_per_minute is not None
+
+
 def source_model_audio_cost_usd(source: ModelSource, model: str, audio_seconds: float) -> float | None:
     """Price transcribed audio against the source model's per-minute rate.
 
