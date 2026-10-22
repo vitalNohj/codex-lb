@@ -11,6 +11,7 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
+  DialogTrigger,
 } from "@/components/ui/dialog";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
@@ -31,7 +32,10 @@ export function TelemetrySettings({ disabled }: TelemetrySettingsProps) {
   const { telemetryPreviewQuery } = useTelemetryPreview(previewOpen);
 
   const consent = telemetryConsentQuery.data;
-  const envControlled = consent?.source === "env";
+  // `env` means no dashboard decision is saved yet and the environment
+  // variable currently decides. A saved decision always wins, so the toggle
+  // stays usable; the notice only explains where the current value comes from.
+  const envFallback = consent?.source === "env";
   const busy = disabled || updateTelemetryConsentMutation.isPending || !consent;
   const previewEnvelope = telemetryPreviewQuery.data?.preview ?? null;
 
@@ -45,7 +49,7 @@ export function TelemetrySettings({ disabled }: TelemetrySettingsProps) {
           <Switch
             aria-label={t("settings.telemetry.toggleAria")}
             checked={consent?.active ?? false}
-            disabled={busy || envControlled}
+            disabled={busy}
             onCheckedChange={(checked) => updateTelemetryConsentMutation.mutate({ enabled: checked })}
           />
         }
@@ -59,6 +63,7 @@ export function TelemetrySettings({ disabled }: TelemetrySettingsProps) {
         </div>
       ) : null}
 
+<<<<<<< 22625a07e
       <SettingsRowGroup>
         <SettingsRow
           label={t("settings.telemetry.collectedData.label")}
@@ -98,5 +103,106 @@ export function TelemetrySettings({ disabled }: TelemetrySettingsProps) {
         ) : null}
       </Dialog>
     </SettingsSection>
+||||||| 84fde5a1e
+        <p className="text-xs text-muted-foreground">{t("settings.telemetry.optOutNotice")}</p>
+
+        {envControlled ? (
+          <div className="rounded-lg border border-primary/20 bg-primary/5 px-3 py-2 text-xs font-medium text-foreground">
+            {t("settings.telemetry.envNotice")}
+          </div>
+        ) : null}
+
+        <div className="flex items-center justify-between gap-3 rounded-lg border p-3">
+          <div>
+            <p className="text-sm font-medium">{t("settings.telemetry.collectedData.label")}</p>
+            <p className="text-xs text-muted-foreground">
+              {t("settings.telemetry.collectedData.description")}
+            </p>
+          </div>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            className="h-8 text-xs"
+            disabled={!consent}
+            onClick={() => setPreviewOpen(true)}
+          >
+            {t("settings.telemetry.collectedData.view")}
+          </Button>
+        </div>
+      </div>
+
+      <Dialog open={previewOpen} onOpenChange={setPreviewOpen}>
+        {previewOpen ? (
+          <DialogContent className="sm:max-w-2xl">
+            <DialogHeader>
+              <DialogTitle>{t("settings.telemetry.previewDialog.title")}</DialogTitle>
+              <DialogDescription>
+                {t("settings.telemetry.previewDialog.description")}
+              </DialogDescription>
+            </DialogHeader>
+            {previewEnvelope ? (
+              <TelemetryPayloadPreview preview={previewEnvelope} />
+            ) : telemetryPreviewQuery.error ? (
+              <AlertMessage variant="error">{telemetryPreviewQuery.error.message}</AlertMessage>
+            ) : (
+              <Skeleton className="h-64 w-full rounded-lg" />
+            )}
+            <DialogFooter showCloseButton />
+          </DialogContent>
+        ) : null}
+      </Dialog>
+    </section>
+=======
+        <p className="text-xs text-muted-foreground">{t("settings.telemetry.optOutNotice")}</p>
+
+        {envFallback ? (
+          <div className="rounded-lg border border-primary/20 bg-primary/5 px-3 py-2 text-xs font-medium text-foreground">
+            {t("settings.telemetry.envNotice")}
+          </div>
+        ) : null}
+
+        <div className="flex items-center justify-between gap-3 rounded-lg border p-3">
+          <div>
+            <p className="text-sm font-medium">{t("settings.telemetry.collectedData.label")}</p>
+            <p className="text-xs text-muted-foreground">
+              {t("settings.telemetry.collectedData.description")}
+            </p>
+          </div>
+          <Dialog open={previewOpen} onOpenChange={setPreviewOpen}>
+            <DialogTrigger asChild>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                className="h-8 text-xs"
+                disabled={!consent}
+              >
+                {t("settings.telemetry.collectedData.view")}
+              </Button>
+            </DialogTrigger>
+            {previewOpen ? (
+              <DialogContent className="sm:max-w-2xl">
+                <DialogHeader>
+                  <DialogTitle>{t("settings.telemetry.previewDialog.title")}</DialogTitle>
+                  <DialogDescription>
+                    {t("settings.telemetry.previewDialog.description")}
+                  </DialogDescription>
+                </DialogHeader>
+                {previewEnvelope ? (
+                  <TelemetryPayloadPreview preview={previewEnvelope} />
+                ) : telemetryPreviewQuery.error ? (
+                  <AlertMessage variant="error">{telemetryPreviewQuery.error.message}</AlertMessage>
+                ) : (
+                  <Skeleton className="h-64 w-full rounded-lg" />
+                )}
+                <DialogFooter showCloseButton />
+              </DialogContent>
+            ) : null}
+          </Dialog>
+        </div>
+      </div>
+    </section>
+>>>>>>> 72630bbfe
   );
 }

@@ -8,6 +8,21 @@ import { cn } from "@/lib/utils";
 
 const EMPTY_QUERY_KEYS: readonly QueryKey[] = [];
 
+/** i18n keys of the trigger's heading, sub-line and open/close labels. */
+export type SettingsGroupLabelKeys = {
+  title: string;
+  description: string;
+  show: string;
+  hide: string;
+};
+
+const ADVANCED_LABELS: SettingsGroupLabelKeys = {
+  title: "settings.advanced.title",
+  description: "settings.advanced.description",
+  show: "settings.advanced.show",
+  hide: "settings.advanced.hide",
+};
+
 export type AdvancedSettingsGroupProps = {
   children: ReactNode;
   defaultOpen?: boolean;
@@ -15,13 +30,20 @@ export type AdvancedSettingsGroupProps = {
   onOpenChange?: (open: boolean) => void;
   scrollToId?: string;
   waitForQueryKeys?: readonly QueryKey[];
+  /** Defaults to the Advanced group's own copy; a second group passes its own. */
+  labels?: SettingsGroupLabelKeys;
+  /** Interpolation values for `labels.description` (a status summary counts things). */
+  descriptionValues?: Record<string, string | number>;
+  /** Applied to the sub-line, so a group can assert what its collapsed copy says. */
+  descriptionTestId?: string;
 };
 
 /**
  * Collapsed-by-default container for power-user settings sections.
  *
  * Children are unmounted while the group is closed, so section data queries
- * only fire once the operator expands the group.
+ * only fire once the operator expands the group. Reused by the Organisation
+ * group, which passes its own `labels`; the copy is the only difference.
  */
 export function AdvancedSettingsGroup({
   children,
@@ -30,6 +52,9 @@ export function AdvancedSettingsGroup({
   onOpenChange,
   scrollToId,
   waitForQueryKeys = EMPTY_QUERY_KEYS,
+  labels = ADVANCED_LABELS,
+  descriptionValues,
+  descriptionTestId,
 }: AdvancedSettingsGroupProps) {
   const { t } = useTranslation();
   const [localOpen, setLocalOpen] = useState(defaultOpen);
@@ -77,8 +102,16 @@ export function AdvancedSettingsGroup({
       className="rounded-xl border border-dashed bg-card/60 shadow-[var(--shadow-sm)] data-[state=open]:border-solid data-[state=open]:bg-card"
     >
       <CollapsibleTrigger
+<<<<<<< 22625a07e
         aria-label={open ? t("settings.advanced.hide") : t("settings.advanced.show")}
         className="flex w-full items-center gap-3 rounded-xl p-5 text-left transition-colors hover:bg-accent/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60 sm:p-6"
+||||||| 84fde5a1e
+        aria-label={open ? t("settings.advanced.hide") : t("settings.advanced.show")}
+        className="flex w-full items-center gap-3 rounded-xl p-5 text-left transition-colors hover:bg-muted/40"
+=======
+        aria-label={open ? t(labels.hide) : t(labels.show)}
+        className="flex w-full items-center gap-3 rounded-xl p-5 text-left transition-colors hover:bg-muted/40"
+>>>>>>> 72630bbfe
       >
         <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-primary/12 text-primary ring-1 ring-primary/20">
           <SlidersHorizontal className="h-4 w-4" aria-hidden="true" />
@@ -91,6 +124,20 @@ export function AdvancedSettingsGroup({
           aria-hidden="true"
           className={cn("h-5 w-5 shrink-0 text-muted-foreground transition-transform duration-200", open && "rotate-90")}
         />
+<<<<<<< 22625a07e
+||||||| 84fde5a1e
+        <span className="min-w-0">
+          <span className="block text-sm font-semibold tracking-tight">{t("settings.advanced.title")}</span>
+          <span className="mt-0.5 block text-xs text-muted-foreground">{t("settings.advanced.description")}</span>
+        </span>
+=======
+        <span className="min-w-0">
+          <span className="block text-sm font-semibold tracking-tight">{t(labels.title)}</span>
+          <span data-testid={descriptionTestId} className="mt-0.5 block text-xs text-muted-foreground">
+            {t(labels.description, descriptionValues)}
+          </span>
+        </span>
+>>>>>>> 72630bbfe
       </CollapsibleTrigger>
       <CollapsibleContent className="space-y-5 border-t p-4 sm:p-6">
         {children}

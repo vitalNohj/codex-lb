@@ -5,13 +5,23 @@ import codecs
 import json
 import re
 from collections.abc import AsyncIterator, Callable, Mapping
+<<<<<<< 22625a07e
 from typing import Final, Literal
+||||||| 84fde5a1e
+=======
+from typing import cast
+>>>>>>> 72630bbfe
 
 from app.core.errors import ResponseFailedEvent
 from app.core.shutdown import wait_for_shutdown_stream_handoff
 from app.core.types import JsonObject, JsonValue
 from app.core.utils.json_guards import is_json_dict
+<<<<<<< 22625a07e
 from app.core.utils.stream_close import aclose_stream
+||||||| 84fde5a1e
+=======
+from app.core.utils.shared_future import _await_task_deferring_cancellation, wait_on_shared_future
+>>>>>>> 72630bbfe
 
 type JsonPayload = Mapping[str, JsonValue] | ResponseFailedEvent
 
@@ -84,6 +94,7 @@ async def inject_sse_keepalives(
     Closing this generator closes ``source`` too, so the cleanup in the
     source's ``finally`` runs now rather than at garbage collection.
     """
+<<<<<<< 22625a07e
     if interval_seconds <= 0 and shutdown_handoff_frame is None:
         try:
             async for chunk in source:
@@ -95,12 +106,29 @@ async def inject_sse_keepalives(
     async def _next_chunk(it: AsyncIterator[str]) -> str:
         return await it.__anext__()
 
+||||||| 84fde5a1e
+    if interval_seconds <= 0:
+        async for chunk in source:
+            yield chunk
+        return
+
+    async def _next_chunk(it: AsyncIterator[str]) -> str:
+        return await it.__anext__()
+
+=======
+>>>>>>> 72630bbfe
     iterator = source.__aiter__()
+<<<<<<< 22625a07e
     pending: asyncio.Task[str] | None = None
     handoff: asyncio.Task[None] | None = None
     if shutdown_handoff_frame is not None:
         handoff = asyncio.create_task(wait_for_shutdown_stream_handoff())
+||||||| 84fde5a1e
+    pending: asyncio.Task[str] | None = None
+=======
+>>>>>>> 72630bbfe
     try:
+<<<<<<< 22625a07e
         while True:
             if pending is None:
                 pending = asyncio.create_task(_next_chunk(iterator))
@@ -108,6 +136,43 @@ async def inject_sse_keepalives(
                 try:
                     chunk = await asyncio.wait_for(
                         asyncio.shield(pending),
+||||||| 84fde5a1e
+        while True:
+            if pending is None:
+                pending = asyncio.create_task(_next_chunk(iterator))
+            try:
+                chunk = await asyncio.wait_for(
+                    asyncio.shield(pending),
+                    timeout=interval_seconds,
+                )
+            except asyncio.TimeoutError:
+                if on_keepalive is not None:
+                    on_keepalive()
+                yield keepalive_frame
+                continue
+            except StopAsyncIteration:
+=======
+        if interval_seconds <= 0:
+            async for chunk in iterator:
+                yield chunk
+            return
+
+        async def _next_chunk(it: AsyncIterator[str]) -> str:
+            return await it.__anext__()
+
+        pending: asyncio.Task[str] | None = None
+        try:
+            while True:
+                if pending is None:
+                    pending = asyncio.create_task(_next_chunk(iterator))
+                try:
+                    # Not ``wait_for(shield(pending))``: Python 3.14's shield
+                    # leaks a done-callback onto ``pending`` at every keepalive
+                    # timeout, so a quiet upstream accumulates callbacks (and
+                    # O(n) remove scans) until the next chunk arrives.
+                    chunk = await wait_on_shared_future(
+                        pending,
+>>>>>>> 72630bbfe
                         timeout=interval_seconds,
                     )
                 except asyncio.TimeoutError:
@@ -120,6 +185,7 @@ async def inject_sse_keepalives(
                     break
                 pending = None
                 yield chunk
+<<<<<<< 22625a07e
                 continue
 
             waiters: set[asyncio.Future[object]] = {pending, handoff}
@@ -144,7 +210,32 @@ async def inject_sse_keepalives(
             if on_keepalive is not None:
                 on_keepalive()
             yield keepalive_frame
+||||||| 84fde5a1e
+                break
+            pending = None
+            yield chunk
+=======
+        finally:
+            if pending is not None and not pending.done():
+                pending.cancel()
+                try:
+                    # Not ``await pending``: a level-cancelled consumer scope
+                    # re-cancels this task on every loop iteration, and a
+                    # direct task await cascades each cancel into ``pending``
+                    # and any cancellation-deferring wait beneath it (the
+                    # startup-probe task), spinning the loop until that
+                    # cleanup completes. The canonical helper shields this
+                    # task and waits through a proxy future, so the chunk task
+                    # sees only the explicit cancel above; it still settles
+                    # before the outer finalizers close the iterator chain the
+                    # chunk task is driving, and its eventual exception is
+                    # retrieved here rather than logged as never retrieved.
+                    await _await_task_deferring_cancellation(pending)
+                except BaseException:
+                    pass
+>>>>>>> 72630bbfe
     finally:
+<<<<<<< 22625a07e
         try:
             if handoff is not None and not handoff.done():
                 handoff.cancel()
@@ -400,6 +491,22 @@ def _json_events(payloads: list[str]) -> list[SseJsonEvent]:
         if is_json_dict(parsed):
             events.append(parsed)
     return events
+||||||| 84fde5a1e
+        if pending is not None and not pending.done():
+            pending.cancel()
+            try:
+                await pending
+            except BaseException:
+                pass
+=======
+        aclose = getattr(iterator, "aclose", None)
+        if aclose is not None:
+            await aclose()
+        elif iterator is not source:
+            source_aclose = getattr(source, "aclose", None)
+            if source_aclose is not None:
+                await source_aclose()
+>>>>>>> 72630bbfe
 
 
 def format_sse_event(payload: JsonPayload) -> str:
@@ -410,11 +517,35 @@ def format_sse_event(payload: JsonPayload) -> str:
     return f"data: {data}\n\n"
 
 
+def _is_single_line_json_object_text(text: str) -> bool:
+    return text.startswith("{") and "\n" not in text and "\r" not in text
+
+
+def format_sse_event_from_text(payload: Mapping[str, JsonValue], text: str) -> str:
+    """Frame an already-serialized JSON object without re-dumping it.
+
+    ``text`` MUST be a JSON serialization of ``payload`` (the upstream frame the
+    payload was parsed from, or a compact re-dump of it). The result carries the
+    same ``event:`` line ``format_sse_event(payload)`` would emit, but its
+    ``data:`` line is ``text`` verbatim, so non-ASCII stays UTF-8 instead of
+    being ``\\uXXXX``-escaped and the JSON is never re-serialized. Anything
+    that would not produce a canonical single-line block (multi-line or
+    whitespace-prefixed text) falls back to ``format_sse_event``.
+    """
+    if not _is_single_line_json_object_text(text):
+        return format_sse_event(payload)
+    event_type = payload.get("type")
+    if isinstance(event_type, str) and event_type:
+        return f"event: {event_type}\ndata: {text}\n\n"
+    return f"data: {text}\n\n"
+
+
 def format_sse_data(payload: Mapping[str, JsonValue]) -> str:
     data = json.dumps(payload, ensure_ascii=True, separators=(",", ":"))
     return f"data: {data}\n\n"
 
 
+<<<<<<< 22625a07e
 def parse_websocket_json_text(text: str) -> dict[str, JsonValue] | None:
     """Parse one websocket text frame as a JSON object.
 
@@ -429,9 +560,85 @@ def parse_websocket_json_text(text: str) -> dict[str, JsonValue] | None:
     if is_json_dict(payload):
         return payload
     return None
+||||||| 84fde5a1e
+=======
+class ParsedSseBlock(str):
+    """An SSE event block that carries its already-parsed ``data:`` payload.
+
+    Behaves exactly like ``str`` (framing, encoding, comparison, ``startswith``);
+    ``payload`` is what ``parse_sse_data_json`` returns for the same text, so a
+    chain of stream stages parses each block once. The payload object is shared
+    by every stage that receives the block: consumers MUST treat it as read-only
+    and copy before mutating. Derived strings (``strip()``, concatenation) are
+    plain ``str`` and take the full parse path again. ``is_local`` records a
+    producer-generated block without changing its wire payload or retry markers.
+    ``response_id_is_local`` also covers a local ID added to a real upstream event.
+    """
+
+    # ``__slots__`` is not supported on ``str`` subclasses; the instance dict
+    # costs ~100-200 B per block, far less than a redundant JSON parse.
+    payload: dict[str, JsonValue] | None
+    is_local: bool
+    response_id_is_local: bool
+
+    def __new__(
+        cls,
+        block: str,
+        payload: dict[str, JsonValue] | None,
+        *,
+        is_local: bool = False,
+        response_id_is_local: bool = False,
+    ) -> ParsedSseBlock:
+        instance = super().__new__(cls, block)
+        instance.payload = payload
+        instance.is_local = is_local
+        instance.response_id_is_local = response_id_is_local
+        return instance
+
+
+def format_local_sse_event(payload: dict[str, JsonValue] | ResponseFailedEvent) -> ParsedSseBlock:
+    """Frame a locally generated event with provenance confined to the carrier."""
+    return ParsedSseBlock(
+        format_sse_event(payload), cast(dict[str, JsonValue], payload), is_local=True, response_id_is_local=True
+    )
+
+
+def sse_block_with_payload(event_block: str, payload: dict[str, JsonValue] | None) -> ParsedSseBlock:
+    """Attach ``payload`` (the result of ``parse_sse_data_json(event_block)``) to the block."""
+    if isinstance(event_block, ParsedSseBlock) and event_block.payload is payload:
+        return event_block
+    return ParsedSseBlock(
+        event_block,
+        payload,
+        is_local=isinstance(event_block, ParsedSseBlock) and event_block.is_local,
+        response_id_is_local=isinstance(event_block, ParsedSseBlock) and event_block.response_id_is_local,
+    )
+
+
+def parse_sse_data_json_text(text: str) -> dict[str, JsonValue] | None:
+    """Parse one ``data:`` value as a JSON object.
+
+    Equivalent to ``parse_sse_data_json(f"data: {text}\\n\\n")`` but skips SSE
+    line parsing when ``text`` is a single-line JSON object — the shape every
+    upstream websocket frame has. Other inputs (blank, ``[DONE]``, multi-line or
+    whitespace-prefixed text) take the exact SSE field path so the ``None`` and
+    line-joining semantics stay identical.
+    """
+    if _is_single_line_json_object_text(text):
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError:
+            return None
+        if is_json_dict(payload):
+            return payload
+        return None
+    return parse_sse_data_json(f"data: {text}\n\n")
+>>>>>>> 72630bbfe
 
 
 def parse_sse_data_json(event_block: str) -> dict[str, JsonValue] | None:
+    if isinstance(event_block, ParsedSseBlock):
+        return event_block.payload
     data = extract_sse_data(event_block)
     if data is None:
         return None

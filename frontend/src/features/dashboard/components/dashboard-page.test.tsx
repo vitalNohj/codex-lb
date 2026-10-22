@@ -4,10 +4,20 @@ import userEvent from "@testing-library/user-event";
 
 import { renderWithProviders } from "@/test/utils";
 import {
+<<<<<<< 22625a07e
   createAccountSummary,
   createDashboardOverview,
   createDashboardProjections,
   type DashboardOverview,
+||||||| 84fde5a1e
+import { createDashboardOverview, createDashboardProjections } from "@/test/mocks/factories";
+=======
+  ADMIN_PERMISSIONS,
+  OPERATOR_PERMISSIONS,
+  VIEWER_PERMISSIONS,
+  createDashboardOverview,
+  createDashboardProjections,
+>>>>>>> 72630bbfe
 } from "@/test/mocks/factories";
 import { useAccountMutations } from "@/features/accounts/hooks/use-accounts";
 import { useAuthStore } from "@/features/auth/hooks/use-auth";
@@ -189,7 +199,7 @@ describe("DashboardPage", () => {
   beforeEach(() => {
     useAuthStore.setState({
       role: "admin",
-      permissions: ["read", "write"],
+      permissions: ADMIN_PERMISSIONS,
       canWrite: true,
       initialized: true,
     });
@@ -504,11 +514,30 @@ describe("DashboardPage", () => {
     });
   });
 
+  it.each([
+    ["an operator", OPERATOR_PERMISSIONS, true],
+    ["a viewer", VIEWER_PERMISSIONS, false],
+  ])("hides Conversations from %s (no conversations:read) even though the wire role is admin", async (_label, permissions, canWrite) => {
+    const user = userEvent.setup();
+    useAuthStore.setState({ role: "admin", permissions, canWrite });
+    window.history.pushState({}, "", "/dashboard?view=conversations");
+    mockReadyDashboard();
+
+    renderWithProviders(<DashboardPage />);
+
+    expect(screen.getByRole("heading", { name: "Request Logs" })).toBeInTheDocument();
+    expect(screen.queryByTestId("conversations-view")).not.toBeInTheDocument();
+    expect(useConversationsMock.mock.calls.every(([options]) => options !== undefined && options.enabled === false)).toBe(true);
+    await user.click(screen.getByRole("button", { name: "Request Logs" }));
+    expect(screen.queryByRole("menuitemradio", { name: "Conversations" })).not.toBeInTheDocument();
+    await waitFor(() => expect(window.location.search).not.toContain("view=conversations"));
+  });
+
   it("fails closed during auth hydration and preserves an admin bookmark until the guest is known", async () => {
     useAuthStore.setState({
       initialized: false,
       role: "admin",
-      permissions: ["read", "write"],
+      permissions: ADMIN_PERMISSIONS,
       canWrite: true,
     });
     window.history.pushState({}, "", "/dashboard?view=conversations");
@@ -538,6 +567,129 @@ describe("DashboardPage", () => {
     expect(useConversationsMock.mock.calls.every(([options]) => options !== undefined && options.enabled === false)).toBe(true);
   });
 
+<<<<<<< 22625a07e
+||||||| 84fde5a1e
+  it("customizes and restores the request-log table without a global width control", async () => {
+    const user = userEvent.setup();
+    mockReadyDashboard();
+
+    renderWithProviders(<DashboardPage />);
+
+    expect(screen.getByRole("button", { name: "Columns (12)" })).toBeInTheDocument();
+    expect(screen.queryByRole("slider")).not.toBeInTheDocument();
+    expect(screen.queryByText(/^Width$/)).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Columns (12)" }));
+    expect(screen.getByText("Visible columns")).toBeInTheDocument();
+    await user.click(screen.getByRole("menuitemcheckbox", { name: "Plan" }));
+
+    expect(screen.getByRole("menu", { name: "Columns (11)" })).toBeInTheDocument();
+    const selectedProps = recentRequestsTableSpy.mock.lastCall?.[0] as
+      | RecentRequestsTableProps
+      | undefined;
+    expect(selectedProps?.visibleColumns).not.toContain("plan");
+
+    act(() => {
+      selectedProps?.onColumnWidthChange?.("account", 240);
+    });
+    const resizedProps = recentRequestsTableSpy.mock.lastCall?.[0] as
+      | RecentRequestsTableProps
+      | undefined;
+    expect(resizedProps?.columnWidths?.account).toBe(240);
+
+    await user.keyboard("{Escape}");
+    await user.click(
+      screen.getByRole("button", { name: "Restore default column layout" }),
+    );
+
+    const restoredProps = recentRequestsTableSpy.mock.lastCall?.[0] as
+      | RecentRequestsTableProps
+      | undefined;
+    expect(restoredProps?.visibleColumns).toHaveLength(12);
+    expect(restoredProps?.columnWidths).toEqual({});
+    expect(
+      window.localStorage.getItem(REQUEST_LOG_TABLE_PREFERENCES_STORAGE_KEY),
+    ).toBeNull();
+  });
+=======
+  it("fails closed during auth hydration from the least-privilege boot state", async () => {
+    // The store now boots as guest with no permissions; the gate normally
+    // holds rendering until initialized, but the page must still fail closed
+    // if it is mounted before the session resolves.
+    useAuthStore.setState({
+      initialized: false,
+      role: "guest",
+      permissions: [],
+      canWrite: false,
+    });
+    window.history.pushState({}, "", "/dashboard?view=conversations");
+    mockReadyDashboard();
+
+    renderWithProviders(<DashboardPage />);
+
+    expect(screen.getByRole("heading", { name: "Request Logs" })).toBeInTheDocument();
+    expect(screen.queryByTestId("conversations-view")).not.toBeInTheDocument();
+    expect(window.location.search).toContain("view=conversations");
+    expect(useConversationsMock.mock.calls.every(([options]) => options !== undefined && options.enabled === false)).toBe(true);
+
+    act(() => {
+      useAuthStore.setState({
+        initialized: true,
+        role: "admin",
+        permissions: ADMIN_PERMISSIONS,
+        canWrite: true,
+      });
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("conversations-view")).toBeInTheDocument();
+    });
+    expect(window.location.search).toContain("view=conversations");
+  });
+
+  it("customizes and restores the request-log table without a global width control", async () => {
+    const user = userEvent.setup();
+    mockReadyDashboard();
+
+    renderWithProviders(<DashboardPage />);
+
+    expect(screen.getByRole("button", { name: "Columns (12)" })).toBeInTheDocument();
+    expect(screen.queryByRole("slider")).not.toBeInTheDocument();
+    expect(screen.queryByText(/^Width$/)).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Columns (12)" }));
+    expect(screen.getByText("Visible columns")).toBeInTheDocument();
+    await user.click(screen.getByRole("menuitemcheckbox", { name: "Plan" }));
+
+    expect(screen.getByRole("menu", { name: "Columns (11)" })).toBeInTheDocument();
+    const selectedProps = recentRequestsTableSpy.mock.lastCall?.[0] as
+      | RecentRequestsTableProps
+      | undefined;
+    expect(selectedProps?.visibleColumns).not.toContain("plan");
+
+    act(() => {
+      selectedProps?.onColumnWidthChange?.("account", 240);
+    });
+    const resizedProps = recentRequestsTableSpy.mock.lastCall?.[0] as
+      | RecentRequestsTableProps
+      | undefined;
+    expect(resizedProps?.columnWidths?.account).toBe(240);
+
+    await user.keyboard("{Escape}");
+    await user.click(
+      screen.getByRole("button", { name: "Restore default column layout" }),
+    );
+
+    const restoredProps = recentRequestsTableSpy.mock.lastCall?.[0] as
+      | RecentRequestsTableProps
+      | undefined;
+    expect(restoredProps?.visibleColumns).toHaveLength(12);
+    expect(restoredProps?.columnWidths).toEqual({});
+    expect(
+      window.localStorage.getItem(REQUEST_LOG_TABLE_PREFERENCES_STORAGE_KEY),
+    ).toBeNull();
+  });
+>>>>>>> 72630bbfe
 
   it("renders the account summary line in the Accounts header using overview accounts", () => {
     const overview = mockReadyDashboard();

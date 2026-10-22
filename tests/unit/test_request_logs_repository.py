@@ -192,6 +192,7 @@ async def test_add_log_persists_request_and_connection_kinds(db_setup) -> None:
 
 
 @pytest.mark.asyncio
+<<<<<<< 22625a07e
 async def test_add_log_persists_passed_cost_usd_and_skips_pricing_table(db_setup) -> None:
     """When an explicit cost_usd is provided, it should be persisted directly without pricing-table fallback."""
     del db_setup
@@ -239,6 +240,32 @@ async def test_add_log_falls_back_to_pricing_table_when_cost_usd_none(db_setup) 
         assert persisted is not None
         # gpt-5.2 pricing: $1.75/M input + $14/M output = $15.75
         assert persisted.cost_usd == pytest.approx(15.75)
+||||||| 84fde5a1e
+=======
+async def test_request_log_listing_preserves_optional_affinity_metadata(db_setup) -> None:
+    del db_setup
+    async with SessionLocal() as session:
+        repository = RequestLogsRepository(session)
+        await repository.add_log(
+            account_id=None,
+            request_id="affinity-observed",
+            model="gpt-5.4",
+            input_tokens=10,
+            output_tokens=5,
+            latency_ms=1,
+            status="success",
+            error_code=None,
+            sticky_key_source="payload",
+            sticky_kind="prompt_cache",
+            sticky_key_hash="ba7816bf8f01cfea",
+        )
+    async with SessionLocal() as session:
+        result = await RequestLogsRepository(session).list_recent()
+        assert result.total == 1
+        assert result.logs[0].sticky_key_source == "payload"
+        assert result.logs[0].sticky_kind == "prompt_cache"
+        assert result.logs[0].sticky_key_hash == "ba7816bf8f01cfea"
+>>>>>>> 72630bbfe
 
 
 @pytest.mark.asyncio

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Boxes, CheckCircle2, Loader2, Network, Plus, Server, XCircle } from "lucide-react";
+import { Boxes, CheckCircle2, Loader2, Network, Plus, Server, TriangleAlert, XCircle } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { Button } from "@/components/ui/button";
@@ -22,7 +22,15 @@ const NO_POOL_VALUE = "__none__";
 export type UpstreamProxySettingsProps = {
   admin: UpstreamProxyAdmin;
   busy: boolean;
+<<<<<<< 22625a07e
   onSaveSettings: (patch: Partial<SettingsUpdateRequest>) => Promise<DashboardSettings | void>;
+||||||| 84fde5a1e
+  onSaveSettings: (payload: SettingsUpdateRequest) => Promise<void>;
+=======
+  onSaveSettings: (payload: SettingsUpdateRequest) => Promise<void>;
+  /** Endpoint creation is a security setting (`POST …/endpoints` needs `security:write`). */
+  canCreateEndpoint?: boolean;
+>>>>>>> 72630bbfe
   onCreateEndpoint: (payload: UpstreamProxyEndpointCreateRequest) => Promise<unknown>;
   onTestEndpoint: (endpointId: string) => Promise<UpstreamProxyEndpointTestResponse>;
   onCreatePool: (payload: UpstreamProxyPoolCreateRequest) => Promise<unknown>;
@@ -33,6 +41,7 @@ export function UpstreamProxySettings({
   admin,
   busy,
   onSaveSettings,
+  canCreateEndpoint = true,
   onCreateEndpoint,
   onTestEndpoint,
   onCreatePool,
@@ -119,7 +128,7 @@ export function UpstreamProxySettings({
             type="button"
             size="sm"
             className="h-8 gap-1.5 text-xs"
-            disabled={busy}
+            disabled={busy || !canCreateEndpoint}
             onClick={() => endpointDialog.show()}
           >
             <Plus className="h-3.5 w-3.5" />
@@ -187,6 +196,16 @@ export function UpstreamProxySettings({
 	                          {t("upstreamProxy.actions.test")}
                         </Button>
                       </div>
+                      {endpoint.plaintextCredentials ? (
+                        <div
+                          role="note"
+                          className="flex items-start gap-1 text-amber-600 dark:text-amber-500"
+                          data-testid={`proxy-endpoint-plaintext-warning-${endpoint.id}`}
+                        >
+                          <TriangleAlert className="mt-0.5 h-3 w-3 shrink-0" aria-hidden="true" />
+                          <span>{t("upstreamProxy.endpoints.plaintextCredentials", { scheme: endpoint.scheme })}</span>
+                        </div>
+                      ) : null}
                       {result ? (
                         <div
                           className={

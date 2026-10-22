@@ -1,4 +1,10 @@
+<<<<<<< 22625a07e
 import { useCallback, useEffect, useMemo, type CSSProperties } from "react";
+||||||| 84fde5a1e
+import { useCallback, useEffect, useMemo } from "react";
+=======
+import { useCallback, useEffect, useMemo, useState } from "react";
+>>>>>>> 72630bbfe
 import { Trans, useTranslation } from "react-i18next";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
@@ -27,7 +33,7 @@ import { SplitViewToggle } from "@/features/dashboard/components/split-view-togg
 import { StatsGrid } from "@/features/dashboard/components/stats-grid";
 import { UsageDonuts } from "@/features/dashboard/components/usage-donuts";
 import { WeeklyCreditsPaceCard } from "@/features/dashboard/components/weekly-credits-pace-card";
-import { useAuthStore } from "@/features/auth/hooks/use-auth";
+import { useAuthStore, usePermission } from "@/features/auth/hooks/use-auth";
 import { useDashboard, useDashboardProjections } from "@/features/dashboard/hooks/use-dashboard";
 import { useConversations } from "@/features/dashboard/hooks/use-conversations";
 import { useRequestLogs } from "@/features/dashboard/hooks/use-request-logs";
@@ -51,12 +57,18 @@ import {
 import { useThemeStore } from "@/hooks/use-theme";
 import { isDisabledCapabilityAccount } from "@/lib/product-capabilities";
 import { REQUEST_STATUS_LABELS } from "@/utils/constants";
+import { getErrorMessageOrNull } from "@/utils/errors";
 import { formatModelLabel, formatCurrency, formatSlug } from "@/utils/formatters";
 import { usePrivacyStore } from "@/hooks/use-privacy";
 
 const MODEL_OPTION_DELIMITER = ":::";
 /** Split-view accounts panel default: the viewport minus header, overview band, and status bar. */
 const SPLIT_VIEW_ACCOUNT_PANEL_HEIGHT = "max(24rem, calc(100vh - 16rem))";
+
+type RetainedDashboardLoadError = {
+  timeframe: OverviewTimeframe;
+  message: string;
+};
 
 export function DashboardPage() {
   const { t, i18n } = useTranslation();
@@ -76,14 +88,24 @@ export function DashboardPage() {
   const accountTypeVisibility = useDashboardPreferencesStore((s) => s.accountTypeVisibility);
   const setAccountTypeVisibility = useDashboardPreferencesStore((s) => s.setAccountTypeVisibility);
   const setAccountListSort = useDashboardPreferencesStore((s) => s.setAccountListSort);
+<<<<<<< 22625a07e
   const accountPanelHeight = useDashboardPreferencesStore((s) => s.accountPanelHeight);
   const setAccountPanelHeight = useDashboardPreferencesStore((s) => s.setAccountPanelHeight);
   const splitViewEnabled = useDashboardPreferencesStore((s) => s.splitViewEnabled);
   const setSplitViewEnabled = useDashboardPreferencesStore((s) => s.setSplitViewEnabled);
   const canWrite = useAuthStore((state) => state.canWrite);
+||||||| 84fde5a1e
+  const canWrite = useAuthStore((state) => state.canWrite);
+=======
+  // Each surface follows the permission its backend route demands, not the
+  // coarse `write` alias: conversations and archives need `conversations:read`,
+  // account actions `accounts:write`, the API-key filter `api_keys:read`.
+  const canWriteAccounts = usePermission("accounts:write");
+  const canReadApiKeys = usePermission("api_keys:read");
+>>>>>>> 72630bbfe
   const initialized = useAuthStore((state) => state.initialized);
-  const role = useAuthStore((state) => state.role);
-  const isAdmin = initialized && role === "admin";
+  const hasConversationsRead = usePermission("conversations:read");
+  const canReadConversations = initialized && hasConversationsRead;
   const overviewTimeframe = useMemo(
     () => parseOverviewTimeframe(searchParams.get("overviewTimeframe")),
     [searchParams],
@@ -96,27 +118,40 @@ export function DashboardPage() {
     () => parseDashboardView(searchParams.get("view")),
     [searchParams],
   );
-  const dashboardView = isAdmin ? requestedDashboardView : "request-logs";
+  const dashboardView = canReadConversations ? requestedDashboardView : "request-logs";
   useEffect(() => {
-    if (!initialized || isAdmin || searchParams.get("view") !== "conversations") {
+    if (!initialized || canReadConversations || searchParams.get("view") !== "conversations") {
       return;
     }
     const next = new URLSearchParams(searchParams);
     next.delete("view");
     setSearchParams(next, { replace: true });
-  }, [initialized, isAdmin, searchParams, setSearchParams]);
+  }, [initialized, canReadConversations, searchParams, setSearchParams]);
   // Conversation stats must follow the timeframe restored for the active
   // view, including when that state came from a bookmarked URL.
   const dashboardTimeframe =
     dashboardView === "conversations" ? conversationTimeframe : overviewTimeframe;
   const dashboardQuery = useDashboard(dashboardTimeframe);
+  const [retainedDashboardLoadError, setRetainedDashboardLoadError] =
+    useState<RetainedDashboardLoadError | null>(null);
+  const [overviewRetryTimeframe, setOverviewRetryTimeframe] =
+    useState<OverviewTimeframe | null>(null);
   const projectionsQuery = useDashboardProjections(Boolean(dashboardQuery.data));
   const conversationsState = useConversations({
-    enabled: isAdmin && dashboardView === "conversations",
+    enabled: canReadConversations && dashboardView === "conversations",
   });
   const { conversationsQuery } = conversationsState;
+<<<<<<< 22625a07e
   const { filters, logsQuery, optionsQuery, updateFilters } = useRequestLogs({
+||||||| 84fde5a1e
+  const { filters, emptyStateFiltersApplied, logsQuery, optionsQuery, updateFilters } = useRequestLogs({
+=======
+  // Read-only sessions never see the API-key filter control, so they must not
+  // query with one either (URL-carried `apiKeyId` is dropped).
+  const { filters, emptyStateFiltersApplied, logsQuery, optionsQuery, updateFilters } = useRequestLogs({
+>>>>>>> 72630bbfe
     enabled: dashboardView === "request-logs",
+    allowApiKeyFilters: canReadApiKeys,
   });
   const { pauseMutation, resumeMutation, limitWarmupMutation } = useAccountMutations();
   type ResetCreditDialogTarget = { accountId: string; availableResetCredits: number };
@@ -153,7 +188,7 @@ export function DashboardPage() {
 
   const handleDashboardViewChange = useCallback(
     (nextView: "request-logs" | "conversations") => {
-      if (nextView === "conversations" && !isAdmin) {
+      if (nextView === "conversations" && !canReadConversations) {
         return;
       }
       const next = new URLSearchParams(searchParams);
@@ -164,7 +199,7 @@ export function DashboardPage() {
       }
       setSearchParams(next);
     },
-    [isAdmin, searchParams, setSearchParams],
+    [canReadConversations, searchParams, setSearchParams],
   );
 
   const handleAccountAction = useCallback(
@@ -177,7 +212,7 @@ export function DashboardPage() {
           void pauseMutation.mutateAsync(account.accountId);
           break;
         case "resume":
-          if (canWrite) {
+          if (canWriteAccounts) {
             void resumeMutation.mutateAsync(account.accountId);
           }
           break;
@@ -185,7 +220,7 @@ export function DashboardPage() {
           navigate(`/accounts?selected=${account.accountId}`);
           break;
         case "warmup-toggle":
-          if (canWrite) {
+          if (canWriteAccounts) {
             void limitWarmupMutation.mutateAsync({
               accountId: account.accountId,
               enabled: !account.limitWarmupEnabled,
@@ -200,7 +235,13 @@ export function DashboardPage() {
           break;
       }
     },
+<<<<<<< 22625a07e
     [canWrite, limitWarmupMutation, navigate, pauseMutation, resetCreditDialog, resumeMutation],
+||||||| 84fde5a1e
+    [canWrite, limitWarmupMutation, navigate, resetCreditDialog, resumeMutation],
+=======
+    [canWriteAccounts, limitWarmupMutation, navigate, resetCreditDialog, resumeMutation],
+>>>>>>> 72630bbfe
   );
 
   const handleConversationClick = useCallback(
@@ -374,8 +415,32 @@ export function DashboardPage() {
     [optionsQuery.data?.statuses, t],
   );
 
+  const dashboardLoadError = getErrorMessageOrNull(dashboardQuery.error);
+  if (
+    retainedDashboardLoadError !== null &&
+    (overview || retainedDashboardLoadError.timeframe !== dashboardTimeframe)
+  ) {
+    setRetainedDashboardLoadError(null);
+  } else if (
+    !overview &&
+    dashboardLoadError !== null &&
+    (retainedDashboardLoadError === null ||
+      retainedDashboardLoadError.message !== dashboardLoadError)
+  ) {
+    setRetainedDashboardLoadError({
+      timeframe: dashboardTimeframe,
+      message: dashboardLoadError,
+    });
+  }
+  const displayedDashboardLoadError =
+    dashboardLoadError ??
+    (retainedDashboardLoadError?.timeframe === dashboardTimeframe
+      ? retainedDashboardLoadError.message
+      : null);
+  const overviewRetryBusy =
+    dashboardQuery.isFetching || overviewRetryTimeframe === dashboardTimeframe;
   const errorMessage =
-    (dashboardQuery.error instanceof Error && dashboardQuery.error.message) ||
+    (overview ? dashboardLoadError : null) ||
     (dashboardView === "request-logs" && optionsQuery.error instanceof Error && optionsQuery.error.message) ||
     null;
 
@@ -577,8 +642,11 @@ export function DashboardPage() {
 
       {errorMessage ? <AlertMessage variant="error">{errorMessage}</AlertMessage> : null}
 
-      {!view ? (
+      {(dashboardQuery.isPending || dashboardQuery.isFetching) &&
+      !view &&
+      displayedDashboardLoadError === null ? (
         <DashboardSkeleton />
+<<<<<<< 22625a07e
       ) : splitViewEnabled ? (
         <div className="space-y-8" data-testid="dashboard-split-view">
           {/* Overview band: KPIs and usage share one row once the screen is wide enough. */}
@@ -605,13 +673,413 @@ export function DashboardPage() {
               {dashboardLayout.requestLogs ? requestsSection : null}
             </div>
           ) : null}
+||||||| 84fde5a1e
+=======
+      ) : !view ? (
+        <div className="space-y-3 rounded-xl border bg-card p-4">
+          <div role="alert">
+            <AlertMessage variant="error">{displayedDashboardLoadError ?? "Request failed"}</AlertMessage>
+          </div>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            aria-busy={overviewRetryBusy}
+            disabled={overviewRetryBusy}
+            onClick={() => {
+              const retryTimeframe = dashboardTimeframe;
+              setRetainedDashboardLoadError({
+                timeframe: retryTimeframe,
+                message: displayedDashboardLoadError ?? "Request failed",
+              });
+              setOverviewRetryTimeframe(retryTimeframe);
+              void dashboardQuery.refetch().finally(() => {
+                setOverviewRetryTimeframe((current) =>
+                  current === retryTimeframe ? null : current,
+                );
+              });
+            }}
+          >
+            {t("common.actions.retry")}
+          </Button>
+>>>>>>> 72630bbfe
         </div>
       ) : (
         <>
           <StatsGrid stats={view.stats} />
+<<<<<<< 22625a07e
           {dashboardLayout.usage ? usageBlock : null}
           {dashboardLayout.accounts ? accountsSection : null}
           {dashboardLayout.requestLogs ? requestsSection : null}
+||||||| 84fde5a1e
+
+          {view.weeklyCreditPace ? (
+            <div className="grid gap-4 xl:grid-cols-[minmax(0,2fr)_minmax(18rem,1fr)]">
+              <UsageDonuts
+                primaryItems={view.primaryUsageItems}
+                secondaryItems={view.secondaryUsageItems}
+                primaryTotal={overview?.summary.primaryWindow.capacityCredits ?? 0}
+                secondaryTotal={overview?.summary.secondaryWindow?.capacityCredits ?? 0}
+                primaryCenterValue={view.primaryTotal}
+                secondaryCenterValue={view.secondaryTotal}
+                safeLinePrimary={view.safeLinePrimary}
+                safeLineSecondary={view.safeLineSecondary}
+              />
+              <WeeklyCreditsPaceCard pace={view.weeklyCreditPace} />
+            </div>
+          ) : (
+            <UsageDonuts
+              primaryItems={view.primaryUsageItems}
+              secondaryItems={view.secondaryUsageItems}
+              primaryTotal={overview?.summary.primaryWindow.capacityCredits ?? 0}
+              secondaryTotal={overview?.summary.secondaryWindow?.capacityCredits ?? 0}
+              primaryCenterValue={view.primaryTotal}
+              secondaryCenterValue={view.secondaryTotal}
+              safeLinePrimary={view.safeLinePrimary}
+              safeLineSecondary={view.safeLineSecondary}
+            />
+          )}
+
+          <section className="space-y-4">
+            <div className="flex flex-wrap items-center gap-3">
+              <div className="flex min-w-0 items-center gap-3">
+                <h2 className="text-[13px] font-medium uppercase tracking-wider text-muted-foreground">{t("accounts.page.title")}</h2>
+                <AccountSummaryLine accounts={overview?.accounts ?? []} />
+              </div>
+              <div className="h-px min-w-8 flex-1 bg-border" />
+              <AccountViewModeToggle value={accountViewMode} onChange={setAccountViewMode} />
+            </div>
+            {accountViewMode === "list" ? (
+              <AccountList
+                accounts={overview?.accounts ?? []}
+                readOnly={!canWrite}
+                sort={accountListSort}
+                onSortChange={setAccountListSort}
+                onAction={handleAccountAction}
+              />
+            ) : (
+              <AccountCards accounts={overview?.accounts ?? []} readOnly={!canWrite} onAction={handleAccountAction} />
+            )}
+          </section>
+
+          <section className="space-y-4">
+            <div className="flex flex-wrap items-center gap-3">
+              <DashboardViewSelector
+                value={dashboardView}
+                onChange={handleDashboardViewChange}
+                showConversations={isAdmin}
+              />
+              <div className="h-px min-w-8 flex-1 bg-border" />
+              {dashboardView === "request-logs" ? (
+                <>
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button type="button" variant="outline" size="sm">
+                        <Columns3 className="mr-2 h-4 w-4" />
+                        {t("dashboard.requests.columnLayout.columns", {
+                          count: visibleColumns.length,
+                        })}
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end" className="w-52">
+                      <DropdownMenuLabel>
+                        {t("dashboard.requests.columnLayout.visibleColumns")}
+                      </DropdownMenuLabel>
+                      <DropdownMenuSeparator />
+                      {REQUEST_LOG_COLUMN_OPTIONS.map((column) => {
+                        const isVisible = visibleColumns.includes(column.id);
+                        return (
+                          <DropdownMenuCheckboxItem
+                            key={column.id}
+                            checked={isVisible}
+                            disabled={isVisible && visibleColumns.length === 1}
+                            onCheckedChange={() => toggleColumn(column.id)}
+                            onSelect={(event) => event.preventDefault()}
+                          >
+                            {t(column.translationKey)}
+                          </DropdownMenuCheckboxItem>
+                        );
+                      })}
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    aria-label={t("dashboard.requests.columnLayout.restoreDefault")}
+                    title={t("dashboard.requests.columnLayout.restoreDefault")}
+                    onClick={restoreDefaultLayout}
+                  >
+                    <RotateCcw className="h-4 w-4" />
+                  </Button>
+                </>
+              ) : null}
+            </div>
+            {isAdmin && dashboardView === "conversations" ? <ConversationsView state={conversationsState} accounts={overview?.accounts ?? []} /> : logsQuery.isPending && !logPage ? (
+              <div className="rounded-xl border bg-card py-8">
+                <SpinnerBlock />
+              </div>
+            ) : logsQuery.error ? (
+              <div className="space-y-3 rounded-xl border bg-card p-4">
+                <div role="alert">
+                  <AlertMessage variant="error">{logsQuery.error.message}</AlertMessage>
+                </div>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    void logsQuery.refetch();
+                  }}
+                  disabled={logsQuery.isFetching}
+                >
+                  {t("common.actions.retry")}
+                </Button>
+              </div>
+            ) : logPage ? (
+              <>
+            <RequestFilters
+              filters={filters}
+              accountOptions={accountOptions}
+              apiKeyOptions={apiKeyOptions}
+              modelOptions={modelOptions}
+              statusOptions={statusOptions}
+              onSearchChange={(search) => updateFilters({ search, offset: 0 })}
+              onTimeframeChange={(timeframe) => updateFilters({ timeframe, offset: 0 })}
+              onAccountChange={(accountIds) => updateFilters({ accountIds, offset: 0 })}
+              onApiKeyChange={(apiKeyIds) => updateFilters({ apiKeyIds, offset: 0 })}
+              onModelChange={(modelOptionsSelected) =>
+                updateFilters({ modelOptions: modelOptionsSelected, offset: 0 })
+              }
+              onStatusChange={(statuses) => updateFilters({ statuses, offset: 0 })}
+              onConversationDismiss={handleConversationDismiss}
+              onReset={() =>
+                updateFilters({
+                  search: "",
+                  timeframe: "all",
+                  accountIds: [],
+                  apiKeyIds: [],
+                  modelOptions: [],
+                  statuses: [],
+                  conversationId: null,
+                  offset: 0,
+                })
+              }
+            />
+            {conversationSummary ? (
+              <div className="rounded-xl border bg-card p-4">
+                <p className="text-sm text-muted-foreground">{conversationSummary}</p>
+              </div>
+            ) : null}
+            <div className="transition-opacity duration-200">
+              <RecentRequestsTable
+                requests={view.requestLogs}
+                accounts={overview?.accounts ?? []}
+                total={logPage?.total ?? 0}
+                visibleColumns={visibleColumns}
+                columnWidths={columnWidths}
+                onColumnWidthChange={setColumnWidth}
+                limit={filters.limit}
+                offset={filters.offset}
+                hasMore={logPage?.hasMore ?? false}
+                filtersApplied={emptyStateFiltersApplied}
+                onLimitChange={(limit) => updateFilters({ limit, offset: 0 })}
+                onOffsetChange={(offset) => updateFilters({ offset })}
+                onConversationClick={handleConversationClick}
+              />
+            </div>
+              </>
+            ) : null}
+          </section>
+=======
+
+          {view.weeklyCreditPace ? (
+            <div className="grid gap-4 xl:grid-cols-[minmax(0,2fr)_minmax(18rem,1fr)]">
+              <UsageDonuts
+                primaryItems={view.primaryUsageItems}
+                secondaryItems={view.secondaryUsageItems}
+                primaryTotal={overview?.summary.primaryWindow.capacityCredits ?? 0}
+                secondaryTotal={overview?.summary.secondaryWindow?.capacityCredits ?? 0}
+                primaryCenterValue={view.primaryTotal}
+                secondaryCenterValue={view.secondaryTotal}
+                safeLinePrimary={view.safeLinePrimary}
+                safeLineSecondary={view.safeLineSecondary}
+              />
+              <WeeklyCreditsPaceCard pace={view.weeklyCreditPace} />
+            </div>
+          ) : (
+            <UsageDonuts
+              primaryItems={view.primaryUsageItems}
+              secondaryItems={view.secondaryUsageItems}
+              primaryTotal={overview?.summary.primaryWindow.capacityCredits ?? 0}
+              secondaryTotal={overview?.summary.secondaryWindow?.capacityCredits ?? 0}
+              primaryCenterValue={view.primaryTotal}
+              secondaryCenterValue={view.secondaryTotal}
+              safeLinePrimary={view.safeLinePrimary}
+              safeLineSecondary={view.safeLineSecondary}
+            />
+          )}
+
+          <section className="space-y-4">
+            <div className="flex flex-wrap items-center gap-3">
+              <div className="flex min-w-0 flex-wrap items-center gap-3">
+                <h2 className="text-[13px] font-medium uppercase tracking-wider text-muted-foreground">{t("accounts.page.title")}</h2>
+                <AccountSummaryLine accounts={overview?.accounts ?? []} />
+              </div>
+              <div className="h-px min-w-8 flex-1 bg-border" />
+              <AccountViewModeToggle value={accountViewMode} onChange={setAccountViewMode} />
+            </div>
+            {accountViewMode === "list" ? (
+              <AccountList
+                accounts={overview?.accounts ?? []}
+                readOnly={!canWriteAccounts}
+                sort={accountListSort}
+                onSortChange={setAccountListSort}
+                onAction={handleAccountAction}
+              />
+            ) : (
+              <AccountCards accounts={overview?.accounts ?? []} readOnly={!canWriteAccounts} onAction={handleAccountAction} />
+            )}
+          </section>
+
+          <section className="space-y-4">
+            <div className="flex flex-wrap items-center gap-3">
+              <DashboardViewSelector
+                value={dashboardView}
+                onChange={handleDashboardViewChange}
+                showConversations={canReadConversations}
+              />
+              <div className="h-px min-w-8 flex-1 bg-border" />
+              {dashboardView === "request-logs" ? (
+                <>
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button type="button" variant="outline" size="sm">
+                        <Columns3 className="mr-2 h-4 w-4" />
+                        {t("dashboard.requests.columnLayout.columns", {
+                          count: visibleColumns.length,
+                        })}
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end" className="w-52">
+                      <DropdownMenuLabel>
+                        {t("dashboard.requests.columnLayout.visibleColumns")}
+                      </DropdownMenuLabel>
+                      <DropdownMenuSeparator />
+                      {REQUEST_LOG_COLUMN_OPTIONS.map((column) => {
+                        const isVisible = visibleColumns.includes(column.id);
+                        return (
+                          <DropdownMenuCheckboxItem
+                            key={column.id}
+                            checked={isVisible}
+                            disabled={isVisible && visibleColumns.length === 1}
+                            onCheckedChange={() => toggleColumn(column.id)}
+                            onSelect={(event) => event.preventDefault()}
+                          >
+                            {t(column.translationKey)}
+                          </DropdownMenuCheckboxItem>
+                        );
+                      })}
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    aria-label={t("dashboard.requests.columnLayout.restoreDefault")}
+                    title={t("dashboard.requests.columnLayout.restoreDefault")}
+                    onClick={restoreDefaultLayout}
+                  >
+                    <RotateCcw className="h-4 w-4" />
+                  </Button>
+                </>
+              ) : null}
+            </div>
+            {canReadConversations && dashboardView === "conversations" ? (
+              <ConversationsView state={conversationsState} accounts={overview?.accounts ?? []} />
+            ) : (
+              <>
+                {logsQuery.error ? (
+                  <div className="space-y-3 rounded-xl border bg-card p-4">
+                    <div role="alert">
+                      <AlertMessage variant="error">{logsQuery.error.message}</AlertMessage>
+                    </div>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() => {
+                        void logsQuery.refetch();
+                      }}
+                      disabled={logsQuery.isFetching}
+                    >
+                      {t("common.actions.retry")}
+                    </Button>
+                  </div>
+                ) : null}
+                {logsQuery.isPending && !logPage ? (
+                  <div className="rounded-xl border bg-card py-8">
+                    <SpinnerBlock />
+                  </div>
+                ) : logPage ? (
+                  <>
+                    <RequestFilters
+                      filters={filters}
+                      accountOptions={accountOptions}
+                      apiKeyOptions={apiKeyOptions}
+                      modelOptions={modelOptions}
+                      statusOptions={statusOptions}
+                      showApiKeyFilter={canReadApiKeys}
+                      onSearchChange={(search) => updateFilters({ search, offset: 0 })}
+                      onTimeframeChange={(timeframe) => updateFilters({ timeframe, offset: 0 })}
+                      onAccountChange={(accountIds) => updateFilters({ accountIds, offset: 0 })}
+                      onApiKeyChange={(apiKeyIds) => updateFilters({ apiKeyIds, offset: 0 })}
+                      onModelChange={(modelOptionsSelected) =>
+                        updateFilters({ modelOptions: modelOptionsSelected, offset: 0 })
+                      }
+                      onStatusChange={(statuses) => updateFilters({ statuses, offset: 0 })}
+                      onConversationDismiss={handleConversationDismiss}
+                      onReset={() =>
+                        updateFilters({
+                          search: "",
+                          timeframe: "all",
+                          accountIds: [],
+                          apiKeyIds: [],
+                          modelOptions: [],
+                          statuses: [],
+                          conversationId: null,
+                          offset: 0,
+                        })
+                      }
+                    />
+                    {conversationSummary ? (
+                      <div className="rounded-xl border bg-card p-4">
+                        <p className="text-sm text-muted-foreground">{conversationSummary}</p>
+                      </div>
+                    ) : null}
+                    <div className="transition-opacity duration-200">
+                      <RecentRequestsTable
+                        requests={view.requestLogs}
+                        accounts={overview?.accounts ?? []}
+                        total={logPage.total}
+                        visibleColumns={visibleColumns}
+                        columnWidths={columnWidths}
+                        onColumnWidthChange={setColumnWidth}
+                        limit={filters.limit}
+                        offset={filters.offset}
+                        hasMore={logPage.hasMore}
+                        filtersApplied={emptyStateFiltersApplied}
+                        onLimitChange={(limit) => updateFilters({ limit, offset: 0 })}
+                        onOffsetChange={(offset) => updateFilters({ offset })}
+                        onConversationClick={handleConversationClick}
+                      />
+                    </div>
+                  </>
+                ) : null}
+              </>
+            )}
+          </section>
+>>>>>>> 72630bbfe
         </>
       )}
 

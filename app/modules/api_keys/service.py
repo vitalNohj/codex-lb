@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import json
 import secrets
 import time
@@ -16,6 +15,10 @@ from sqlalchemy.exc import IntegrityError, OperationalError
 
 from app.core.auth.api_key_cache import get_api_key_cache
 from app.core.cache.invalidation import NAMESPACE_API_KEY, get_cache_invalidation_poller
+from app.core.clients.thread_cache_identity import (
+    THREAD_CACHE_IDENTITY_MODES,
+    normalize_thread_cache_identity_mode,
+)
 from app.core.usage.pricing import (
     UsageTokens,
     calculate_cost_from_usage,
@@ -25,6 +28,7 @@ from app.core.usage.types import UsageWindowRow
 from app.core.utils.time import to_utc_naive, utcnow
 from app.db.models import Account, AccountStatus, ApiKey, ApiKeyLimit, LimitType, LimitWindow, ModelSource, UsageHistory
 from app.db.session import sqlite_writer_section
+from app.db.sqlite_lock_retry import should_retry_after_sqlite_lock
 from app.modules.api_keys.last_used_coalescer import ApiKeyLastUsedCoalescer, get_api_key_last_used_coalescer
 from app.modules.api_keys.limit_windows import (
     advance_limit_reset,
@@ -100,8 +104,13 @@ class ApiKeysRepositoryProtocol(Protocol):
         enforced_service_tier: str | None | _Unset = ...,
         traffic_class: str | _Unset = ...,
         transport_policy_override: str | None | _Unset = ...,
+<<<<<<< 22625a07e
         rate_limit_as_payment_required: bool | _Unset = ...,
         is_shared: bool | _Unset = ...,
+||||||| 84fde5a1e
+=======
+        thread_cache_identity_override: str | None | _Unset = ...,
+>>>>>>> 72630bbfe
         usage_sections: str | _Unset = ...,
         account_assignment_scope_enabled: bool | _Unset = ...,
         source_assignment_scope_enabled: bool | _Unset = ...,
@@ -123,7 +132,12 @@ class ApiKeysRepositoryProtocol(Protocol):
     async def replace_limits(self, key_id: str, limits: list[ApiKeyLimit]) -> list[ApiKeyLimit]: ...
 
     async def upsert_limits(
-        self, key_id: str, limits: list[ApiKeyLimit], *, commit: bool = True
+        self,
+        key_id: str,
+        limits: list[ApiKeyLimit],
+        *,
+        commit: bool = True,
+        preserve_matched_usage: bool = False,
     ) -> list[ApiKeyLimit]: ...
     async def replace_account_assignments(
         self, key_id: str, account_ids: list[str], *, commit: bool = True
@@ -325,8 +339,13 @@ class ApiKeyCreateData:
     enforced_service_tier: str | None = None
     traffic_class: str = TRAFFIC_CLASS_FOREGROUND
     transport_policy_override: str | None = None
+<<<<<<< 22625a07e
     rate_limit_as_payment_required: bool = False
     is_shared: bool = False
+||||||| 84fde5a1e
+=======
+    thread_cache_identity_override: str | None = None
+>>>>>>> 72630bbfe
     usage_sections: str = "upstream_limits,account_pool_usage"
     expires_at: datetime | None = None
     assigned_account_ids: list[str] | None = None
@@ -354,10 +373,16 @@ class ApiKeyUpdateData:
     traffic_class_set: bool = False
     transport_policy_override: str | None = None
     transport_policy_override_set: bool = False
+<<<<<<< 22625a07e
     rate_limit_as_payment_required: bool | None = None
     rate_limit_as_payment_required_set: bool = False
     is_shared: bool | None = None
     is_shared_set: bool = False
+||||||| 84fde5a1e
+=======
+    thread_cache_identity_override: str | None = None
+    thread_cache_identity_override_set: bool = False
+>>>>>>> 72630bbfe
     usage_sections: str | None = None
     usage_sections_set: bool = False
     expires_at: datetime | None = None
@@ -390,8 +415,13 @@ class ApiKeyData:
     apply_to_codex_model: bool = False
     traffic_class: str = TRAFFIC_CLASS_FOREGROUND
     transport_policy_override: str | None = None
+<<<<<<< 22625a07e
     rate_limit_as_payment_required: bool = False
     is_shared: bool = False
+||||||| 84fde5a1e
+=======
+    thread_cache_identity_override: str | None = None
+>>>>>>> 72630bbfe
     usage_sections: str = "upstream_limits,account_pool_usage"
     limits: list[LimitRuleData] = field(default_factory=list)
     usage_summary: "ApiKeyUsageSummaryData | None" = None
@@ -444,8 +474,7 @@ def _compute_pooled_credits(
     account_map = {
         a.id: a
         for a in all_accounts
-        if a.id in requested_account_ids
-        and a.status not in (AccountStatus.REAUTH_REQUIRED, AccountStatus.DEACTIVATED, AccountStatus.PAUSED)
+        if a.id in requested_account_ids and a.status not in (AccountStatus.DEACTIVATED, AccountStatus.PAUSED)
     }
     account_ids = set(account_map)
 
@@ -535,6 +564,9 @@ class ApiKeysService:
         enforced_service_tier = _normalize_service_tier(payload.enforced_service_tier)
         traffic_class = _normalize_traffic_class(payload.traffic_class)
         transport_policy_override = _normalize_transport_policy_override(payload.transport_policy_override)
+        thread_cache_identity_override = _normalize_thread_cache_identity_override(
+            payload.thread_cache_identity_override
+        )
         usage_sections = _normalize_usage_sections(payload.usage_sections)
         _validate_model_enforcement(enforced_model=enforced_model, allowed_models=normalized_allowed_models)
         _validate_reasoning_effort_policy(
@@ -556,8 +588,13 @@ class ApiKeysService:
             source_assignment_scope_enabled=bool(assigned_source_ids),
             traffic_class=traffic_class,
             transport_policy_override=transport_policy_override,
+<<<<<<< 22625a07e
             rate_limit_as_payment_required=bool(payload.rate_limit_as_payment_required),
             is_shared=bool(payload.is_shared),
+||||||| 84fde5a1e
+=======
+            thread_cache_identity_override=thread_cache_identity_override,
+>>>>>>> 72630bbfe
             usage_sections=usage_sections,
             expires_at=expires_at,
             is_active=True,
@@ -640,7 +677,13 @@ class ApiKeysService:
             for row in rows
         ]
 
-    async def update_key(self, key_id: str, payload: ApiKeyUpdateData) -> ApiKeyData:
+    async def update_key(
+        self,
+        key_id: str,
+        payload: ApiKeyUpdateData,
+        *,
+        _retry_attempt: int = 0,
+    ) -> ApiKeyData:
         expires_at = _normalize_expires_at(payload.expires_at) if payload.expires_at_set else None
         existing = await self._repository.get_by_id(key_id)
         if existing is None:
@@ -698,12 +741,21 @@ class ApiKeysService:
         transport_policy_override_update: str | None | _Unset = _UNSET
         if payload.transport_policy_override_set:
             transport_policy_override_update = _normalize_transport_policy_override(payload.transport_policy_override)
+<<<<<<< 22625a07e
         rate_limit_as_payment_required_update: bool | _Unset = _UNSET
         if payload.rate_limit_as_payment_required_set and payload.rate_limit_as_payment_required is not None:
             rate_limit_as_payment_required_update = payload.rate_limit_as_payment_required
         is_shared_update: bool | _Unset = _UNSET
         if payload.is_shared_set and payload.is_shared is not None:
             is_shared_update = payload.is_shared
+||||||| 84fde5a1e
+=======
+        thread_cache_identity_override_update: str | None | _Unset = _UNSET
+        if payload.thread_cache_identity_override_set:
+            thread_cache_identity_override_update = _normalize_thread_cache_identity_override(
+                payload.thread_cache_identity_override
+            )
+>>>>>>> 72630bbfe
         usage_sections: str | _Unset = _UNSET
         if payload.usage_sections_set:
             usage_sections = _normalize_usage_sections(payload.usage_sections)
@@ -773,8 +825,13 @@ class ApiKeysService:
                 enforced_service_tier=(enforced_service_tier if payload.enforced_service_tier_set else _UNSET),
                 traffic_class=traffic_class_update,
                 transport_policy_override=transport_policy_override_update,
+<<<<<<< 22625a07e
                 rate_limit_as_payment_required=rate_limit_as_payment_required_update,
                 is_shared=is_shared_update,
+||||||| 84fde5a1e
+=======
+                thread_cache_identity_override=thread_cache_identity_override_update,
+>>>>>>> 72630bbfe
                 usage_sections=usage_sections,
                 account_assignment_scope_enabled=account_assignment_scope_enabled,
                 source_assignment_scope_enabled=source_assignment_scope_enabled,
@@ -793,11 +850,24 @@ class ApiKeysService:
                 await self._repository.replace_source_assignments(key_id, assigned_source_ids, commit=False)
 
             if limit_rows is not None:
-                await self._repository.upsert_limits(key_id, limit_rows, commit=False)
+                await self._repository.upsert_limits(
+                    key_id,
+                    limit_rows,
+                    commit=False,
+                    preserve_matched_usage=not payload.reset_usage,
+                )
 
             await self._repository.commit()
         except Exception as exc:
             await self._repository.rollback()
+            if await should_retry_after_sqlite_lock(
+                exc,
+                what="update_key",
+                attempt=_retry_attempt,
+                max_attempts=_SQLITE_BUSY_RETRY_ATTEMPTS,
+                base_delay_seconds=_SQLITE_BUSY_RETRY_BASE_SECONDS,
+            ):
+                return await self.update_key(key_id, payload, _retry_attempt=_retry_attempt + 1)
             if isinstance(exc, IntegrityError) and _is_reasoning_policy_constraint_error(exc):
                 raise ApiKeyValidationError(
                     "enforced_reasoning_effort and allowed_reasoning_efforts cannot be configured together"
@@ -817,8 +887,13 @@ class ApiKeysService:
             or payload.enforced_service_tier_set
             or payload.traffic_class_set
             or payload.transport_policy_override_set
+<<<<<<< 22625a07e
             or payload.rate_limit_as_payment_required_set
             or payload.is_shared_set
+||||||| 84fde5a1e
+=======
+            or payload.thread_cache_identity_override_set
+>>>>>>> 72630bbfe
             or payload.usage_sections_set
             or payload.expires_at_set
             or payload.is_active_set
@@ -944,9 +1019,14 @@ class ApiKeysService:
                 )
             except OperationalError as exc:
                 await self._repository.rollback()
-                if not _is_sqlite_database_locked(exc) or attempt == _SQLITE_BUSY_RETRY_ATTEMPTS - 1:
+                if not await should_retry_after_sqlite_lock(
+                    exc,
+                    what="enforce_limits_for_request",
+                    attempt=attempt,
+                    max_attempts=_SQLITE_BUSY_RETRY_ATTEMPTS,
+                    base_delay_seconds=_SQLITE_BUSY_RETRY_BASE_SECONDS,
+                ):
                     raise
-                await asyncio.sleep(_SQLITE_BUSY_RETRY_BASE_SECONDS * (2**attempt))
 
         raise RuntimeError("unreachable")
 
@@ -1089,9 +1169,14 @@ class ApiKeysService:
                 return
             except OperationalError as exc:
                 await self._repository.rollback()
-                if not _is_sqlite_database_locked(exc) or attempt == _SQLITE_BUSY_RETRY_ATTEMPTS - 1:
+                if not await should_retry_after_sqlite_lock(
+                    exc,
+                    what="finalize_usage_reservation",
+                    attempt=attempt,
+                    max_attempts=_SQLITE_BUSY_RETRY_ATTEMPTS,
+                    base_delay_seconds=_SQLITE_BUSY_RETRY_BASE_SECONDS,
+                ):
                     raise
-                await asyncio.sleep(_SQLITE_BUSY_RETRY_BASE_SECONDS * (2**attempt))
 
         raise RuntimeError("unreachable")
 
@@ -1119,9 +1204,14 @@ class ApiKeysService:
                 return
             except OperationalError as exc:
                 await self._repository.rollback()
-                if not _is_sqlite_database_locked(exc) or attempt == _SQLITE_BUSY_RETRY_ATTEMPTS - 1:
+                if not await should_retry_after_sqlite_lock(
+                    exc,
+                    what="fail_usage_reservation",
+                    attempt=attempt,
+                    max_attempts=_SQLITE_BUSY_RETRY_ATTEMPTS,
+                    base_delay_seconds=_SQLITE_BUSY_RETRY_BASE_SECONDS,
+                ):
                     raise
-                await asyncio.sleep(_SQLITE_BUSY_RETRY_BASE_SECONDS * (2**attempt))
 
         raise RuntimeError("unreachable")
 
@@ -1215,9 +1305,14 @@ class ApiKeysService:
                     return touched
             except OperationalError as exc:
                 await self._repository.rollback()
-                if not _is_sqlite_database_locked(exc) or attempt == _SQLITE_BUSY_RETRY_ATTEMPTS - 1:
+                if not await should_retry_after_sqlite_lock(
+                    exc,
+                    what="touch_usage_reservation",
+                    attempt=attempt,
+                    max_attempts=_SQLITE_BUSY_RETRY_ATTEMPTS,
+                    base_delay_seconds=_SQLITE_BUSY_RETRY_BASE_SECONDS,
+                ):
                     raise
-                await asyncio.sleep(_SQLITE_BUSY_RETRY_BASE_SECONDS * (2**attempt))
 
         raise RuntimeError("unreachable")
 
@@ -1228,9 +1323,14 @@ class ApiKeysService:
                 return
             except OperationalError as exc:
                 await self._repository.rollback()
-                if not _is_sqlite_database_locked(exc) or attempt == _SQLITE_BUSY_RETRY_ATTEMPTS - 1:
+                if not await should_retry_after_sqlite_lock(
+                    exc,
+                    what="release_usage_reservation",
+                    attempt=attempt,
+                    max_attempts=_SQLITE_BUSY_RETRY_ATTEMPTS,
+                    base_delay_seconds=_SQLITE_BUSY_RETRY_BASE_SECONDS,
+                ):
                     raise
-                await asyncio.sleep(_SQLITE_BUSY_RETRY_BASE_SECONDS * (2**attempt))
 
         raise RuntimeError("unreachable")
 
@@ -1523,7 +1623,7 @@ def _get_usage_sections_with_default(row: ApiKey) -> str:
 
 
 def _generate_plain_key() -> str:
-    return f"sk-clb-{secrets.token_urlsafe(32)}"
+    return f"sk-clb-{secrets.token_hex(24)}"
 
 
 def _hash_key(plain_key: str) -> str:
@@ -1705,6 +1805,24 @@ def _normalize_traffic_class_lenient(value: str | None) -> str:
     if normalized in _SUPPORTED_TRAFFIC_CLASSES:
         return normalized
     return TRAFFIC_CLASS_FOREGROUND
+
+
+def _normalize_thread_cache_identity_override(value: str | None) -> str | None:
+    """Strict (write path): an unknown value is a 400, not a silent fallback."""
+    if value is None:
+        return None
+    normalized = normalize_thread_cache_identity_mode(value)
+    if normalized is not None:
+        return normalized
+    options = ", ".join(sorted(THREAD_CACHE_IDENTITY_MODES))
+    raise ApiKeyValidationError(
+        f"Unsupported thread cache identity override '{value.strip().lower()}'. Expected one of: {options}"
+    )
+
+
+def _normalize_thread_cache_identity_override_lenient(value: str | None) -> str | None:
+    """Read path: a stale or hand-edited value reads as "no override" rather than a 500."""
+    return normalize_thread_cache_identity_mode(value)
 
 
 def _normalize_transport_policy_override(value: str | None) -> str | None:
@@ -1956,8 +2074,13 @@ def _to_created_data(data: ApiKeyData, key: str) -> ApiKeyCreatedData:
         enforced_service_tier=data.enforced_service_tier,
         traffic_class=data.traffic_class,
         transport_policy_override=data.transport_policy_override,
+<<<<<<< 22625a07e
         rate_limit_as_payment_required=data.rate_limit_as_payment_required,
         is_shared=data.is_shared,
+||||||| 84fde5a1e
+=======
+        thread_cache_identity_override=data.thread_cache_identity_override,
+>>>>>>> 72630bbfe
         usage_sections=data.usage_sections,
         expires_at=data.expires_at,
         is_active=data.is_active,
@@ -1998,8 +2121,15 @@ def _to_api_key_data(
         transport_policy_override=_normalize_transport_policy_override_lenient(
             getattr(row, "transport_policy_override", None)
         ),
+<<<<<<< 22625a07e
         rate_limit_as_payment_required=bool(getattr(row, "rate_limit_as_payment_required", False)),
         is_shared=bool(getattr(row, "is_shared", False)),
+||||||| 84fde5a1e
+=======
+        thread_cache_identity_override=_normalize_thread_cache_identity_override_lenient(
+            getattr(row, "thread_cache_identity_override", None)
+        ),
+>>>>>>> 72630bbfe
         usage_sections=_get_usage_sections_with_default(row),
         expires_at=row.expires_at,
         is_active=row.is_active,
@@ -2190,15 +2320,6 @@ def _calculate_cost_microdollars(
     if cost_usd is None:
         return 0
     return int(cost_usd * 1_000_000)
-
-
-def _is_sqlite_database_locked(exc: OperationalError) -> bool:
-    message = str(exc).lower()
-    return (
-        "database is locked" in message
-        or "database table is locked" in message
-        or "database schema is locked" in message
-    )
 
 
 def _build_api_key_trends(

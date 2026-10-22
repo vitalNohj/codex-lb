@@ -80,6 +80,7 @@ def test_grafana_error_rate_aggregates_request_series_before_division() -> None:
     )
 
 
+<<<<<<< 22625a07e
 def test_grafana_overview_charts_cliproxy_route_outcomes() -> None:
     dashboard = json.loads((_CHART_DIR / "dashboards" / "codex-lb.json").read_text())
     panel = next(panel for panel in dashboard["panels"] if panel["title"] == "CLIProxyAPI Route Outcomes")
@@ -107,3 +108,47 @@ def test_claude_sticky_cache_miss_alert_needs_a_sustained_majority_of_misses() -
         " and sum by (namespace, job) ( increase(codex_lb_cliproxy_claude_sticky_cache_total[30m]) ) >= 10"
     )
     assert "api.anthropic.com" in prometheus_rule
+||||||| 84fde5a1e
+=======
+def test_grafana_latency_quantiles_aggregate_selected_bucket_series_by_le() -> None:
+    latency_queries = {
+        (dashboard_path.name, panel["title"], target["legendFormat"]): target["expr"]
+        for dashboard_path in (_CHART_DIR / "dashboards").glob("*.json")
+        for panel in json.loads(dashboard_path.read_text())["panels"]
+        for target in panel.get("targets", [])
+        if "histogram_quantile(" in target.get("expr", "")
+    }
+
+    assert latency_queries == {
+        ("codex-lb.json", "Request Duration (p50/p95/p99)", "p50"): (
+            "histogram_quantile(0.50, sum by (le) (rate("
+            'codex_lb_request_duration_seconds_bucket{namespace="$namespace",job=~"$job"}[5m])))'
+        ),
+        ("codex-lb.json", "Request Duration (p50/p95/p99)", "p95"): (
+            "histogram_quantile(0.95, sum by (le) (rate("
+            'codex_lb_request_duration_seconds_bucket{namespace="$namespace",job=~"$job"}[5m])))'
+        ),
+        ("codex-lb.json", "Request Duration (p50/p95/p99)", "p99"): (
+            "histogram_quantile(0.99, sum by (le) (rate("
+            'codex_lb_request_duration_seconds_bucket{namespace="$namespace",job=~"$job"}[5m])))'
+        ),
+        ("codex-lb.json", "Upstream Request Duration (p99)", "p99"): (
+            "histogram_quantile(0.99, sum by (le) (rate("
+            'codex_lb_upstream_request_duration_seconds_bucket{namespace="$namespace",job=~"$job"}[5m])))'
+        ),
+    }
+
+
+def test_high_latency_quantile_aggregates_bucket_series_by_scope_and_le() -> None:
+    prometheus_rule = (_CHART_DIR / "templates" / "prometheusrule.yaml").read_text()
+    match = re.search(
+        r"(?ms)^\s*- alert: CodexLBHighLatency\n\s+expr: \|\n(?P<expr>.*?)(?=^\s+for: 5m$)",
+        prometheus_rule,
+    )
+
+    assert match is not None
+    assert " ".join(match.group("expr").split()) == (
+        "histogram_quantile(0.99, sum by (namespace, job, le) ("
+        " rate(codex_lb_request_duration_seconds_bucket[5m]) ) ) > 10"
+    )
+>>>>>>> 72630bbfe

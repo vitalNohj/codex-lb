@@ -105,7 +105,11 @@ class RequestLogsService:
         reasoning_efforts: list[str] | None = None,
         status: list[str] | None = None,
         *,
+        cache_mode: str = "since",
+        timeframe: str | None = None,
         include_sensitive_metadata: bool,
+        include_account_identity: bool = True,
+        include_api_key_identity: bool = True,
     ) -> RequestLogsPage:
         status_filter = _map_status_filter(status)
         normalized_model_options = (
@@ -128,7 +132,11 @@ class RequestLogsService:
             include_error_other=status_filter.include_error_other,
             error_codes_in=status_filter.error_codes_in,
             error_codes_excluding=status_filter.error_codes_excluding,
+            cache_mode=cache_mode,
+            timeframe=timeframe,
             include_sensitive_metadata=include_sensitive_metadata,
+            include_account_identity=include_account_identity,
+            include_api_key_identity=include_api_key_identity,
         )
         logs = result.logs
         total = result.total
@@ -139,6 +147,7 @@ class RequestLogsService:
                 request_count=total,
                 aggregated_cost_usd=result.aggregated_cost_usd,
             )
+<<<<<<< 22625a07e
         api_key_ids = [log.api_key_id for log in logs if log.api_key_id]
         claude_sidecar_logs = [(log.request_id, log.requested_at) for log in logs if log.source == "claude_sidecar"]
         api_key_name_by_id = await self._repo.get_api_key_names_by_ids(api_key_ids)
@@ -169,6 +178,13 @@ class RequestLogsService:
             if (provider := external_priced_provider_for_log_source(log.source)) is not None
         }
         current_price_status_by_key = await self._repo.get_external_price_statuses(set(price_key_by_log_id.values()))
+||||||| 84fde5a1e
+        api_key_ids = [log.api_key_id for log in logs if log.api_key_id]
+        api_key_name_by_id = await self._repo.get_api_key_names_by_ids(api_key_ids)
+=======
+        api_key_ids = [log.api_key_id for log in logs if log.api_key_id] if include_api_key_identity else []
+        api_key_name_by_id = await self._repo.get_api_key_names_by_ids(api_key_ids) if api_key_ids else {}
+>>>>>>> 72630bbfe
         requests = [
             to_request_log_entry(
                 log,
@@ -186,6 +202,7 @@ class RequestLogsService:
                     else None
                 ),
                 include_sensitive_metadata=include_sensitive_metadata,
+                include_api_key_identity=include_api_key_identity,
             )
             for log in logs
         ]

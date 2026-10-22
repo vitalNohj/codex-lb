@@ -15,7 +15,13 @@ class _StreamingServiceProtocol(Protocol):
     _maybe_touch_api_key_reservation: Any
     _raise_for_unsupported_input_image_references: Any
     _release_unsettled_stream_api_key_usage: Any
+<<<<<<< 22625a07e
     _charge_abandoned_stream_api_key_usage: Any
+||||||| 84fde5a1e
+=======
+    _remaining_budget_seconds: Any
+    _remember_websocket_previous_response_owner: Any
+>>>>>>> 72630bbfe
     _resolve_file_account_for_responses: Any
     _resolve_compact_turn_state_owner: Any
     _resolve_upstream_route_for_account: Any

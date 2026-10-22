@@ -1,4 +1,10 @@
+<<<<<<< 22625a07e
 import { del, get, patch, post, put } from "@/lib/api-client";
+||||||| 84fde5a1e
+import { get, post, put } from "@/lib/api-client";
+=======
+import { del, get, post, put } from "@/lib/api-client";
+>>>>>>> 72630bbfe
 import {
   AccountProxyBindingRequestSchema,
   AccountProxyBindingSchema,
@@ -31,6 +37,7 @@ import {
   ClaudeSidecarStatusResponseSchema,
   ClaudeSidecarTestResponseSchema,
   DashboardSettingsSchema,
+<<<<<<< 22625a07e
   OllamaSidecarModelsResponseSchema,
   OllamaSidecarStatusResponseSchema,
   OllamaSidecarTestResponseSchema,
@@ -49,6 +56,11 @@ import {
   OrcaRouterSidecarModelsResponseSchema,
   OrcaRouterSidecarStatusResponseSchema,
   OrcaRouterSidecarTestResponseSchema,
+||||||| 84fde5a1e
+=======
+  ModelContextWindowOverrideUpsertRequestSchema,
+  ModelContextWindowOverridesSchema,
+>>>>>>> 72630bbfe
   SettingsUpdateRequestSchema,
   TelemetryConsentSchema,
   TelemetryConsentUpdateRequestSchema,
@@ -75,7 +87,12 @@ const OMNIROUTE_SIDECAR_PATH = "/api/omniroute-sidecar";
 const OLLAMA_SIDECAR_PATH = "/api/ollama-sidecar";
 const OPENCODE_GO_SIDECAR_PATH = "/api/opencode-go-sidecar";
 const TELEMETRY_PATH = `${SETTINGS_PATH}/telemetry`;
+<<<<<<< 22625a07e
 const ALIAS_POOLS_HEALTH_PATH = `${SETTINGS_PATH}/alias-pools/health`;
+||||||| 84fde5a1e
+=======
+const MODEL_CONTEXT_WINDOW_OVERRIDES_PATH = `${SETTINGS_PATH}/model-context-window-overrides`;
+>>>>>>> 72630bbfe
 
 export function getSettings() {
   return get(SETTINGS_PATH, DashboardSettingsSchema);
@@ -143,6 +160,7 @@ export function putAccountProxyBinding(accountId: string, payload: unknown) {
   });
 }
 
+<<<<<<< 22625a07e
 export function getCliproxyAccounts(provider?: string) {
   const path = provider ? `${CLIPROXY_ACCOUNTS_PATH}?provider=${encodeURIComponent(provider)}` : CLIPROXY_ACCOUNTS_PATH;
   return get(path, CliproxyAccountsResponseSchema);
@@ -376,4 +394,21 @@ export function testOpenCodeGoSidecarConnection() {
 
 export function listOpenCodeGoSidecarModels() {
   return get(`${OPENCODE_GO_SIDECAR_PATH}/models`, OpenCodeGoSidecarModelsResponseSchema);
+||||||| 84fde5a1e
+=======
+// M4 model catalogue: per-model context window overrides (one dashboard row per slug).
+export function getModelContextWindowOverrides() {
+  return get(MODEL_CONTEXT_WINDOW_OVERRIDES_PATH, ModelContextWindowOverridesSchema);
+}
+
+export function putModelContextWindowOverride(slug: string, payload: unknown) {
+  const validated = ModelContextWindowOverrideUpsertRequestSchema.parse(payload);
+  return put(`${MODEL_CONTEXT_WINDOW_OVERRIDES_PATH}/${encodeURIComponent(slug)}`, ModelContextWindowOverridesSchema, {
+    body: validated,
+  });
+}
+
+export function deleteModelContextWindowOverride(slug: string) {
+  return del(`${MODEL_CONTEXT_WINDOW_OVERRIDES_PATH}/${encodeURIComponent(slug)}`, ModelContextWindowOverridesSchema);
+>>>>>>> 72630bbfe
 }

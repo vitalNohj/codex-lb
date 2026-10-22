@@ -20,13 +20,11 @@ import {
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { InputOTP, InputOTPGroup, InputOTPSeparator, InputOTPSlot } from "@/components/ui/input-otp";
 import { Switch } from "@/components/ui/switch";
-import {
-  confirmTotpSetup,
-  disableTotp,
-  startTotpSetup,
-} from "@/features/auth/api";
+import { disableTotp } from "@/features/auth/api";
+import { TotpEnrollmentForm } from "@/features/auth/components/totp-enrollment-form";
 import { useAuthStore } from "@/features/auth/hooks/use-auth";
 import type { DashboardSettings, SettingsUpdateRequest } from "@/features/settings/schemas";
+import { ApiError } from "@/lib/api-client";
 import { getErrorMessage } from "@/utils/errors";
 import { SettingsRow, SettingsRowGroup, SettingsSection, SettingsSectionHeader } from "@/features/settings/components/settings-section";
 
@@ -42,68 +40,46 @@ type TotpDialog = "setup" | "disable" | null;
 export type TotpSettingsProps = {
   settings: DashboardSettings;
   disabled?: boolean;
+<<<<<<< 22625a07e
   onSave: (patch: Partial<SettingsUpdateRequest>) => Promise<DashboardSettings | void>;
+||||||| 84fde5a1e
+  onSave: (payload: SettingsUpdateRequest) => Promise<void>;
+=======
+  /** The "require on login" toggle is a security setting; without it only the personal controls render. */
+  canEditPolicy?: boolean;
+  onSave: (payload: SettingsUpdateRequest) => Promise<void>;
+>>>>>>> 72630bbfe
 };
 
-export function TotpSettings({ settings, disabled = false, onSave }: TotpSettingsProps) {
+export function TotpSettings({ settings, disabled = false, canEditPolicy = true, onSave }: TotpSettingsProps) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const refreshSession = useAuthStore((state) => state.refreshSession);
+  // Per account, so it comes from the session rather than the shared settings
+  // cache (which would show the previous account's state right after a sign-in).
+  const totpConfigured = useAuthStore((state) => state.totpConfigured);
 
   const [activeDialog, setActiveDialog] = useState<TotpDialog>(null);
-  const [setupSecret, setSetupSecret] = useState<string | null>(null);
-  const [setupQrDataUri, setSetupQrDataUri] = useState<string | null>(null);
-  const [prefetching, setPrefetching] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
-  const confirmForm = useForm<TotpCodeValues>({
-    resolver: zodResolver(totpCodeSchema),
-    defaultValues: { code: "" },
-  });
 
   const disableForm = useForm<TotpCodeValues>({
     resolver: zodResolver(totpCodeSchema),
     defaultValues: { code: "" },
   });
 
-  const lock = disabled || prefetching || confirmForm.formState.isSubmitting || disableForm.formState.isSubmitting;
+  const lock = disabled || disableForm.formState.isSubmitting;
 
   const closeDialog = () => {
     setActiveDialog(null);
     setError(null);
-    setSetupSecret(null);
-    setSetupQrDataUri(null);
-    confirmForm.reset();
     disableForm.reset();
   };
 
-  const handleOpenSetup = async () => {
-    setActiveDialog("setup");
-    setPrefetching(true);
-    setError(null);
-    try {
-      const response = await startTotpSetup();
-      setSetupSecret(response.secret);
-      setSetupQrDataUri(response.qrSvgDataUri);
-    } catch (caught) {
-      setError(getErrorMessage(caught));
-    } finally {
-      setPrefetching(false);
-    }
-  };
-
-  const handleConfirmSetup = async (values: TotpCodeValues) => {
-    if (!setupSecret) return;
-    setError(null);
-    try {
-      await confirmTotpSetup({ secret: setupSecret, code: values.code });
-      await refreshSession();
-      void queryClient.invalidateQueries({ queryKey: ["settings", "detail"] });
-      toast.success(t("settings.totp.toasts.configured"));
-      closeDialog();
-    } catch (caught) {
-      setError(getErrorMessage(caught));
-    }
+  const handleEnrolled = async () => {
+    await refreshSession();
+    void queryClient.invalidateQueries({ queryKey: ["settings", "detail"] });
+    toast.success(t("settings.totp.toasts.configured"));
+    closeDialog();
   };
 
   const handleDisable = async (values: TotpCodeValues) => {
@@ -115,11 +91,18 @@ export function TotpSettings({ settings, disabled = false, onSave }: TotpSetting
       toast.success(t("settings.totp.toasts.disabled"));
       closeDialog();
     } catch (caught) {
-      setError(getErrorMessage(caught));
+      // The break-glass guard can refuse here: this account may be the only
+      // emergency way in while local sign-in is restricted (PLAN §4.2).
+      setError(
+        caught instanceof ApiError && caught.code === "last_break_glass_protected"
+          ? t("access.errors.last_break_glass_protected")
+          : getErrorMessage(caught),
+      );
     }
   };
 
   return (
+<<<<<<< 22625a07e
     <SettingsSection>
       <SettingsSectionHeader
         icon={Shield}
@@ -132,6 +115,49 @@ export function TotpSettings({ settings, disabled = false, onSave }: TotpSetting
         actions={
           <>
             {settings.totpConfigured ? (
+||||||| 84fde5a1e
+    <section className="rounded-xl border bg-card p-5">
+      <div className="space-y-3">
+        {/* Status row */}
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2.5">
+            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10">
+              <Shield className="h-4 w-4 text-primary" aria-hidden="true" />
+            </div>
+            <div>
+              <h3 className="text-sm font-semibold">{t("settings.totp.title")}</h3>
+              <p className="text-xs text-muted-foreground">
+                {settings.totpConfigured
+                  ? t("settings.totp.status.configured")
+                  : t("settings.totp.status.notConfigured")}
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2">
+            {settings.totpConfigured ? (
+=======
+    <section id="totp" className="rounded-xl border bg-card p-5">
+      <div className="space-y-3">
+        {/* Status row */}
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2.5">
+            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10">
+              <Shield className="h-4 w-4 text-primary" aria-hidden="true" />
+            </div>
+            <div>
+              <h3 className="text-sm font-semibold">{t("settings.totp.title")}</h3>
+              <p className="text-xs text-muted-foreground">
+                {totpConfigured
+                  ? t("settings.totp.status.configured")
+                  : t("settings.totp.status.notConfigured")}
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2">
+            {totpConfigured ? (
+>>>>>>> 72630bbfe
               <Button
                 type="button"
                 size="sm"
@@ -148,7 +174,7 @@ export function TotpSettings({ settings, disabled = false, onSave }: TotpSetting
                 size="sm"
                 className="h-9 text-xs"
                 disabled={lock}
-                onClick={handleOpenSetup}
+                onClick={() => setActiveDialog("setup")}
               >
                 {t("settings.totp.actions.enable")}
               </Button>
@@ -157,6 +183,7 @@ export function TotpSettings({ settings, disabled = false, onSave }: TotpSetting
         }
       />
 
+<<<<<<< 22625a07e
       <SettingsRowGroup>
         <SettingsRow
           label={t("settings.totp.requireLogin.label")}
@@ -171,6 +198,41 @@ export function TotpSettings({ settings, disabled = false, onSave }: TotpSetting
           />
         </SettingsRow>
       </SettingsRowGroup>
+||||||| 84fde5a1e
+        {/* Require on login toggle */}
+        <div className="flex items-center justify-between rounded-lg border p-3">
+          <div>
+            <p className="text-sm font-medium">{t("settings.totp.requireLogin.label")}</p>
+            <p className="text-xs text-muted-foreground">{t("settings.totp.requireLogin.description")}</p>
+          </div>
+          <Switch
+            checked={settings.totpRequiredOnLogin}
+            disabled={lock}
+            onCheckedChange={(checked) =>
+              void onSave(buildSettingsUpdateRequest(settings, { totpRequiredOnLogin: checked }))
+            }
+          />
+        </div>
+      </div>
+=======
+        {/* Require on login toggle */}
+        {canEditPolicy ? (
+          <div className="flex items-center justify-between rounded-lg border p-3">
+            <div>
+              <p className="text-sm font-medium">{t("settings.totp.requireLogin.label")}</p>
+              <p className="text-xs text-muted-foreground">{t("settings.totp.requireLogin.description")}</p>
+            </div>
+            <Switch
+              checked={settings.totpRequiredOnLogin}
+              disabled={lock}
+              onCheckedChange={(checked) =>
+                void onSave(buildSettingsUpdateRequest(settings, { totpRequiredOnLogin: checked }))
+              }
+            />
+          </div>
+        ) : null}
+      </div>
+>>>>>>> 72630bbfe
 
       {/* Setup dialog */}
       <Dialog open={activeDialog === "setup"} onOpenChange={(open) => !open && closeDialog()}>
@@ -181,66 +243,8 @@ export function TotpSettings({ settings, disabled = false, onSave }: TotpSetting
               {t("settings.totp.setupDialog.description")}
             </DialogDescription>
           </DialogHeader>
-          {error ? <AlertMessage variant="error">{error}</AlertMessage> : null}
-
-          {setupQrDataUri ? (
-            <div className="flex justify-center rounded-lg border bg-card p-4 dark:bg-white/95">
-              <img src={setupQrDataUri} alt={t("settings.totp.setupDialog.qrAlt")} className="h-40 w-40" />
-            </div>
-          ) : null}
-
-          {setupSecret ? (
-            <p className="rounded-lg border bg-muted/30 px-3 py-2 font-mono text-xs">
-              {t("settings.totp.setupDialog.secretLabel")} {setupSecret}
-            </p>
-          ) : null}
-
-          {setupSecret ? (
-            <Form {...confirmForm}>
-              <form onSubmit={confirmForm.handleSubmit(handleConfirmSetup)} className="space-y-4">
-                <FormField
-                  control={confirmForm.control}
-                  name="code"
-                  render={({ field, fieldState }) => (
-                    <FormItem className="flex flex-col items-center gap-2">
-                      <FormLabel className="sr-only">{t("settings.totp.setupDialog.codeLabel")}</FormLabel>
-                      <FormControl>
-                        <InputOTP
-                          maxLength={6}
-                          value={field.value}
-                          onChange={field.onChange}
-                        >
-                          <InputOTPGroup>
-                            <InputOTPSlot index={0} />
-                            <InputOTPSlot index={1} />
-                            <InputOTPSlot index={2} />
-                          </InputOTPGroup>
-                          <InputOTPSeparator />
-                          <InputOTPGroup>
-                            <InputOTPSlot index={3} />
-                            <InputOTPSlot index={4} />
-                            <InputOTPSlot index={5} />
-                          </InputOTPGroup>
-                        </InputOTP>
-                      </FormControl>
-                      {fieldState.error?.message ? (
-                        <FormMessage>{t(fieldState.error.message)}</FormMessage>
-                      ) : (
-                        <FormMessage />
-                      )}
-                    </FormItem>
-                  )}
-                />
-                <DialogFooter>
-                  <Button type="button" variant="outline" onClick={closeDialog} disabled={prefetching}>
-                    {t("common.cancel")}
-                  </Button>
-                  <Button type="submit" disabled={lock}>
-                    {t("settings.totp.setupDialog.submit")}
-                  </Button>
-                </DialogFooter>
-              </form>
-            </Form>
+          {activeDialog === "setup" ? (
+            <TotpEnrollmentForm onEnrolled={handleEnrolled} onCancel={closeDialog} disabled={disabled} />
           ) : null}
         </DialogContent>
       </Dialog>

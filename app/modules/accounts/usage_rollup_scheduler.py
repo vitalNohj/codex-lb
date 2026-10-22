@@ -2,34 +2,27 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import importlib
 import logging
-from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import Protocol, TypeVar, cast
 
+from app.core.scheduling.leader_election_handle import get_leader_election as _get_leader_election
 from app.modules.accounts.usage_rollup import run_fold_pass
+<<<<<<< 22625a07e
 from app.modules.accounts.usage_time_rollup import (
     run_conversation_fold_pass,
     run_daily_fold_pass,
     run_hourly_fold_pass,
 )
+||||||| 84fde5a1e
+from app.modules.accounts.usage_time_rollup import run_conversation_fold_pass, run_hourly_fold_pass
+=======
+from app.modules.accounts.usage_time_rollup import run_conversation_fold_pass, run_hourly_fold_pass
+from app.modules.reports.rollup import run_report_fold_pass
+>>>>>>> 72630bbfe
 
 logger = logging.getLogger(__name__)
 
 FOLD_INTERVAL_SECONDS = 900
-
-
-_T = TypeVar("_T")
-
-
-class _LeaderElectionLike(Protocol):
-    async def run_if_leader(self, fn: Callable[[], Awaitable[_T]]) -> _T | None: ...
-
-
-def _get_leader_election() -> _LeaderElectionLike:
-    module = importlib.import_module("app.core.scheduling.leader_election")
-    return cast(_LeaderElectionLike, module.get_leader_election())
 
 
 @dataclass(slots=True)
@@ -92,6 +85,10 @@ class AccountUsageRollupScheduler:
                 await run_conversation_fold_pass()
             except Exception:
                 logger.exception("Conversation rollup fold pass failed")
+            try:
+                await run_report_fold_pass()
+            except Exception:
+                logger.exception("Report rollup fold pass failed")
 
 
 def build_account_usage_rollup_scheduler() -> AccountUsageRollupScheduler:

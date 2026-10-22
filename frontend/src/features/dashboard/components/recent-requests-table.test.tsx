@@ -1,6 +1,14 @@
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+<<<<<<< 22625a07e
+||||||| 84fde5a1e
+import { useAuthStore } from "@/features/auth/hooks/use-auth";
+=======
+import { useAuthStore } from "@/features/auth/hooks/use-auth";
+import { usePrivacyStore } from "@/hooks/use-privacy";
+import { ADMIN_PERMISSIONS, OPERATOR_PERMISSIONS } from "@/test/mocks/factories";
+>>>>>>> 72630bbfe
 import { RecentRequestsTable } from "@/features/dashboard/components/recent-requests-table";
 import type { RequestLog } from "@/features/dashboard/schemas";
 import { usePrivacyStore } from "@/hooks/use-privacy";
@@ -95,7 +103,21 @@ describe("RecentRequestsTable", () => {
   beforeEach(() => {
     toastSuccess.mockReset();
     toastError.mockReset();
+<<<<<<< 22625a07e
     usePrivacyStore.setState({ blurred: false });
+||||||| 84fde5a1e
+    useAuthStore.setState({
+      role: "admin",
+      permissions: ["read", "write"],
+      canWrite: true,
+    });
+=======
+    useAuthStore.setState({
+      role: "admin",
+      permissions: ADMIN_PERMISSIONS,
+      canWrite: true,
+    });
+>>>>>>> 72630bbfe
   });
 
   afterEach(() => {
@@ -756,6 +778,197 @@ describe("RecentRequestsTable", () => {
   it("renders empty state", () => {
     render(<RecentRequestsTable {...PAGINATION_PROPS} total={0} accounts={[]} requests={[]} />);
     expect(screen.getByText("No requests yet")).toBeInTheDocument();
+<<<<<<< 22625a07e
+||||||| 84fde5a1e
+    expect(
+      screen.getByText("Requests will appear here after clients start using the proxy."),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("No request logs match the current filters.")).not.toBeInTheDocument();
+  });
+
+  it("renders filter-empty copy when a later page has no rows but logs exist", () => {
+    render(
+      <RecentRequestsTable
+        {...PAGINATION_PROPS}
+        total={40}
+        offset={25}
+        accounts={[]}
+        requests={[]}
+      />,
+    );
+    expect(screen.getByText("No matching requests")).toBeInTheDocument();
+    expect(screen.getByText("No request logs match the current filters.")).toBeInTheDocument();
+    expect(screen.queryByText("No requests yet")).not.toBeInTheDocument();
+  });
+
+  it("renders filter-empty copy when filters are applied", () => {
+    render(
+      <RecentRequestsTable
+        {...PAGINATION_PROPS}
+        total={0}
+        accounts={[]}
+        requests={[]}
+        filtersApplied
+      />,
+    );
+    expect(screen.getByText("No matching requests")).toBeInTheDocument();
+    expect(screen.getByText("No request logs match the current filters.")).toBeInTheDocument();
+  });
+
+  it("hides identifying metadata and archive controls from guests", () => {
+    useAuthStore.setState({
+      role: "guest",
+      permissions: ["read"],
+      canWrite: false,
+    });
+
+    render(
+      <RecentRequestsTable
+        {...PAGINATION_PROPS}
+        accounts={[]}
+        requests={[
+          {
+            requestedAt: ISO,
+            accountId: null,
+            planType: null,
+            apiKeyName: null,
+            apiKeyId: null,
+            requestId: "req-guest",
+            archiveRequestId: null,
+            conversationId: null,
+            requestKind: "normal",
+            model: "gpt-5.1",
+            source: null,
+            serviceTier: null,
+            requestedServiceTier: null,
+            actualServiceTier: null,
+            transport: "http",
+            useragent: null,
+            useragentGroup: "codex-cli",
+            clientIp: null,
+            status: "ok",
+            errorCode: null,
+            errorMessage: null,
+            ...NULL_FAILURE_METADATA,
+            tokens: 120,
+            inputTokens: 100,
+            outputTokens: 20,
+            outputTokensRaw: 20,
+            latencyFirstTokenMs: 50,
+            latencyQueueMs: null,
+            cachedInputTokens: 0,
+            reasoningEffort: null,
+            costUsd: 0.01,
+            costBreakdown: null,
+            latencyMs: 250,
+          },
+        ]}
+      />,
+    );
+
+    const dialog = openRequestDetails();
+
+    expect(within(dialog).getByText("req-guest")).toBeInTheDocument();
+    expect(within(dialog).getByText("gpt-5.1")).toBeInTheDocument();
+    expect(within(dialog).queryByText("User Agent")).not.toBeInTheDocument();
+    expect(within(dialog).queryByText("Client IP")).not.toBeInTheDocument();
+    expect(within(dialog).queryByText("Conversation ID")).not.toBeInTheDocument();
+    expect(within(dialog).queryByTestId("request-archive-panel")).not.toBeInTheDocument();
+=======
+    expect(
+      screen.getByText("Requests will appear here after clients start using the proxy."),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("No request logs match the current filters.")).not.toBeInTheDocument();
+  });
+
+  it("renders filter-empty copy when a later page has no rows but logs exist", () => {
+    render(
+      <RecentRequestsTable
+        {...PAGINATION_PROPS}
+        total={40}
+        offset={25}
+        accounts={[]}
+        requests={[]}
+      />,
+    );
+    expect(screen.getByText("No matching requests")).toBeInTheDocument();
+    expect(screen.getByText("No request logs match the current filters.")).toBeInTheDocument();
+    expect(screen.queryByText("No requests yet")).not.toBeInTheDocument();
+  });
+
+  it("renders filter-empty copy when filters are applied", () => {
+    render(
+      <RecentRequestsTable
+        {...PAGINATION_PROPS}
+        total={0}
+        accounts={[]}
+        requests={[]}
+        filtersApplied
+      />,
+    );
+    expect(screen.getByText("No matching requests")).toBeInTheDocument();
+    expect(screen.getByText("No request logs match the current filters.")).toBeInTheDocument();
+  });
+
+  it.each([
+    ["guests", { role: "guest" as const, permissions: ["read"], canWrite: false }],
+    ["operators without conversations:read", { role: "admin" as const, permissions: OPERATOR_PERMISSIONS, canWrite: true }],
+  ])("hides identifying metadata and archive controls from %s", (_label, auth) => {
+    useAuthStore.setState(auth);
+
+    render(
+      <RecentRequestsTable
+        {...PAGINATION_PROPS}
+        accounts={[]}
+        requests={[
+          {
+            requestedAt: ISO,
+            accountId: null,
+            planType: null,
+            apiKeyName: null,
+            apiKeyId: null,
+            requestId: "req-guest",
+            archiveRequestId: null,
+            conversationId: null,
+            requestKind: "normal",
+            model: "gpt-5.1",
+            source: null,
+            serviceTier: null,
+            requestedServiceTier: null,
+            actualServiceTier: null,
+            transport: "http",
+            useragent: null,
+            useragentGroup: "codex-cli",
+            clientIp: null,
+            status: "ok",
+            errorCode: null,
+            errorMessage: null,
+            ...NULL_FAILURE_METADATA,
+            tokens: 120,
+            inputTokens: 100,
+            outputTokens: 20,
+            outputTokensRaw: 20,
+            latencyFirstTokenMs: 50,
+            latencyQueueMs: null,
+            cachedInputTokens: 0,
+            reasoningEffort: null,
+            costUsd: 0.01,
+            costBreakdown: null,
+            latencyMs: 250,
+          },
+        ]}
+      />,
+    );
+
+    const dialog = openRequestDetails();
+
+    expect(within(dialog).getByText("req-guest")).toBeInTheDocument();
+    expect(within(dialog).getByText("gpt-5.1")).toBeInTheDocument();
+    expect(within(dialog).queryByText("User Agent")).not.toBeInTheDocument();
+    expect(within(dialog).queryByText("Client IP")).not.toBeInTheDocument();
+    expect(within(dialog).queryByText("Conversation ID")).not.toBeInTheDocument();
+    expect(within(dialog).queryByTestId("request-archive-panel")).not.toBeInTheDocument();
+>>>>>>> 72630bbfe
   });
 
   it("shows warmup marker only for warmup rows", () => {
@@ -1957,5 +2170,40 @@ describe("RecentRequestsTable", () => {
 
       expect(screen.queryByText(/aliased from/)).not.toBeInTheDocument();
     });
+  });
+});
+
+describe("RecentRequestsTable account cell", () => {
+  beforeEach(() => {
+    useAuthStore.setState({ role: "admin", permissions: ["read", "write"], canWrite: true });
+  });
+
+  it("keeps the privacy blur on email account labels", () => {
+    usePrivacyStore.setState({ blurred: true });
+    try {
+      render(
+        <RecentRequestsTable
+          {...PAGINATION_PROPS}
+          accounts={[{ accountId: "acc-layout", email: "layout@example.com" } as never]}
+          requests={[LAYOUT_REQUEST]}
+        />,
+      );
+
+      expect(screen.getByText("layout@example.com")).toHaveClass("privacy-blur");
+    } finally {
+      usePrivacyStore.setState({ blurred: false });
+    }
+  });
+
+  it("shows Unassigned for an accountless row", () => {
+    render(
+      <RecentRequestsTable
+        {...PAGINATION_PROPS}
+        accounts={[]}
+        requests={[{ ...LAYOUT_REQUEST, accountId: null, source: "limit_warmup" }]}
+      />,
+    );
+
+    expect(screen.getByText("Unassigned")).toBeInTheDocument();
   });
 });

@@ -46,7 +46,12 @@ export default defineConfig({
     },
   },
   server: {
+    // Object form with `changeOrigin: false`: the string shorthand rewrites
+    // `Host` to the target, which would make the backend's Origin-vs-Host
+    // cross-site check reject every mutation when the dev server is opened on
+    // a LAN address (no `Sec-Fetch-Site` over plain http).
     proxy: {
+<<<<<<< 22625a07e
       "/codex": {
         target: proxyTarget,
         changeOrigin: true,
@@ -56,6 +61,17 @@ export default defineConfig({
       "/v1": proxyTarget,
       "/backend-api": proxyTarget,
       "/health": proxyTarget,
+||||||| 84fde5a1e
+      "/api": proxyTarget,
+      "/v1": proxyTarget,
+      "/backend-api": proxyTarget,
+      "/health": proxyTarget,
+=======
+      "/api": { target: proxyTarget, changeOrigin: false },
+      "/v1": { target: proxyTarget, changeOrigin: false },
+      "/backend-api": { target: proxyTarget, changeOrigin: false },
+      "/health": { target: proxyTarget, changeOrigin: false },
+>>>>>>> 72630bbfe
     },
   },
   build: {

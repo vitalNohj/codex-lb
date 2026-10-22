@@ -7,7 +7,7 @@ import { createDashboardSettings } from "@/test/mocks/factories";
 
 const baseSettings = createDashboardSettings({
   stickyThreadsEnabled: true,
-  upstreamStreamTransport: "default" as const,
+  upstreamStreamTransport: "auto" as const,
   upstreamProxyRoutingEnabled: false,
   upstreamProxyDefaultPoolId: null,
   preferEarlierResetAccounts: false,
@@ -22,7 +22,6 @@ const baseSettings = createDashboardSettings({
   warmupModel: "gpt-5.4-mini",
   importWithoutOverwrite: false,
   totpRequiredOnLogin: false,
-  totpConfigured: true,
   apiKeyAuthEnabled: true,
   guestAccessEnabled: false,
 });

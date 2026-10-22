@@ -2,19 +2,27 @@ from __future__ import annotations
 
 import bisect
 import sqlite3
-from collections.abc import Collection
+from collections.abc import Collection, Mapping
 from contextlib import closing
 from dataclasses import dataclass
+<<<<<<< 22625a07e
 from datetime import datetime, timedelta
+||||||| 84fde5a1e
+from datetime import datetime
+=======
+from datetime import datetime
+from functools import partial
+>>>>>>> 72630bbfe
 from hashlib import sha256
 from threading import RLock
-from typing import Any, Callable, cast
+from typing import Any, Callable, Literal, cast
 
 from anyio import to_thread
 from sqlalchemy import (
     Integer,
     String,
     and_,
+    case,
     column,
     delete,
     func,
@@ -44,6 +52,7 @@ from app.modules.usage.additional_quota_keys import (
 )
 
 _PRIMARY_WINDOW_LITERAL = literal_column("'primary'")
+NormalizedUsageWindow = Literal["primary", "secondary"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -436,6 +445,7 @@ def _additional_scope_sqlite_clause(scope: AdditionalQuotaQueryScope) -> tuple[s
     return f"({' or '.join(clauses)})", params
 
 
+<<<<<<< 22625a07e
 def _additional_latest_by_account_sqlite(
     db_path: str,
     scope: AdditionalQuotaQueryScope,
@@ -562,6 +572,64 @@ def _bulk_history_entry_metadata(
     return _bulk_history_shape_metadata(grouped)
 
 
+||||||| 84fde5a1e
+def _additional_latest_by_account_sqlite(
+    db_path: str,
+    scope: AdditionalQuotaQueryScope,
+    window: str,
+    account_ids: list[str] | None,
+    since: datetime | None,
+) -> dict[str, AdditionalUsageHistory]:
+    scope_clause, scope_params = _additional_scope_sqlite_clause(scope)
+    account_filter = ""
+    account_params: list[object] = []
+    if account_ids is not None:
+        if not account_ids:
+            return {}
+        account_filter = f"and account_id in ({','.join('?' for _ in account_ids)})"
+        account_params = list(account_ids)
+    since_filter = ""
+    since_params: list[object] = []
+    if since is not None:
+        since_filter = "and recorded_at >= ?"
+        since_params = [since.isoformat(sep=" ")]
+
+    accounts_sql = f"""
+        select distinct account_id
+        from additional_usage_history
+        where {scope_clause}
+          and window = ?
+          {account_filter}
+          {since_filter}
+    """
+    latest_sql = f"""
+        select id, account_id, quota_key, limit_name, metered_feature, window,
+               used_percent, reset_at, window_minutes, recorded_at
+        from additional_usage_history
+        where account_id = ?
+          and {scope_clause}
+          and window = ?
+          {since_filter}
+        order by recorded_at desc, used_percent desc, id desc
+        limit 1
+    """
+
+    latest: dict[str, AdditionalUsageHistory] = {}
+    with closing(sqlite3.connect(db_path, detect_types=sqlite3.PARSE_DECLTYPES | sqlite3.PARSE_COLNAMES)) as conn:
+        conn.execute("PRAGMA query_only=ON")
+        conn.execute("PRAGMA busy_timeout=30000")
+        accounts_params = [*scope_params, window, *account_params, *since_params]
+        accounts = [str(row[0]) for row in conn.execute(accounts_sql, accounts_params)]
+        for account_id in accounts:
+            row = conn.execute(latest_sql, [account_id, *scope_params, window, *since_params]).fetchone()
+            if row is not None:
+                entry = _additional_usage_history_from_sqlite_row(row)
+                latest[entry.account_id] = entry
+    return latest
+
+
+=======
+>>>>>>> 72630bbfe
 def _bulk_history_since_sqlite(
     db_path: str,
     account_ids: list[str],
@@ -641,6 +709,7 @@ def _bulk_history_since_sqlite(
             return _clone_filtered_history(grouped, since)
 
 
+<<<<<<< 22625a07e
 def _cap_grouped_history(
     grouped: dict[str, list[UsageHistorySnapshot]],
     since: datetime,
@@ -668,6 +737,133 @@ def _cap_grouped_history(
         if selected:
             capped[account_id] = selected
     return capped
+||||||| 84fde5a1e
+=======
+def _bulk_history_since_capped_sqlite(
+    db_path: str,
+    account_ids: list[str],
+    window: str,
+    since: datetime,
+    *,
+    cutoffs: dict[str, datetime] | None = None,
+    per_account_row_cap: int,
+    uncapped_recent_floor: datetime | None = None,
+) -> dict[str, list[UsageHistorySnapshot]]:
+    """Per-account newest-first capped history fetch for SQLite.
+
+    Mirrors _bulk_history_since_capped_postgresql using SQLite's composite
+    indexes idx_usage_window_account_latest and idx_usage_window_account_time_covering.
+
+    For each account, executes targeted index seeks:
+    - If uncapped_recent_floor is None: probes at most per_account_row_cap newest
+      rows >= cutoff.
+    - If uncapped_recent_floor is provided: unions the capped tail [cutoff, uncapped_floor)
+      bounded by per_account_row_cap with all uncapped rows >= uncapped_floor.
+    """
+    capped_tail_limit = max(0, per_account_row_cap)
+    if not account_ids:
+        return {}
+
+    if window == "primary":
+        window_clause = "coalesce(window, 'primary') = 'primary'"
+        window_params: list[object] = []
+    else:
+        window_clause = "window = ?"
+        window_params = [window]
+
+    capped_only_sql = f"""
+        select id, account_id, used_percent, recorded_at, reset_at, window_minutes
+        from usage_history
+        where account_id = ?
+          and {window_clause}
+          and recorded_at >= ?
+        order by recorded_at desc, id desc
+        limit ?
+    """
+
+    compound_floor_sql = f"""
+        select id, account_id, used_percent, recorded_at, reset_at, window_minutes
+        from (
+            select id, account_id, used_percent, recorded_at, reset_at, window_minutes
+            from usage_history
+            where account_id = ?
+              and {window_clause}
+              and recorded_at >= ?
+              and recorded_at < ?
+            order by recorded_at desc, id desc
+            limit ?
+        )
+        union all
+        select id, account_id, used_percent, recorded_at, reset_at, window_minutes
+        from usage_history
+        where account_id = ?
+          and {window_clause}
+          and recorded_at >= ?
+    """
+
+    all_recent_sql = f"""
+        select id, account_id, used_percent, recorded_at, reset_at, window_minutes
+        from usage_history
+        where account_id = ?
+          and {window_clause}
+          and recorded_at >= ?
+        order by recorded_at asc, id asc
+    """
+
+    grouped: dict[str, list[UsageHistorySnapshot]] = {}
+
+    with closing(sqlite3.connect(db_path, detect_types=sqlite3.PARSE_DECLTYPES | sqlite3.PARSE_COLNAMES)) as conn:
+        conn.execute("PRAGMA query_only=ON")
+        conn.execute("PRAGMA busy_timeout=30000")
+
+        for account_id in account_ids:
+            cutoff = max(cutoffs.get(account_id, since), since) if cutoffs else since
+            cutoff_param = cutoff.isoformat(sep=" ")
+
+            if uncapped_recent_floor is None:
+                query = capped_only_sql
+                params: list[object] = [account_id, *window_params, cutoff_param, capped_tail_limit]
+            else:
+                uncapped_floor = max(cutoff, uncapped_recent_floor)
+                if uncapped_floor <= cutoff:
+                    # Floor covers the entire lookback; run uncapped query
+                    query = all_recent_sql
+                    params = [account_id, *window_params, cutoff_param]
+                else:
+                    floor_param = uncapped_floor.isoformat(sep=" ")
+                    query = compound_floor_sql
+                    params = [
+                        account_id,
+                        *window_params,
+                        cutoff_param,
+                        floor_param,
+                        capped_tail_limit,
+                        account_id,
+                        *window_params,
+                        floor_param,
+                    ]
+
+            rows = conn.execute(query, params).fetchall()
+            if not rows:
+                continue
+
+            snapshots = [
+                UsageHistorySnapshot(
+                    id=int(r[0]),
+                    account_id=str(r[1]),
+                    used_percent=float(r[2]),
+                    recorded_at=_parse_sqlite_datetime(r[3]),
+                    reset_at=float(r[4]) if r[4] is not None else None,
+                    window_minutes=int(r[5]) if r[5] is not None else None,
+                )
+                for r in rows
+            ]
+            # Order oldest-first by (recorded_at, id) matching PostgreSQL contract
+            snapshots.sort(key=lambda s: (s.recorded_at, s.id))
+            grouped[account_id] = snapshots
+
+    return grouped
+>>>>>>> 72630bbfe
 
 
 def _resolve_additional_quota_key(
@@ -996,6 +1192,45 @@ class UsageRepository:
             for row in rows
         ]
 
+    async def positive_used_percent_deltas_by_account(
+        self,
+        account_windows: Mapping[str, NormalizedUsageWindow],
+        *,
+        since: datetime,
+        until: datetime,
+    ) -> dict[str, float]:
+        if not account_windows:
+            return {}
+        account_window_pairs = tuple(account_windows.items())
+        samples = (
+            select(
+                UsageHistory.account_id.label("account_id"),
+                UsageHistory.used_percent.label("used_percent"),
+                func.lag(UsageHistory.used_percent)
+                .over(
+                    partition_by=UsageHistory.account_id,
+                    order_by=(UsageHistory.recorded_at, UsageHistory.id),
+                )
+                .label("previous_used_percent"),
+            )
+            .where(
+                tuple_(UsageHistory.account_id, _normalized_window_expr()).in_(account_window_pairs),
+                UsageHistory.recorded_at >= since,
+                UsageHistory.recorded_at <= until,
+            )
+            .subquery("weekly_demand_samples")
+        )
+        delta = samples.c.used_percent - samples.c.previous_used_percent
+        statement = select(
+            samples.c.account_id,
+            func.coalesce(
+                func.sum(case((delta > 0, delta), else_=0.0)),
+                0.0,
+            ).label("positive_delta"),
+        ).group_by(samples.c.account_id)
+        rows = (await self._session.execute(statement)).all()
+        return {str(row.account_id): float(row.positive_delta) for row in rows}
+
     async def latest_by_account(
         self,
         window: str | None = None,
@@ -1093,12 +1328,14 @@ class UsageRepository:
         ``since`` is the global floor. ``cutoffs`` optionally tightens the
         lookback per account: callers whose accounts have different window
         lengths would otherwise widen the fetch to the longest window for
-        every account and discard the surplus in Python. The SQLite path
-        ignores ``cutoffs`` (its snapshot cache is keyed on the shared
-        floor); callers keep their own per-account trimming, so honoring the
-        bound here only changes how many rows are read, never the result.
+        every account and discard the surplus in Python. When
+        ``per_account_row_cap`` is set on SQLite, ``_bulk_history_since_capped_sqlite``
+        honors ``cutoffs``; the uncapped SQLite snapshot-cache path ignores
+        ``cutoffs`` (its cache is keyed on the shared floor) where callers keep
+        their own per-account trimming.
 
         ``per_account_row_cap`` additionally bounds each account's slice to
+<<<<<<< 22625a07e
         its newest rows inside the cutoff. Live snapshot ingestion appends
         usage rows per proxied request, so a busy account's 7-day window can
         hold tens of thousands of rows while the projection consumers (EWMA
@@ -1107,6 +1344,21 @@ class UsageRepository:
         cap in SQL; the SQLite path reads its snapshot cache and applies the
         same per-account cutoff and cap to the result, so both backends hand
         the consumers the same rows.
+||||||| 84fde5a1e
+        its newest rows inside the cutoff (PostgreSQL only). Live snapshot
+        ingestion appends usage rows per proxied request, so a busy account's
+        7-day window can hold tens of thousands of rows while the projection
+        consumers (EWMA depletion, weekly-pace burn/smoothing) only read the
+        recent tail. Each capped slice keeps oldest-first ordering. The
+        SQLite snapshot-cache path ignores the cap the same way it ignores
+        ``cutoffs``.
+=======
+        its newest rows inside the cutoff (supported on both PostgreSQL and
+        SQLite). Live snapshot ingestion appends usage rows per proxied request,
+        so a busy account's 7-day window can hold tens of thousands of rows
+        while the projection consumers (EWMA depletion, weekly-pace burn/smoothing)
+        only read the recent tail. Each capped slice keeps oldest-first ordering.
+>>>>>>> 72630bbfe
 
         ``uncapped_recent_floor`` exempts rows at or after the given time
         from the row cap: every in-cutoff row newer than the floor is always
@@ -1115,7 +1367,13 @@ class UsageRepository:
         weekly-pace smoothing mean) pass their window start here so a
         write-rate burst can never silently truncate that window, while
         tail-weighted consumers (EWMA) stay covered by the cap alone.
+<<<<<<< 22625a07e
         Ignored unless ``per_account_row_cap`` is set.
+||||||| 84fde5a1e
+        Ignored unless ``per_account_row_cap`` is set on PostgreSQL.
+=======
+        Honored whenever ``per_account_row_cap`` is set on PostgreSQL or SQLite.
+>>>>>>> 72630bbfe
         """
         if not account_ids:
             return {}
@@ -1123,7 +1381,26 @@ class UsageRepository:
         dialect = bind.dialect.name if bind else "sqlite"
         sqlite_path = _sqlite_path_from_bind(bind) if dialect == "sqlite" else None
         if sqlite_path is not None:
+<<<<<<< 22625a07e
             grouped = await to_thread.run_sync(
+||||||| 84fde5a1e
+            return await to_thread.run_sync(
+=======
+            if per_account_row_cap is not None:
+                return await to_thread.run_sync(
+                    partial(
+                        _bulk_history_since_capped_sqlite,
+                        str(sqlite_path),
+                        list(account_ids),
+                        window,
+                        since,
+                        cutoffs=cutoffs,
+                        per_account_row_cap=per_account_row_cap,
+                        uncapped_recent_floor=uncapped_recent_floor,
+                    )
+                )
+            return await to_thread.run_sync(
+>>>>>>> 72630bbfe
                 _bulk_history_since_sqlite,
                 str(sqlite_path),
                 list(account_ids),
@@ -1178,20 +1455,35 @@ class UsageRepository:
                 recency_clause,
                 _window_clause(window),
             )
-            .order_by(UsageHistory.account_id, UsageHistory.recorded_at.asc())
+            .order_by(UsageHistory.account_id, UsageHistory.recorded_at.asc(), UsageHistory.id.asc())
         )
         result = await self._session.execute(stmt)
         grouped: dict[str, list[UsageHistorySnapshot]] = {}
-        for row in result.all():
+        for id_, account_id, used_percent, recorded_at, reset_at, window_minutes in result.tuples():
             snapshot = UsageHistorySnapshot(
-                id=int(row.id),
-                account_id=row.account_id,
-                used_percent=float(row.used_percent),
-                recorded_at=row.recorded_at,
-                reset_at=float(row.reset_at) if row.reset_at is not None else None,
-                window_minutes=int(row.window_minutes) if row.window_minutes is not None else None,
+                id=int(id_),
+                account_id=account_id,
+                used_percent=float(used_percent),
+                recorded_at=recorded_at,
+                reset_at=float(reset_at) if reset_at is not None else None,
+                window_minutes=int(window_minutes) if window_minutes is not None else None,
             )
-            grouped.setdefault(snapshot.account_id, []).append(snapshot)
+            grouped.setdefault(account_id, []).append(snapshot)
+
+        if per_account_row_cap is not None:
+            capped_grouped: dict[str, list[UsageHistorySnapshot]] = {}
+            for account_id, snapshots in grouped.items():
+                if uncapped_recent_floor is None:
+                    capped_grouped[account_id] = snapshots[-per_account_row_cap:] if per_account_row_cap > 0 else []
+                else:
+                    cutoff = max(cutoffs.get(account_id, since), since) if cutoffs else since
+                    eff_floor = max(cutoff, uncapped_recent_floor)
+                    recent = [s for s in snapshots if s.recorded_at >= eff_floor]
+                    tail = [s for s in snapshots if s.recorded_at < eff_floor]
+                    capped_tail = tail[-per_account_row_cap:] if per_account_row_cap > 0 else []
+                    capped_grouped[account_id] = capped_tail + recent
+            return capped_grouped
+
         return grouped
 
     async def _bulk_history_since_capped_postgresql(
@@ -1277,16 +1569,19 @@ class UsageRepository:
         stmt = select(recent).select_from(account_cutoffs.join(recent, true()))
         result = await self._session.execute(stmt)
         grouped: dict[str, list[UsageHistorySnapshot]] = {}
-        for row in result.all():
+        # Positional unpacking: Row attribute lookups dominated the per-row
+        # cost of this loop on dense deployments (dashboard polls hydrate
+        # thousands of rows per call). Column order follows snapshot_columns.
+        for id_, account_id, used_percent, recorded_at, reset_at, window_minutes in result.tuples():
             snapshot = UsageHistorySnapshot(
-                id=int(row.id),
-                account_id=row.account_id,
-                used_percent=float(row.used_percent),
-                recorded_at=row.recorded_at,
-                reset_at=float(row.reset_at) if row.reset_at is not None else None,
-                window_minutes=int(row.window_minutes) if row.window_minutes is not None else None,
+                id=int(id_),
+                account_id=account_id,
+                used_percent=float(used_percent),
+                recorded_at=recorded_at,
+                reset_at=float(reset_at) if reset_at is not None else None,
+                window_minutes=int(window_minutes) if window_minutes is not None else None,
             )
-            grouped.setdefault(snapshot.account_id, []).append(snapshot)
+            grouped.setdefault(account_id, []).append(snapshot)
         for snapshots in grouped.values():
             snapshots.sort(key=lambda snapshot: (snapshot.recorded_at, snapshot.id))
         return grouped

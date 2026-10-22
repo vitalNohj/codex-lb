@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 import { usePrivacyStore } from "@/hooks/use-privacy";
 import { Badge } from "@/components/ui/badge";
 import { useDateDisplayFormatStore } from "@/hooks/use-date-format";
+import { useSmoothPercent } from "@/hooks/use-smooth-percent";
 import { Button } from "@/components/ui/button";
 import { SidecarEffortSelect } from "@/features/accounts/components/sidecar-effort-select";
 import { useClaudeSidecarAccountPause } from "@/features/settings/hooks/use-settings";
@@ -46,11 +47,99 @@ function formatWarmupWindow(window: string): string {
   return window === "primary" || window === "primary_idle" ? "5h" : "weekly";
 }
 
+<<<<<<< 22625a07e
 export function AccountCard({ account, showAccountId = false, readOnly = false, onAction }: AccountCardProps) {
   if (account.synthetic) {
     return <SyntheticAccountCard account={account} onAction={onAction} />;
   }
   return <NativeAccountCard account={account} showAccountId={showAccountId} readOnly={readOnly} onAction={onAction} />;
+||||||| 84fde5a1e
+function QuotaBar({
+  label,
+  percent,
+  resetLabel,
+}: {
+  label: string;
+  percent: number | null;
+  resetLabel: string;
+}) {
+  const clamped = percent === null ? 0 : Math.max(0, Math.min(100, percent));
+  const hasPercent = percent !== null;
+  return (
+    <div className="space-y-1">
+      <div className="flex items-center justify-between text-xs">
+        <span className="text-muted-foreground">{label}</span>
+        <span
+          className={cn(
+            "tabular-nums font-medium",
+            !hasPercent
+              ? "text-muted-foreground"
+              : clamped >= 70
+                ? "text-emerald-600 dark:text-emerald-400"
+                : clamped >= 30
+                  ? "text-amber-600 dark:text-amber-400"
+                  : "text-red-600 dark:text-red-400",
+          )}
+        >
+          {formatPercentNullable(percent)}
+        </span>
+      </div>
+      <div className={cn("h-1.5 w-full overflow-hidden rounded-full", quotaBarTrack(clamped))}>
+        <div
+          className={cn("h-full rounded-full transition-all duration-500 ease-out", quotaBarColor(clamped))}
+          style={{ width: `${clamped}%` }}
+        />
+      </div>
+      <div className="flex items-center gap-1 text-[11px] text-muted-foreground">
+        <Clock className="h-3 w-3 shrink-0" />
+        <span>{resetLabel}</span>
+      </div>
+    </div>
+  );
+=======
+function QuotaBar({
+  label,
+  percent,
+  resetLabel,
+}: {
+  label: string;
+  percent: number | null;
+  resetLabel: string;
+}) {
+  const clamped = percent === null ? 0 : Math.max(0, Math.min(100, percent));
+  const hasPercent = percent !== null;
+  return (
+    <div className="space-y-1">
+      <div className="flex items-center justify-between text-xs">
+        <span className="text-muted-foreground">{label}</span>
+        <span
+          className={cn(
+            "tabular-nums font-medium",
+            !hasPercent
+              ? "text-muted-foreground"
+              : clamped >= 70
+                ? "text-emerald-600 dark:text-emerald-400"
+                : clamped >= 30
+                  ? "text-amber-600 dark:text-amber-400"
+                  : "text-red-600 dark:text-red-400",
+          )}
+        >
+          {formatPercentNullable(percent, 1)}
+        </span>
+      </div>
+      <div className={cn("h-1.5 w-full overflow-hidden rounded-full", quotaBarTrack(clamped))}>
+        <div
+          className={cn("h-full rounded-full transition-colors duration-500 ease-out", quotaBarColor(clamped))}
+          style={{ width: `${clamped}%` }}
+        />
+      </div>
+      <div className="flex items-center gap-1 text-[11px] text-muted-foreground">
+        <Clock className="h-3 w-3 shrink-0" />
+        <span>{resetLabel}</span>
+      </div>
+    </div>
+  );
+>>>>>>> 72630bbfe
 }
 
 function NativeAccountCard({ account, showAccountId = false, readOnly = false, onAction }: AccountCardProps) {
@@ -58,14 +147,17 @@ function NativeAccountCard({ account, showAccountId = false, readOnly = false, o
   const blurred = usePrivacyStore((s) => s.blurred);
   const dateDisplayFormat = useDateDisplayFormatStore((s) => s.dateDisplayFormat);
   const status = normalizeStatus(account.status);
-  const primaryRemaining = account.usage?.primaryRemainingPercent ?? null;
-  const secondaryRemaining = account.usage?.secondaryRemainingPercent ?? null;
-  const monthlyRemaining = account.usage?.monthlyRemainingPercent ?? null;
-  const weeklyOnly = account.windowMinutesPrimary == null && account.windowMinutesSecondary != null;
-  const monthlyOnly =
-    account.windowMinutesMonthly != null &&
-    account.windowMinutesPrimary == null &&
-    account.windowMinutesSecondary == null;
+  const primaryState = useSmoothPercent(account.usage?.primaryRemainingPercent ?? null);
+  const secondaryState = useSmoothPercent(account.usage?.secondaryRemainingPercent ?? null);
+  const monthlyState = useSmoothPercent(account.usage?.monthlyRemainingPercent ?? null);
+  const primaryRemaining = primaryState.percent;
+  const secondaryRemaining = secondaryState.percent;
+  const monthlyRemaining = monthlyState.percent;
+  const hasPrimaryWindow = account.windowMinutesPrimary != null || primaryState.everKnown;
+  const hasSecondaryWindow = account.windowMinutesSecondary != null || secondaryState.everKnown;
+  const hasMonthlyWindow = account.windowMinutesMonthly != null || monthlyState.everKnown;
+  const weeklyOnly = !hasPrimaryWindow && hasSecondaryWindow;
+  const monthlyOnly = hasMonthlyWindow && !hasPrimaryWindow && !hasSecondaryWindow;
   const subscriptionCreditsLabel = formatCreditValue(accountSubscriptionCredits(account));
   const purchasedCreditsLabel = formatPurchasedCredits(account, t("common.states.unlimited"));
 
@@ -183,7 +275,7 @@ function NativeAccountCard({ account, showAccountId = false, readOnly = false, o
       </div>
 
       {/* Actions */}
-      <div className="mt-3 flex items-center gap-1.5 border-t pt-3">
+      <div className="mt-3 flex flex-wrap items-center gap-1.5 border-t pt-3">
         <Button
           type="button"
           size="sm"
@@ -219,7 +311,13 @@ function NativeAccountCard({ account, showAccountId = false, readOnly = false, o
             ) : null}
           </Button>
         ) : null}
+<<<<<<< 22625a07e
         {status === "paused" ? (
+||||||| 84fde5a1e
+        {status === "paused" && (
+=======
+        {(status === "paused" || status === "deactivated") && (
+>>>>>>> 72630bbfe
           <Button
             type="button"
             size="sm"
