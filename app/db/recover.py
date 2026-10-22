@@ -138,10 +138,20 @@ def _move_sqlite_journals(from_db: Path, to_db: Path) -> None:
     and lets the backup itself be opened with every commit it had.
     """
 
-    for suffix in _SQLITE_JOURNAL_SUFFIXES:
-        journal = from_db.with_name(f"{from_db.name}{suffix}")
-        if journal.exists():
-            journal.replace(to_db.with_name(f"{to_db.name}{suffix}"))
+    # All or nothing: a failure part-way (``-wal`` moved, ``-journal`` refused)
+    # would otherwise strand the WAL under a name whose database is elsewhere.
+    moved: list[tuple[Path, Path]] = []
+    try:
+        for suffix in _SQLITE_JOURNAL_SUFFIXES:
+            journal = from_db.with_name(f"{from_db.name}{suffix}")
+            if journal.exists():
+                target = to_db.with_name(f"{to_db.name}{suffix}")
+                journal.replace(target)
+                moved.append((target, journal))
+    except OSError:
+        for target, journal in reversed(moved):
+            target.replace(journal)
+        raise
 
 
 def _replace_recovered_database(source: Path, output: Path, backup: Path) -> None:

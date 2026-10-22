@@ -7,7 +7,8 @@ import selectors
 import sqlite3
 import subprocess
 import sys
-from contextlib import closing
+from collections.abc import Iterator
+from contextlib import closing, contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -401,6 +402,64 @@ def test_recover_replace_returns_journals_when_the_backup_rename_fails(
 
         assert not list(tmp_path.glob("store.db.corrupt-*"))
         assert Path(f"{db_path}-wal").exists()
+        with closing(sqlite3.connect(db_path)) as connection:
+            assert connection.execute("SELECT name FROM items ORDER BY rowid").fetchall() == [
+                ("base",),
+                ("only-in-wal",),
+            ]
+    finally:
+        idle.close()
+
+
+def test_recover_replace_reverses_a_partial_journal_relocation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A refused ``-journal`` move puts the already-moved WAL back with the original."""
+    db_path = tmp_path / "store.db"
+    output_path = tmp_path / "recovered.db"
+    with closing(sqlite3.connect(db_path)) as connection, connection:
+        connection.execute("CREATE TABLE items (name TEXT NOT NULL)")
+        connection.execute("INSERT INTO items (name) VALUES ('base')")
+
+    idle = sqlite3.connect(db_path)
+    idle.execute("PRAGMA journal_mode=WAL")
+    idle.execute("PRAGMA wal_autocheckpoint=0")
+    idle.execute("INSERT INTO items (name) VALUES ('only-in-wal')")
+    idle.commit()
+    rollback_journal = Path(f"{db_path}-journal")
+
+    path_type = type(db_path)
+    real_replace = path_type.replace
+
+    def fail_journal_relocation(path: Path, target: str | Path) -> Path:
+        if path == rollback_journal and Path(target).name.startswith(f"{db_path.name}.corrupt-"):
+            raise PermissionError("simulated journal relocation failure")
+        return real_replace(path, target)
+
+    try:
+        # The probe runs before relocation; create the stray rollback journal
+        # only once it is done, so it is present when the journals move.
+        real_lock = recover_module._sqlite_recovery_lock
+
+        @contextmanager
+        def lock_then_stage_journal(source: Path) -> Iterator[sqlite3.Connection]:
+            with real_lock(source) as connection:
+                yield connection
+            rollback_journal.write_bytes(b"")
+            monkeypatch.setattr(path_type, "replace", fail_journal_relocation)
+
+        monkeypatch.setattr(recover_module, "_sqlite_recovery_lock", lock_then_stage_journal)
+
+        with pytest.raises(PermissionError, match="simulated journal relocation failure"):
+            recover_module.recover_sqlite_db(
+                recover_module.RecoveryOptions(source=db_path, output=output_path, replace=True)
+            )
+        monkeypatch.setattr(path_type, "replace", real_replace)
+
+        assert not list(tmp_path.glob("store.db.corrupt-*"))
+        assert Path(f"{db_path}-wal").exists()
+        rollback_journal.unlink()
         with closing(sqlite3.connect(db_path)) as connection:
             assert connection.execute("SELECT name FROM items ORDER BY rowid").fetchall() == [
                 ("base",),
