@@ -778,8 +778,11 @@ def get_pricing_for_model(
         if key.lower() == normalized:
             return key, value
 
+    # Upstream's dated-release fallback, for every family except Claude: a
+    # Claude id is priced only by its exact identity (below), so a dated Claude
+    # release must not inherit the undated key's price.
     dated = re.fullmatch(r"(.+)-\d{4}-\d{2}-\d{2}", normalized)
-    if dated and dated[1] in pricing:
+    if dated and dated[1] in pricing and not strip_known_sidecar_prefix(normalized).startswith("claude"):
         return dated[1], pricing[dated[1]]
 
     # Versioned identity, then a non-Claude alias. A Claude id matches a key
