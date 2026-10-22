@@ -157,6 +157,50 @@ async def test_inject_sse_keepalives_cancels_idle_source_when_downstream_closes(
 
 
 @pytest.mark.asyncio
+async def test_inject_sse_keepalives_closes_source_when_cancelled_during_iterator_close():
+    """A cancellation deferred through the iterator close must not skip the source close."""
+    iterator_closing = asyncio.Event()
+    release_iterator_close = asyncio.Event()
+    closed: list[str] = []
+
+    class _Iterator:
+        def __aiter__(self) -> _Iterator:
+            return self
+
+        async def __anext__(self) -> str:
+            await asyncio.Event().wait()
+            raise StopAsyncIteration  # pragma: no cover
+
+        async def aclose(self) -> None:
+            iterator_closing.set()
+            await release_iterator_close.wait()
+            closed.append("iterator")
+
+    class _Source:
+        def __init__(self) -> None:
+            self.iterator = _Iterator()
+
+        def __aiter__(self) -> _Iterator:
+            return self.iterator
+
+        async def aclose(self) -> None:
+            closed.append("source")
+
+    stream = inject_sse_keepalives(cast(AsyncIterator[str], _Source()), 0.01)
+    assert await anext(stream) == SSE_KEEPALIVE_FRAME
+
+    closer = asyncio.create_task(cast(Any, stream).aclose())
+    await asyncio.wait_for(iterator_closing.wait(), timeout=5)
+    closer.cancel()
+    await asyncio.sleep(0)
+    release_iterator_close.set()
+    with pytest.raises(asyncio.CancelledError):
+        await closer
+
+    assert closed == ["iterator", "source"]
+
+
+@pytest.mark.asyncio
 async def test_inject_sse_keepalives_does_not_leave_stream_end_unretrieved(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
