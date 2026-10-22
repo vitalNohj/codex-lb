@@ -366,6 +366,55 @@ def test_recover_replace_fails_closed_on_partial_sidecar_cleanup(
     assert not (tmp_path / "store.db-journal").exists()
 
 
+def test_recover_replace_keeps_source_wal_commits_when_install_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Committed pages still in the source WAL survive a failed replacement."""
+    db_path = tmp_path / "store.db"
+    output_path = tmp_path / "recovered.db"
+    with closing(sqlite3.connect(db_path)) as connection, connection:
+        connection.execute("CREATE TABLE items (name TEXT NOT NULL)")
+        connection.execute("INSERT INTO items (name) VALUES ('base')")
+
+    # A committed row that lives only in the WAL. The idle connection stays
+    # open through the recovery, so none of the recovery's own connections is
+    # the last to close and SQLite never folds the WAL into the file for it.
+    idle = sqlite3.connect(db_path)
+    idle.execute("PRAGMA journal_mode=WAL")
+    idle.execute("PRAGMA wal_autocheckpoint=0")
+    idle.execute("INSERT INTO items (name) VALUES ('only-in-wal')")
+    idle.commit()
+    assert Path(f"{db_path}-wal").stat().st_size > 0
+
+    path_type = type(db_path)
+    real_replace = path_type.replace
+
+    def fail_output_install(path: Path, target: str | Path) -> Path:
+        if path == output_path:
+            raise PermissionError("simulated output rename failure")
+        return real_replace(path, target)
+
+    monkeypatch.setattr(path_type, "replace", fail_output_install)
+
+    try:
+        with pytest.raises(RuntimeError, match="failed to install recovered SQLite database"):
+            recover_module.recover_sqlite_db(
+                recover_module.RecoveryOptions(source=db_path, output=output_path, replace=True)
+            )
+
+        assert not list(tmp_path.glob("store.db.corrupt-*"))
+        # Read through a fresh connection while the idle one is still open:
+        # closing it first would checkpoint from its own handle and hide the loss.
+        with closing(sqlite3.connect(db_path)) as connection:
+            assert connection.execute("SELECT name FROM items ORDER BY rowid").fetchall() == [
+                ("base",),
+                ("only-in-wal",),
+            ]
+    finally:
+        idle.close()
+
+
 def test_recover_replace_restores_source_when_post_move_cleanup_fails(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

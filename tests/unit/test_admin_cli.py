@@ -203,6 +203,50 @@ def test_reset_password_prompts_revokes_and_lets_the_account_sign_in(
     assert row.details is not None and '"username": "rescue"' in row.details
 
 
+def test_reset_password_bumps_the_generation_in_sql_not_from_the_loaded_value(
+    recovery: _Recovery, terminal: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A revocation committed after the CLI read the row must not be overwritten.
+
+    The dashboard bumps ``session_generation`` with ``SET x = x + 1``; the CLI
+    must too. Writing the loaded value plus one would replace a concurrent
+    bump with the same number and leave the session minted against it valid.
+    """
+
+    from sqlalchemy import event, update
+
+    user_id = recovery.add_user("rescue")
+    _answer(monkeypatch, NEW_PASSWORD, NEW_PASSWORD)
+    real_session = admin_cli.Session
+    revoked: list[bool] = []
+
+    def session_with_concurrent_revocation(*args, **kwargs):
+        session = real_session(*args, **kwargs)
+
+        @event.listens_for(session, "before_flush")
+        def _dashboard_revokes_meanwhile(flush_session, _context, _instances) -> None:
+            if revoked:
+                return
+            revoked.append(True)
+            # Same transaction (SQLite has one writer), but issued as its own
+            # statement after the CLI loaded the row: exactly what a committed
+            # dashboard revocation looks like to the CLI's stale ORM value.
+            flush_session.execute(
+                update(DashboardUser)
+                .where(DashboardUser.id == user_id)
+                .values(session_generation=DashboardUser.session_generation + 1)
+                .execution_options(synchronize_session=False)
+            )
+
+        return session
+
+    monkeypatch.setattr(admin_cli, "Session", session_with_concurrent_revocation)
+
+    _run("admin", "reset-password", "rescue")
+
+    assert recovery.user("rescue").session_generation == 2
+
+
 def test_reset_password_clears_a_lost_second_factor_only_when_asked(
     recovery: _Recovery, terminal: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:

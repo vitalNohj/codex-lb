@@ -145,8 +145,12 @@ def _reset_password(username: str, *, clear_two_factor: bool = False) -> _Report
         was_enrolled = user.totp_secret_encrypted is not None
         user.password_hash = password_hash
         # Every cookie the account holds was minted against the old
-        # credential; whoever locked it out may be holding one.
-        user.session_generation += 1
+        # credential; whoever locked it out may be holding one. The bump is
+        # ``SET x = x + 1`` in SQL, never the loaded value plus one: a
+        # revocation the dashboard commits between this read and the flush
+        # would otherwise be overwritten with the same number, and a session
+        # minted against it would stay valid (``commit_user`` does the same).
+        user.session_generation = DashboardUser.session_generation + 1
         if clear_two_factor:
             user.totp_secret_encrypted = None
             user.totp_last_verified_step = None

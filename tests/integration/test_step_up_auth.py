@@ -297,6 +297,39 @@ async def test_header_account_verify_route_mints_the_step_up_cookie(async_client
 
 
 @pytest.mark.asyncio
+async def test_a_second_totp_verify_does_not_renew_the_step_up(async_client: AsyncClient, monkeypatch) -> None:
+    """Only the first code of a sign-in completes it; re-verifying must not refresh ``su``.
+
+    ``/totp/verify`` re-mints the cookie with a fresh ``issued_at``. Without
+    the ``totp_verified`` test, each further code verified against that cookie
+    would look like the second factor of a sign-in that just happened and
+    extend the step-up forever on codes alone.
+    """
+
+    clock = _Clock(monkeypatch)
+    await _setup(async_client)
+    secret = await _enrol_totp(async_client, clock)
+    totp = pyotp.TOTP(secret)
+    await async_client.post("/api/dashboard-auth/logout", json={})
+    login = await async_client.post("/api/dashboard-auth/password/login", json={"password": "password123"})
+    assert login.status_code == 200
+    clock.advance(30)
+    first = await async_client.post("/api/dashboard-auth/totp/verify", json={"code": totp.at(clock.now)})
+    assert first.status_code == 200, first.text
+    stepped_up_at = clock.now
+    assert _su(async_client) == stepped_up_at
+
+    clock.advance(60)
+    second = await async_client.post("/api/dashboard-auth/totp/verify", json={"code": totp.at(clock.now)})
+    assert second.status_code == 200, second.text
+    assert _su(async_client) == stepped_up_at
+
+    clock.advance(250)
+    blocked = await _security_change(async_client)
+    assert blocked.status_code == 403 and _error(blocked)["code"] == "step_up_required"
+
+
+@pytest.mark.asyncio
 async def test_totp_verify_on_an_old_session_does_not_mint_a_step_up(async_client: AsyncClient, monkeypatch) -> None:
     """Holding a stale cookie must not buy a step-up by enrolling a second factor.
 

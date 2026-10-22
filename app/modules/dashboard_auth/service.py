@@ -1104,8 +1104,16 @@ class DashboardAuthService:
         # covering every security mutation, having proven one of the two
         # factors it is required to present. The OIDC step-up flow is the path
         # for that account, and it refuses an account that holds a local factor.
-        completing_fresh_login = is_local_password_session(existing_state) and is_step_up_fresh(
-            existing_state.issued_at, now=now
+        #
+        # Only the *first* TOTP verification of a password session completes a
+        # sign-in. The session this call mints carries a fresh ``issued_at``,
+        # so without the ``totp_verified`` test a second code verified against
+        # it would read as "the password was just presented" and grant a
+        # step-up that no password backed.
+        completing_fresh_login = (
+            not existing_state.totp_verified
+            and is_local_password_session(existing_state)
+            and is_step_up_fresh(existing_state.issued_at, now=now)
         )
         step_up_verified_at = now if completing_fresh_login else existing_state.step_up_verified_at
         new_session_id = self._session_store.create_user_session(

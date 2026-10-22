@@ -17,6 +17,11 @@ from app.db.sqlite_utils import IntegrityCheck, check_sqlite_integrity, sqlite_c
 logger = logging.getLogger(__name__)
 
 _SQLITE_SIDECAR_SUFFIXES = ("-wal", "-shm", "-journal")
+# The sidecars that can hold committed (WAL) or pre-image (rollback journal)
+# pages of the database. They belong to the original, so a replacement moves
+# them next to its ``.corrupt-*`` backup instead of deleting them; ``-shm`` and
+# the ``-mj*`` super-journals are rebuildable and are removed as before.
+_SQLITE_JOURNAL_SUFFIXES = ("-wal", "-journal")
 
 
 @dataclass(slots=True)
@@ -124,6 +129,21 @@ def _sqlite_recovery_lock(db_path: Path) -> Iterator[sqlite3.Connection]:
             connection.close()
 
 
+def _move_sqlite_journals(from_db: Path, to_db: Path) -> None:
+    """Rename ``from_db``'s WAL and rollback journal so they pair with ``to_db``.
+
+    An idle reader elsewhere can keep committed pages in the WAL past the last
+    checkpoint, so the WAL is part of the original database. Keeping it with
+    the backup is what lets a failed replacement restore the original intact,
+    and lets the backup itself be opened with every commit it had.
+    """
+
+    for suffix in _SQLITE_JOURNAL_SUFFIXES:
+        journal = from_db.with_name(f"{from_db.name}{suffix}")
+        if journal.exists():
+            journal.replace(to_db.with_name(f"{to_db.name}{suffix}"))
+
+
 def _replace_recovered_database(source: Path, output: Path, backup: Path) -> None:
     source.replace(backup)
     try:
@@ -135,6 +155,7 @@ def _replace_recovered_database(source: Path, output: Path, backup: Path) -> Non
     except (OSError, RuntimeError) as exc:
         try:
             backup.replace(source)
+            _move_sqlite_journals(backup, source)
         except OSError as restore_exc:
             raise RuntimeError(
                 f"failed to install recovered SQLite database at {source}: {exc}; "
@@ -183,8 +204,14 @@ def recover_sqlite_db(options: RecoveryOptions) -> RecoveryOutcome:
     if options.replace:
         # Recovery-owned SQLite handles are closed before any sidecar unlink.
         _remove_sqlite_sidecars(options.output)
-        _remove_sqlite_sidecars(options.source)
         backup = options.source.with_name(f"{options.source.name}.corrupt-{_timestamp()}")
+        _move_sqlite_journals(options.source, backup)
+        try:
+            _remove_sqlite_sidecars(options.source)
+        except RuntimeError:
+            # Nothing was moved yet: put the journals back with the original.
+            _move_sqlite_journals(backup, options.source)
+            raise
         _replace_recovered_database(options.source, options.output, backup)
         return RecoveryOutcome(
             source=backup,

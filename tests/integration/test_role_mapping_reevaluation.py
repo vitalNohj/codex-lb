@@ -28,6 +28,8 @@ from app.core.auth.dashboard_users_cache import get_dashboard_users_cache
 from app.core.auth.providers.registry import get_auth_provider_registry
 from app.core.config.settings import get_settings
 from app.db.models import (
+    ApiKey,
+    ApiKeyDeactivatedReason,
     AuditLog,
     AuthProviderKind,
     DashboardAuthProvider,
@@ -328,6 +330,40 @@ async def test_no_match_without_a_fallback_disables_the_account(async_client: As
 
     rows = await _rows("role_demoted_no_mapping")
     assert len(rows) == 1 and '"to": null' in (rows[0].details or "")
+
+
+@pytest.mark.asyncio
+async def test_a_mapping_disable_cascades_to_the_accounts_api_keys(async_client: AsyncClient, monkeypatch) -> None:
+    """The resolver's disable is the same disable as every other: the owner's keys go off with it."""
+
+    _trusted_header_mode(monkeypatch)
+    await _seed_account("ops-admin", "ops@example.com", ADMIN_ROLE, role_source="manual")
+    watcher_id = await _seed_account("watcher", "watcher@example.com", VIEWER_ROLE, role_source="mapping")
+    key_id = str(uuid.uuid4())
+    async with SessionLocal() as session:
+        session.add(
+            ApiKey(
+                id=key_id,
+                name="watcher key",
+                key_hash=f"hash-{key_id}",
+                key_prefix="sk-clb-watc",
+                owner_user_id=watcher_id,
+            )
+        )
+        await session.commit()
+    await _set_provider(no_match_role_id=None)
+    await _add_rule("platform", OPERATOR_ROLE)
+
+    refused = await async_client.get("/api/settings", headers=_as("watcher@example.com", "contractors"))
+    assert refused.status_code == 401 and _error(refused) == "account_disabled"
+
+    async with SessionLocal() as session:
+        key = await session.get(ApiKey, key_id)
+        assert key is not None
+        assert key.is_active is False
+        assert key.deactivated_reason == ApiKeyDeactivatedReason.OWNER_DISABLED.value
+    cascade = await _rows("user_keys_deactivated")
+    assert len(cascade) == 1 and '"count": 1' in (cascade[0].details or "")
 
 
 @pytest.mark.asyncio

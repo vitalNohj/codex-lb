@@ -36,9 +36,11 @@ from sqlalchemy.exc import IntegrityError
 import app.modules.dashboard_users.repository as users_repository
 from app.core.audit.service import AuditActor, AuditDetails, AuditService, AuditTarget
 from app.core.audit.types import AuditSeverity
+from app.core.auth.api_key_cache import get_api_key_cache
 from app.core.auth.dashboard_access import PRESET_ROLE_IDS, PresetRoleSlug
 from app.core.auth.dashboard_users_cache import get_dashboard_users_cache
 from app.core.auth.providers import ExternalIdentity
+from app.core.cache.invalidation import NAMESPACE_API_KEY, get_cache_invalidation_poller
 from app.core.utils.time import utcnow
 from app.db.models import (
     COMPAT_ADMIN_USERNAME,
@@ -268,6 +270,7 @@ class IdentityResolver:
             return None
         previous_slug = user.role.slug
         new_slug: str | None = None
+        key_hashes: list[str] = []
         if fallback is not None:
             role = await self._roles.get_role(fallback)
             if role is None:
@@ -277,8 +280,27 @@ class IdentityResolver:
             user.role_id = fallback
         else:
             user.status = DashboardUserStatus.DISABLED.value
+            # The owner cascade every other disable applies
+            # (``DashboardUsersService.deactivate_user``): a disabled account's
+            # keys stop working in the same transaction, recorded as
+            # ``owner_disabled`` so re-enabling the account restores them.
+            key_hashes = await self._repo.deactivate_owned_keys(user.id)
         user = await self._repo.commit_user(user.id, bump_generation=True)
         await get_dashboard_users_cache().invalidate()
+        if key_hashes:
+            api_key_cache = get_api_key_cache()
+            for key_hash in key_hashes:
+                await api_key_cache.invalidate(key_hash)
+            poller = get_cache_invalidation_poller()
+            if poller is not None:
+                await poller.bump(NAMESPACE_API_KEY)
+            AuditService.log_async(
+                "user_keys_deactivated",
+                actor_ip=None,
+                details={"count": len(key_hashes), "source": "role_mapping"},
+                actor=_user_actor(user, identity.provider),
+                target=AuditTarget("user", user.id),
+            )
         AuditService.log_async(
             "role_demoted_no_mapping",
             actor_ip=None,
