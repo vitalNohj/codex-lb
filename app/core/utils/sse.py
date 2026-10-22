@@ -175,10 +175,14 @@ async def inject_sse_keepalives(
     finally:
         # Close the source with cancellation deferred so its own ``finally``
         # (settlement, reservation release) runs now and completes even when
-        # the client disconnect cancelled this task.
-        if iterator is not source:
-            await aclose_stream(iterator)
-        await aclose_stream(source)
+        # the client disconnect cancelled this task. The source close sits in
+        # its own ``finally``: a cancellation deferred through the iterator
+        # close is re-raised when it returns, and must not skip the source.
+        try:
+            if iterator is not source:
+                await aclose_stream(iterator)
+        finally:
+            await aclose_stream(source)
 
 
 class SseLineDecoder:
