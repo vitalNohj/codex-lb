@@ -1418,3 +1418,80 @@ async def test_cliproxy_echoed_cost_is_not_authoritative(monkeypatch: pytest.Mon
 
     assert result.cost_usd == pytest.approx(0.25)
     assert result.cost_source == "catalog_calculated"
+
+
+@pytest.mark.parametrize(
+    "image_part",
+    [
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
+        {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "AAAA"}},
+    ],
+    ids=["image_url", "anthropic-image"],
+)
+def test_build_sidecar_chat_payload_keeps_tool_result_images(image_part: dict) -> None:
+    request = ChatCompletionsRequest.model_validate(
+        {
+            "model": "claude-sonnet-4-5",
+            "messages": [
+                {"role": "user", "content": "screenshot"},
+                {
+                    "role": "assistant",
+                    "content": [{"type": "tool_use", "id": "toolu_1", "name": "shot", "input": {}}],
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "toolu_1",
+                            "content": [{"type": "text", "text": "captured"}, image_part],
+                        }
+                    ],
+                },
+            ],
+        }
+    )
+
+    payload = build_sidecar_chat_payload(request, "claude-sonnet-4-5", _config())
+
+    tool_messages = [message for message in payload.body["messages"] if message["role"] == "tool"]
+    assert tool_messages == [
+        {
+            "role": "tool",
+            "tool_call_id": "toolu_1",
+            "content": [
+                {"type": "text", "text": "captured"},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
+            ],
+        }
+    ]
+
+
+def test_build_sidecar_chat_payload_text_tool_result_stays_a_string() -> None:
+    request = ChatCompletionsRequest.model_validate(
+        {
+            "model": "claude-sonnet-4-5",
+            "messages": [
+                {"role": "user", "content": "pwd"},
+                {
+                    "role": "assistant",
+                    "content": [{"type": "tool_use", "id": "toolu_1", "name": "pwd", "input": {}}],
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "toolu_1",
+                            "content": [{"type": "text", "text": "/home"}],
+                        }
+                    ],
+                },
+            ],
+        }
+    )
+
+    payload = build_sidecar_chat_payload(request, "claude-sonnet-4-5", _config())
+
+    tool_messages = [message for message in payload.body["messages"] if message["role"] == "tool"]
+    assert tool_messages[0]["content"] == "/home"

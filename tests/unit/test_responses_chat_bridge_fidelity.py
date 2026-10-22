@@ -825,3 +825,30 @@ def test_t9_agent_message_text_is_kept():
     )
 
     assert chat["messages"][1:] == [{"role": "user", "content": "do the task"}]
+
+
+def test_tool_output_image_reaches_chat_provider_as_image_part():
+    image = "data:image/png;base64,AAAA"
+    chat = _chat(
+        input=[
+            {"type": "function_call", "call_id": "c1", "name": "lookup", "arguments": "{}"},
+            {
+                "type": "function_call_output",
+                "call_id": "c1",
+                "output": [
+                    {"type": "input_text", "text": "shot"},
+                    {"type": "input_image", "image_url": image, "detail": "low"},
+                ],
+            },
+        ],
+        tools=[{"type": "function", "name": "lookup"}],
+    )
+
+    assert chat["messages"][-1] == {
+        "role": "tool",
+        "tool_call_id": "c1",
+        "content": [
+            {"type": "text", "text": "shot"},
+            {"type": "image_url", "image_url": {"url": image, "detail": "low"}},
+        ],
+    }

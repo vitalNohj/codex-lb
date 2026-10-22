@@ -17,6 +17,7 @@ from pydantic import (
 )
 
 from app.core.openai.exceptions import ClientPayloadError
+from app.core.openai.message_coercion import tool_output_content_parts
 from app.core.openai.tool_call_safety import is_downstream_side_effect_tool_call_item
 from app.core.types import JsonObject, JsonValue
 from app.core.utils.json_guards import is_json_list, is_json_mapping
@@ -597,12 +598,15 @@ def _normalize_tool_input_item(value: Mapping[str, JsonValue]) -> JsonValue:
     }
 
 
-def _normalize_tool_output_value(content: JsonValue) -> str:
+def _normalize_tool_output_value(content: JsonValue) -> str | list[JsonValue]:
     if content is None:
         return ""
     if isinstance(content, str):
         return content
     if is_json_list(content):
+        image_output = tool_output_content_parts(content)
+        if image_output is not None:
+            return image_output
         parts: list[str] = []
         for part in _json_parts(content):
             if isinstance(part, str):
