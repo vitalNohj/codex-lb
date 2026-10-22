@@ -72,3 +72,20 @@ If OpenRouter has prefix `orcarouter/` and OrcaRouter has full model `orcarouter
 - Streaming chunk mapping is validated in unit tests.
 - Integration tests cover include_usage and tool call finish reasons.
 - Claude Opus 5.5 (`claude-opus-5-5`) and Sonnet 5.5 (`claude-sonnet-5-5`) are separate CLIProxyAPI wire ids. A configured strip prefix is removed and the rest of the id is forwarded as typed. Dotted spellings, release dates, and thinking or effort suffixes are not rewritten. A future id has no price and no output floor until those rows exist. Dashboard model aliasing connects a catalog id to a different upstream id.
+- Claude thinking text for OpenAI-format clients needs a CLIProxyAPI payload override. CLIProxyAPI's Claude Code cloak sends `thinking.display: "updates"` to Anthropic, and that mode streams thinking blocks with no text, so clients such as Pi saw empty `reasoning_content` for `cc/claude-opus-5-5`. A client-sent `display` does not reach Anthropic: CLIProxyAPI sets its own. The live `~/.cli-proxy-api/config.yaml` on Dallas has this rule (added 2026-10-21, CLIProxyAPI 8.0.36, picked up by hot reload); keep it when editing that file, and add it again after a config rebuild:
+
+  ```yaml
+  requests:
+    payload:
+      override:
+        - models:
+            - name: "claude-*"
+              protocol: "claude"
+              from-protocol: "openai"
+              match:
+                - "thinking.type": "adaptive"
+          params:
+            "thinking.display": "summarized"
+  ```
+
+  Scope: only Claude requests that arrive in OpenAI chat format and already ask for adaptive thinking. Native Claude `/v1/messages` clients keep the `display` they send. codex-lb does not write this block; its session-affinity toggle edits only `routing` lines. Verified through codex-lb `/v1/chat/completions`: before, 0 characters of `reasoning_content` in each of 4 requests; after, 341 and 440 characters streamed in 38 and 45 chunks, and live Pi Pocket sessions show Opus thinking again. Check with a streamed `cc/claude-opus-5-5` request and count non-empty `reasoning_content` deltas.
