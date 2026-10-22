@@ -138,7 +138,8 @@ class TestAppendStability:
         turn4 = json_mode_turn("review file a", *exchanges(4))
         other_session = json_mode_turn("review file b", *exchanges(2))
 
-        assert turn2.input[0]["content"][0] == {"type": "input_text", "text": "Respond in JSON."}  # type: ignore[index]
+        first_item = cast(list[dict[str, list[JsonValue]]], turn2.input)[0]
+        assert first_item["content"][0] == {"type": "input_text", "text": "Respond in JSON."}
         key = _derive_prompt_cache_key(turn2, api_key)
         assert _derive_prompt_cache_key(turn3, api_key) == key
         assert _derive_prompt_cache_key(turn4, api_key) == key
