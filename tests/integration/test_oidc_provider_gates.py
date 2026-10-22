@@ -306,6 +306,29 @@ async def test_the_connection_settings_are_written_typed_and_read_back_masked(as
 
 
 @pytest.mark.asyncio
+async def test_a_connection_write_takes_the_account_lock_before_reading_the_row(
+    async_client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A repoint serialises with an enable, so it cannot swap the document under the enable's proof check."""
+
+    await _setup_admin(async_client)
+    calls: list[str] = []
+    for name in ("acquire_account_write_intent", "get_provider"):
+        real = getattr(AuthProvidersRepository, name)
+
+        async def recorded(self, *args, _name=name, _real=real, **kwargs):
+            calls.append(_name)
+            return await _real(self, *args, **kwargs)
+
+        monkeypatch.setattr(AuthProvidersRepository, name, recorded)
+
+    written = await _write_config(async_client)
+
+    assert written.status_code == 200, written.text
+    assert calls[:2] == ["acquire_account_write_intent", "get_provider"], calls
+
+
+@pytest.mark.asyncio
 async def test_a_connection_document_is_refused_on_a_row_that_has_no_configuration(
     async_client: AsyncClient,
 ) -> None:

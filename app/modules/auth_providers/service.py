@@ -119,8 +119,11 @@ class AuthProvidersService:
         # Same reason as the settings tightening gate: the break-glass count
         # below and the provider write are one atomic step, so the accounts lock
         # is taken before this service reads anything and held until ``commit``.
-        # Only a request that could turn a provider on takes it.
-        if payload.enabled is True:
+        # A request that could turn a provider on takes it, and so does one
+        # that rewrites the connection: an edit that replaced the tested
+        # document between an enable's proof check and its commit would
+        # otherwise arm a connection nobody proved.
+        if payload.enabled is True or "config" in payload.model_fields_set:
             await self._repo.acquire_account_write_intent()
         provider = await self._repo.get_provider(provider_id)
         if provider is None:
