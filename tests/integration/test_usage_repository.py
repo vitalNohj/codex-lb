@@ -19,13 +19,11 @@ from app.modules.usage.repository import (
     AdditionalUsageRepository,
     UsageHistorySnapshot,
     UsageRepository,
-    _additional_latest_by_account_sqlite,
     _bulk_history_cache_key,
     _bulk_history_since_sqlite,
     _cap_grouped_history,
     _clear_bulk_history_since_sqlite_cache,
     _latest_by_account_sqlite,
-    _resolve_additional_quota_query_scope,
 )
 
 pytestmark = pytest.mark.integration
@@ -423,7 +421,10 @@ async def _vacuum_analyze_usage_history(session: AsyncSession) -> None:
     await session.commit()
     autocommit_engine = engine.execution_options(isolation_level="AUTOCOMMIT")
     async with autocommit_engine.connect() as conn:
-        await conn.execute(text("VACUUM (ANALYZE) usage_history"))
+        if _dialect_name(session) == "postgresql":
+            await conn.execute(text("VACUUM (ANALYZE) usage_history"))
+        else:
+            await conn.execute(text("ANALYZE usage_history"))
 
 
 @pytest.mark.asyncio
@@ -928,44 +929,6 @@ def test_latest_by_account_sqlite_closes_direct_connection(tmp_path, monkeypatch
     result = _latest_by_account_sqlite(str(db_path), "primary", None)
 
     assert result["acc1"].used_percent == 10.0
-    assert closed == [True]
-
-
-def test_additional_latest_by_account_sqlite_closes_direct_connection(tmp_path, monkeypatch):
-    db_path = tmp_path / "usage.db"
-    with closing(sqlite3.connect(db_path)) as conn, conn:
-        conn.execute(
-            """
-            create table additional_usage_history (
-                id integer primary key,
-                account_id text not null,
-                quota_key text not null,
-                limit_name text not null,
-                metered_feature text not null,
-                window text not null,
-                used_percent real not null,
-                reset_at integer,
-                window_minutes integer,
-                recorded_at text not null
-            )
-            """
-        )
-        conn.execute(
-            """
-            insert into additional_usage_history
-                (id, account_id, quota_key, limit_name, metered_feature, window, used_percent, recorded_at)
-            values (1, 'acc1', 'codex_spark', 'Codex Spark', 'codex_spark', 'primary', 20.0,
-                    '2026-01-01 00:00:00')
-            """
-        )
-        conn.commit()
-    scope = _resolve_additional_quota_query_scope(quota_key="codex_spark")
-    assert scope is not None
-    closed = _track_sqlite_connect_close(monkeypatch)
-
-    result = _additional_latest_by_account_sqlite(str(db_path), scope, "primary", None, None)
-
-    assert result["acc1"].used_percent == 20.0
     assert closed == [True]
 
 
@@ -1588,14 +1551,53 @@ async def test_bulk_history_since_per_account_row_cap_keeps_newest_rows(db_setup
 
 
 @pytest.mark.asyncio
+async def test_bulk_history_since_negative_row_cap_is_empty_on_sqlite(db_setup):
+    """SQLite treats a negative cap as an empty tail, not an unlimited query."""
+    now = utcnow()
+    async with SessionLocal() as session:
+        if _dialect_name(session) != "sqlite":
+            pytest.skip("SQLite-only negative LIMIT regression test")
+
+        accounts_repo = AccountsRepository(session)
+        repo = UsageRepository(session)
+        await accounts_repo.upsert(_make_account("acc-negative-cap"))
+        await repo.add_entry(
+            "acc-negative-cap",
+            10.0,
+            window="secondary",
+            recorded_at=now - timedelta(hours=2),
+        )
+        await repo.add_entry(
+            "acc-negative-cap",
+            20.0,
+            window="secondary",
+            recorded_at=now - timedelta(minutes=30),
+        )
+
+        without_floor = await repo.bulk_history_since(
+            ["acc-negative-cap"],
+            "secondary",
+            now - timedelta(days=1),
+            per_account_row_cap=-1,
+        )
+        with_floor = await repo.bulk_history_since(
+            ["acc-negative-cap"],
+            "secondary",
+            now - timedelta(days=1),
+            per_account_row_cap=-1,
+            uncapped_recent_floor=now - timedelta(hours=1),
+        )
+
+    assert without_floor.get("acc-negative-cap", []) == []
+    assert [snapshot.used_percent for snapshot in with_floor["acc-negative-cap"]] == [20.0]
+
+
+@pytest.mark.asyncio
 async def test_bulk_history_since_row_cap_respects_per_account_cutoffs_postgresql(db_setup):
     """The cap composes with per-account cutoffs: the cutoff bounds the
     lookback first, then the cap keeps the newest rows inside it."""
     now = utcnow()
     async with SessionLocal() as session:
-        if _dialect_name(session) != "postgresql":
-            pytest.skip("PostgreSQL-only row-cap test")
-
         accounts_repo = AccountsRepository(session)
         repo = UsageRepository(session)
         await accounts_repo.upsert(_make_account("acc-short"))
@@ -1640,9 +1642,6 @@ async def test_bulk_history_since_row_cap_exempts_uncapped_recent_floor_postgres
     """
     now = utcnow()
     async with SessionLocal() as session:
-        if _dialect_name(session) != "postgresql":
-            pytest.skip("PostgreSQL-only row-cap test")
-
         accounts_repo = AccountsRepository(session)
         repo = UsageRepository(session)
         await accounts_repo.upsert(_make_account("acc-burst"))
@@ -1685,6 +1684,36 @@ async def test_bulk_history_since_row_cap_exempts_uncapped_recent_floor_postgres
         54.0,
         55.0,
     ]
+
+
+@pytest.mark.asyncio
+async def test_bulk_history_since_row_cap_all_recent_when_floor_covers_cutoff(db_setup):
+    """When uncapped_recent_floor <= cutoff, all in-cutoff rows are exempt from the cap."""
+    now = utcnow()
+    async with SessionLocal() as session:
+        accounts_repo = AccountsRepository(session)
+        repo = UsageRepository(session)
+        await accounts_repo.upsert(_make_account("acc-floor-all"))
+
+        for offset in range(8):
+            await repo.add_entry(
+                "acc-floor-all",
+                10.0 + offset,
+                window="primary",
+                recorded_at=now - timedelta(minutes=8 - offset),
+            )
+
+        # floor is older than since, so uncapped_floor <= cutoff applies and all 8 rows return
+        grouped = await repo.bulk_history_since(
+            ["acc-floor-all"],
+            "primary",
+            now - timedelta(minutes=10),
+            per_account_row_cap=3,
+            uncapped_recent_floor=now - timedelta(hours=2),
+        )
+
+    assert len(grouped["acc-floor-all"]) == 8
+    assert [s.used_percent for s in grouped["acc-floor-all"]] == [10.0 + i for i in range(8)]
 
 
 @pytest.mark.asyncio

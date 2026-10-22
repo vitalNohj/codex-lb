@@ -180,7 +180,7 @@ describe("OpenCode Go backend contract", () => {
     it("applies the documented defaults when the server omits the fields", () => {
       const parsed = DashboardSettingsSchema.parse({
         stickyThreadsEnabled: true,
-        upstreamStreamTransport: "default",
+        upstreamStreamTransport: "auto",
         preferEarlierResetAccounts: false,
         routingStrategy: "round_robin",
         openaiCacheAffinityMaxAgeSeconds: 300,
@@ -209,7 +209,7 @@ describe("OpenCode Go backend contract", () => {
     it("parses the fresh-install seeded prefix with stripping on", () => {
       const parsed = DashboardSettingsSchema.parse({
         stickyThreadsEnabled: true,
-        upstreamStreamTransport: "default",
+        upstreamStreamTransport: "auto",
         preferEarlierResetAccounts: false,
         routingStrategy: "round_robin",
         openaiCacheAffinityMaxAgeSeconds: 300,
@@ -229,7 +229,7 @@ describe("OpenCode Go backend contract", () => {
     it("never exposes the API key itself in any parsed shape", () => {
       const parsed = DashboardSettingsSchema.parse({
         stickyThreadsEnabled: true,
-        upstreamStreamTransport: "default",
+        upstreamStreamTransport: "auto",
         preferEarlierResetAccounts: false,
         routingStrategy: "round_robin",
         openaiCacheAffinityMaxAgeSeconds: 300,

@@ -10,7 +10,6 @@ from dataclasses import dataclass
 from functools import partial
 from typing import TypeVar, cast
 
-import anyio
 from fastapi import Request, Response
 from fastapi.responses import JSONResponse
 
@@ -27,7 +26,7 @@ from app.core.errors import OpenAIErrorEnvelope, openai_error
 from app.core.openai.chat_requests import ChatCompletionsRequest
 from app.core.types import JsonObject, JsonValue
 from app.core.usage.logs import CANCELLED_STATUS, CLIENT_DISCONNECT_ERROR_CODE
-from app.core.utils.cancellation import complete_despite_cancellation
+from app.core.utils.cancellation import await_deferring_cancellation, complete_despite_cancellation
 from app.core.utils.client_disconnect import ClientDisconnected
 from app.core.utils.json_guards import is_json_mapping
 from app.core.utils.request_id import get_request_id
@@ -635,17 +634,11 @@ async def _await_result_deferring_cancellation(awaitable: Awaitable[_T]) -> tupl
     terminates (an owned settlement), never an open-ended wait.
     """
 
-    task = asyncio.ensure_future(awaitable)
-    cancellation_deferred = False
-    with anyio.CancelScope(shield=True):
-        while True:
-            try:
-                return await asyncio.shield(task), cancellation_deferred
-            except asyncio.CancelledError:
-                if task.cancelled():
-                    raise
-                cancellation_deferred = True
-    raise RuntimeError("unreachable shielded cancellation-deferral state")
+    # Delegates to the shared helper: it waits through
+    # ``wait_on_shared_future`` rather than re-shielding the task on every
+    # delivered cancel, which leaks a done-callback per retry on Python 3.14
+    # (the 2026-08-30 event-loop livelock; scripts/check_cancellation_safety.py).
+    return await await_deferring_cancellation(awaitable)
 
 
 async def _settle_stream_deferring_cancellation(

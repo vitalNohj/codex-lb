@@ -13,7 +13,9 @@ import asyncio
 from collections.abc import Awaitable
 from typing import TypeVar
 
-import anyio
+from app.core.utils.shared_future import (
+    _await_result_deferring_cancellation as _shared_await_result_deferring_cancellation,
+)
 
 __all__ = ["await_deferring_cancellation", "complete_despite_cancellation"]
 
@@ -33,17 +35,12 @@ async def await_deferring_cancellation(awaitable: Awaitable[_T]) -> tuple[_T, bo
     settlement, a stream close), never an open-ended wait.
     """
 
-    task = asyncio.ensure_future(awaitable)
-    cancellation_deferred = False
-    with anyio.CancelScope(shield=True):
-        while True:
-            try:
-                return await asyncio.shield(task), cancellation_deferred
-            except asyncio.CancelledError:
-                if task.cancelled():
-                    raise
-                cancellation_deferred = True
-    raise RuntimeError("unreachable shielded cancellation-deferral state")
+    # Delegates to the shared helper: it waits through
+    # ``wait_on_shared_future`` rather than re-shielding the task on every
+    # delivered cancel, which leaks a done-callback per retry on Python 3.14
+    # (the 2026-08-30 event-loop livelock; scripts/check_cancellation_safety.py).
+    result, cancellation = await _shared_await_result_deferring_cancellation(awaitable)
+    return result, cancellation is not None
 
 
 async def complete_despite_cancellation(awaitable: Awaitable[_T]) -> _T:

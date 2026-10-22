@@ -2,12 +2,13 @@ import { describe, expect, it } from "vitest";
 
 import { buildSettingsUpdateRequest } from "@/features/settings/payload";
 import { DashboardSettingsSchema } from "@/features/settings/schemas";
+import { createDashboardSettings } from "@/test/mocks/factories";
 
 describe("buildSettingsUpdateRequest", () => {
   it("carries the loaded settings version as expectedVersion for CAS", () => {
     const settings = DashboardSettingsSchema.parse({
       stickyThreadsEnabled: true,
-      upstreamStreamTransport: "default",
+      upstreamStreamTransport: "auto",
       preferEarlierResetAccounts: false,
       routingStrategy: "round_robin",
       openaiCacheAffinityMaxAgeSeconds: 300,
@@ -29,7 +30,7 @@ describe("buildSettingsUpdateRequest", () => {
   it("keeps a dashboard layout patch limited to the flags the caller set", () => {
     const settings = DashboardSettingsSchema.parse({
       stickyThreadsEnabled: true,
-      upstreamStreamTransport: "default",
+      upstreamStreamTransport: "auto",
       preferEarlierResetAccounts: false,
       routingStrategy: "round_robin",
       openaiCacheAffinityMaxAgeSeconds: 300,
@@ -54,7 +55,7 @@ describe("buildSettingsUpdateRequest", () => {
   it("omits expectedVersion when the loaded settings carry no version", () => {
     const settings = DashboardSettingsSchema.parse({
       stickyThreadsEnabled: true,
-      upstreamStreamTransport: "default",
+      upstreamStreamTransport: "auto",
       preferEarlierResetAccounts: false,
       routingStrategy: "round_robin",
       openaiCacheAffinityMaxAgeSeconds: 300,
@@ -73,7 +74,7 @@ describe("buildSettingsUpdateRequest", () => {
   it("does not persist split sticky thresholds synthesized from legacy settings", () => {
     const settings = DashboardSettingsSchema.parse({
       stickyThreadsEnabled: true,
-      upstreamStreamTransport: "default",
+      upstreamStreamTransport: "auto",
       preferEarlierResetAccounts: false,
       routingStrategy: "round_robin",
       openaiCacheAffinityMaxAgeSeconds: 300,
@@ -96,7 +97,7 @@ describe("buildSettingsUpdateRequest", () => {
   it("does not persist sticky threshold defaults synthesized from older settings", () => {
     const settings = DashboardSettingsSchema.parse({
       stickyThreadsEnabled: true,
-      upstreamStreamTransport: "default",
+      upstreamStreamTransport: "auto",
       preferEarlierResetAccounts: false,
       routingStrategy: "round_robin",
       openaiCacheAffinityMaxAgeSeconds: 300,
@@ -118,7 +119,7 @@ describe("buildSettingsUpdateRequest", () => {
   it("does not persist a legacy threshold synthesized from split settings", () => {
     const settings = DashboardSettingsSchema.parse({
       stickyThreadsEnabled: true,
-      upstreamStreamTransport: "default",
+      upstreamStreamTransport: "auto",
       preferEarlierResetAccounts: false,
       routingStrategy: "round_robin",
       openaiCacheAffinityMaxAgeSeconds: 300,
@@ -141,7 +142,7 @@ describe("buildSettingsUpdateRequest", () => {
   it("persists split sticky thresholds that came from the backend", () => {
     const settings = DashboardSettingsSchema.parse({
       stickyThreadsEnabled: true,
-      upstreamStreamTransport: "default",
+      upstreamStreamTransport: "auto",
       preferEarlierResetAccounts: false,
       routingStrategy: "round_robin",
       openaiCacheAffinityMaxAgeSeconds: 300,
@@ -164,7 +165,7 @@ describe("buildSettingsUpdateRequest", () => {
   it("keeps the legacy sticky threshold aligned with primary edits", () => {
     const settings = DashboardSettingsSchema.parse({
       stickyThreadsEnabled: true,
-      upstreamStreamTransport: "default",
+      upstreamStreamTransport: "auto",
       preferEarlierResetAccounts: false,
       routingStrategy: "round_robin",
       openaiCacheAffinityMaxAgeSeconds: 300,
@@ -192,7 +193,7 @@ describe("buildSettingsUpdateRequest", () => {
   it("preserves Claude sidecar plan and collector settings", () => {
     const settings = DashboardSettingsSchema.parse({
       stickyThreadsEnabled: true,
-      upstreamStreamTransport: "default",
+      upstreamStreamTransport: "auto",
       preferEarlierResetAccounts: false,
       routingStrategy: "round_robin",
       openaiCacheAffinityMaxAgeSeconds: 300,
@@ -229,7 +230,7 @@ describe("buildSettingsUpdateRequest", () => {
   it("preserves OrcaRouter sidecar settings when saving unrelated fields", () => {
     const settings = DashboardSettingsSchema.parse({
       stickyThreadsEnabled: true,
-      upstreamStreamTransport: "default",
+      upstreamStreamTransport: "auto",
       preferEarlierResetAccounts: false,
       routingStrategy: "round_robin",
       openaiCacheAffinityMaxAgeSeconds: 300,
@@ -258,7 +259,7 @@ describe("buildSettingsUpdateRequest", () => {
   it("preserves OpenAI-compat endpoints when saving unrelated fields", () => {
     const settings = DashboardSettingsSchema.parse({
       stickyThreadsEnabled: true,
-      upstreamStreamTransport: "default",
+      upstreamStreamTransport: "auto",
       preferEarlierResetAccounts: false,
       routingStrategy: "round_robin",
       openaiCacheAffinityMaxAgeSeconds: 300,
@@ -299,7 +300,7 @@ describe("buildSettingsUpdateRequest", () => {
   it("preserves Ollama sidecar settings when saving unrelated fields", () => {
     const settings = DashboardSettingsSchema.parse({
       stickyThreadsEnabled: true,
-      upstreamStreamTransport: "default",
+      upstreamStreamTransport: "auto",
       preferEarlierResetAccounts: false,
       routingStrategy: "round_robin",
       openaiCacheAffinityMaxAgeSeconds: 300,
@@ -332,7 +333,7 @@ describe("buildSettingsUpdateRequest", () => {
   it("includes limit warm-up exhausted threshold updates", () => {
     const settings = DashboardSettingsSchema.parse({
       stickyThreadsEnabled: true,
-      upstreamStreamTransport: "default",
+      upstreamStreamTransport: "auto",
       preferEarlierResetAccounts: false,
       routingStrategy: "round_robin",
       openaiCacheAffinityMaxAgeSeconds: 300,
@@ -357,7 +358,7 @@ describe("buildSettingsUpdateRequest", () => {
   it("includes reset-credit setting updates", () => {
     const settings = DashboardSettingsSchema.parse({
       stickyThreadsEnabled: true,
-      upstreamStreamTransport: "default",
+      upstreamStreamTransport: "auto",
       preferEarlierResetAccounts: false,
       routingStrategy: "round_robin",
       openaiCacheAffinityMaxAgeSeconds: 300,
@@ -385,7 +386,7 @@ describe("buildSettingsUpdateRequest", () => {
   it("does not materialize inherited account capacity limits on unrelated updates", () => {
     const settings = DashboardSettingsSchema.parse({
       stickyThreadsEnabled: true,
-      upstreamStreamTransport: "default",
+      upstreamStreamTransport: "auto",
       preferEarlierResetAccounts: false,
       routingStrategy: "round_robin",
       openaiCacheAffinityMaxAgeSeconds: 300,
@@ -412,7 +413,7 @@ describe("buildSettingsUpdateRequest", () => {
   it("includes all account capacity limits when they are explicitly edited", () => {
     const settings = DashboardSettingsSchema.parse({
       stickyThreadsEnabled: true,
-      upstreamStreamTransport: "default",
+      upstreamStreamTransport: "auto",
       preferEarlierResetAccounts: false,
       routingStrategy: "round_robin",
       openaiCacheAffinityMaxAgeSeconds: 300,
@@ -441,7 +442,7 @@ describe("buildSettingsUpdateRequest", () => {
   describe("OpenCode Go secrets", () => {
     const settings = DashboardSettingsSchema.parse({
       stickyThreadsEnabled: true,
-      upstreamStreamTransport: "default",
+      upstreamStreamTransport: "auto",
       preferEarlierResetAccounts: false,
       routingStrategy: "round_robin",
       openaiCacheAffinityMaxAgeSeconds: 300,
@@ -487,5 +488,42 @@ describe("buildSettingsUpdateRequest", () => {
       expect(settings.opencodeGoSidecarApiKeyConfigured).toBe(true);
       expect("opencodeGoSidecarApiKey" in settings).toBe(false);
     });
+  });
+
+  it("preserves explicit null capacity clears in the update payload", () => {
+    const settings = createDashboardSettings();
+    const payload = buildSettingsUpdateRequest(settings, {
+      proxyAccountStreamLimit: null,
+    });
+
+    expect(payload.proxyAccountStreamLimit).toBeNull();
+    expect(payload).not.toHaveProperty("proxyAccountResponseCreateLimit");
+    expect(payload).not.toHaveProperty("proxyAccountStreamRecoveryReserve");
+    expect(payload).not.toHaveProperty("proxyApiKeyFairShareCongestionThresholdPct");
+  });
+});
+
+describe("buildSettingsUpdateRequest local login policy", () => {
+  it("never echoes the policy back, so an unrelated save cannot re-open local sign-in", () => {
+    // The response schema falls an unknown policy back to the most open value.
+    // Echoing that back would make every Settings save on a newer backend a
+    // silent relaxation; omitted means unchanged, which is the safe default.
+    const settings = DashboardSettingsSchema.parse({
+      ...createDashboardSettings(),
+      localLoginPolicy: "a_policy_this_build_does_not_know",
+    });
+    expect(settings.localLoginPolicy).toBe("enabled");
+
+    const payload = buildSettingsUpdateRequest(settings, { apiKeyAuthEnabled: false });
+
+    expect("localLoginPolicy" in payload).toBe(false);
+  });
+
+  it("still sends the policy the one card that owns it asks for", () => {
+    const payload = buildSettingsUpdateRequest(createDashboardSettings(), {
+      localLoginPolicy: "break_glass_only",
+    });
+
+    expect(payload.localLoginPolicy).toBe("break_glass_only");
   });
 });

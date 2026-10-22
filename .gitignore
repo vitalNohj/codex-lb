@@ -24,6 +24,8 @@ build/
 frontend/.*-build/
 dist/
 site/
+/target/
+crates/**/target/
 app/static/
 deploy/helm/*/charts/
 
@@ -59,7 +61,15 @@ certs/
 .agents/version.json
 .agents/log/
 .agents/plans/
+.agents/scheduled_tasks.lock
 .venv
+
+# Local Responses traffic captures and generated parity reports
+scripts/traffic_analysis/output/*.jsonl
+scripts/traffic_analysis/output/*.json
+scripts/traffic_analysis/output/*.md
+scripts/traffic_analysis/output/*.txt
+!scripts/traffic_analysis/output/.gitkeep
 
 .omx/
 PROMPT.md

@@ -39,6 +39,7 @@ const BASE_PROPS: RequestFiltersProps = {
 function renderFilters(
   overrides: Partial<FilterState> = {},
   statusOptions: RequestFiltersProps["statusOptions"] = EMPTY_OPTIONS,
+  extraProps: Partial<RequestFiltersProps> = {},
 ) {
   const filters = { ...BASE_FILTERS, ...overrides };
   const props: RequestFiltersProps = {
@@ -48,6 +49,7 @@ function renderFilters(
     apiKeyOptions: EMPTY_OPTIONS,
     modelOptions: EMPTY_OPTIONS,
     statusOptions,
+    ...extraProps,
     onSearchChange: vi.fn(),
     onTimeframeChange: vi.fn(),
     onAccountChange: vi.fn(),
@@ -60,6 +62,21 @@ function renderFilters(
   render(<RequestFilters {...props} />);
   return props;
 }
+
+describe("RequestFilters API key filter", () => {
+  it("renders the API key filter by default", () => {
+    renderFilters();
+
+    expect(screen.getByRole("button", { name: "API Keys" })).toBeInTheDocument();
+  });
+
+  it("hides the API key filter when showApiKeyFilter is false", () => {
+    renderFilters({}, EMPTY_OPTIONS, { showApiKeyFilter: false });
+
+    expect(screen.queryByRole("button", { name: "API Keys" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Accounts" })).toBeInTheDocument();
+  });
+});
 
 describe("RequestFilters", () => {
   it("shows simplified as the selected request-log view mode", () => {

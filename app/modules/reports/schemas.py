@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 from pydantic import Field
 
 from app.modules.shared.schemas import DashboardModel
@@ -93,7 +95,19 @@ class MonthlyUsageEntry(DashboardModel):
     models: list[MonthlyModelEntry] = Field(default_factory=list)
 
 
+class ReportsOptionsResponse(DashboardModel):
+    models: list[str]
+    useragents: list[str]
+    # Fork: lifetime All-time origin for the account/API-key scope (model and
+    # user-agent blanked, rollup-backed once raw logs are pruned). The Reports
+    # page reads it here so a model/UA filter cannot move the All-time start.
+    earliest_activity_at: str | None = None
+
+
 class ReportsResponse(DashboardModel):
+    generated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    speed_metrics_available: bool = True
+    speed_metrics_max_days: int = 7
     summary: ReportSummary
     comparison: ReportComparison
     daily: list[DailyReportRow] = Field(default_factory=list)
@@ -117,3 +131,37 @@ class ReportsResponse(DashboardModel):
     # Inclusive UTC date of the earliest countable activity (rollup-backed
     # once raw is pruned); the All-time range origin.
     earliest_activity_at: str | None = None
+
+
+class ThreadIdentityFacet(DashboardModel):
+    """One side of the keyed/unkeyed split for the selected window."""
+
+    requests: int = 0
+    request_share: float = 0.0
+    # Requests whose account was detached by an account deletion. A rising
+    # share means this window's account-spread figures are decaying.
+    unattributed_request_share: float = 0.0
+    conversations: int = 0
+    mean_accounts_per_conversation: float = 0.0
+    single_account_conversation_share: float = 0.0
+    turns: int = 0
+    account_switch_rate: float = 0.0
+    cache_hit_ratio: float = 0.0
+    cache_sample_input_tokens: int = 0
+    # Unkeyed traffic carries no thread identifier, so its conversation and
+    # switch figures are reconstructed by API key. The UI must label them.
+    thread_grouping_approximate: bool = False
+
+
+class ThreadIdentityResponse(DashboardModel):
+    generated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    available: bool = True
+    max_days: int
+    window_days: int
+    conversation_min_requests: int
+    switch_max_gap_seconds: int
+    cache_min_input_tokens: int
+    total_requests: int = 0
+    unkeyed_request_share: float = 0.0
+    keyed: ThreadIdentityFacet = Field(default_factory=ThreadIdentityFacet)
+    unkeyed: ThreadIdentityFacet = Field(default_factory=ThreadIdentityFacet)

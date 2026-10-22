@@ -18,7 +18,9 @@ export type PasswordSettingsProps = {
 
 export function PasswordSettings({ disabled = false }: PasswordSettingsProps) {
   const { t } = useTranslation();
-  const passwordRequired = useAuthStore((s) => s.passwordRequired);
+  // Whether a password exists to change or remove; accounts that sign in through
+  // the reverse proxy alone must not turn this card into "Login to manage".
+  const passwordRequired = useAuthStore((s) => s.localPasswordConfigured);
   const authMode = useAuthStore((s) => s.authMode);
   const passwordManagementEnabled = useAuthStore((s) => s.passwordManagementEnabled);
   const passwordSessionActive = useAuthStore((s) => s.passwordSessionActive);
@@ -29,6 +31,14 @@ export function PasswordSettings({ disabled = false }: PasswordSettingsProps) {
   const lock = disabled || !passwordManagementEnabled;
   const closeIfMatches = (dialog: PasswordDialog) => (open: boolean) => {
     if (!open && activeDialog === dialog) {
+      setActiveDialog(null);
+    }
+  };
+
+  const handleSetupOpenChange = (open: boolean) => {
+    if (open) {
+      setActiveDialog("setup");
+    } else if (activeDialog === "setup") {
       setActiveDialog(null);
     }
   };
@@ -86,25 +96,20 @@ export function PasswordSettings({ disabled = false }: PasswordSettingsProps) {
                 {t("settings.password.actions.loginToManage")}
               </Button>
             ) : !passwordRequired ? (
-              <Button
-                type="button"
-                size="sm"
-                className="h-9 text-xs"
-                disabled={lock}
-                onClick={() => setActiveDialog("setup")}
+              <PasswordSetupDialog
+                open={activeDialog === "setup"}
+                onOpenChange={handleSetupOpenChange}
+                disabled={disabled}
               >
-                {t("settings.password.actions.set")}
-              </Button>
+                <Button type="button" size="sm" className="h-9 text-xs" disabled={lock}>
+                  {t("settings.password.actions.set")}
+                </Button>
+              </PasswordSetupDialog>
             ) : null}
           </>
         }
       />
 
-      <PasswordSetupDialog
-        open={activeDialog === "setup"}
-        onOpenChange={closeIfMatches("setup")}
-        disabled={disabled}
-      />
       <PasswordChangeDialog
         open={activeDialog === "change"}
         onOpenChange={closeIfMatches("change")}

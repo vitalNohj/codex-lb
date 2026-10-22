@@ -6,6 +6,7 @@ from alembic import context
 from sqlalchemy import engine_from_config, pool
 
 from app.core.config.settings import get_settings
+from app.db.alembic.reflection import reflected_default_escaping
 from app.db.migration_url import to_sync_database_url
 from app.db.models import Base
 
@@ -64,7 +65,8 @@ def run_migrations_online() -> None:
             context.run_migrations()
 
 
-if context.is_offline_mode():
-    run_migrations_offline()
-else:
-    run_migrations_online()
+with reflected_default_escaping():
+    if context.is_offline_mode():
+        run_migrations_offline()
+    else:
+        run_migrations_online()

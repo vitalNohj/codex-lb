@@ -21,16 +21,22 @@ from app.modules.accounts.usage_time_rollup_read import (
     earliest_hourly_bucket_at,
 )
 from app.modules.reports import history
+from app.modules.reports.filters import (
+    MISSING_USERAGENT_GROUP,
+    _normal_traffic_clause,
+    _useragent_group_filter_clause,
+)
+from app.modules.reports.rollup_read import report_source
+from app.modules.reports.thread_identity import ThreadIdentityFacetRow, aggregate_thread_identity
 
-_INTERNAL_LIMIT_WARMUP_SOURCE = "limit_warmup"
-_INTERNAL_WARMUP_REQUEST_KINDS = ("warmup", "limit_warmup")
 _SQLITE_COMPOUND_SELECT_LIMIT = 500
 # Generous enough for the All-time range (a decade of daily rows is a few
 # thousand); the rollup-served day rows are grouped by day index in a single
 # statement, and the raw-only per-day statements are chunked below.
 MAX_DAILY_REPORT_DAYS = 3650
-UNKNOWN_USERAGENT_GROUP = "Unknown"
-MISSING_USERAGENT_GROUP = "Missing User-Agent"
+# Per-request speed medians are raw-only and expensive over long ranges, so
+# they are only computed for short windows (the response discloses the cap).
+MAX_SPEED_REPORT_DAYS = 7
 
 
 class DailyReportRangeTooLargeError(ValueError):
@@ -159,17 +165,19 @@ class ReportsRepository:
         # executed in chunks instead of building a single oversized UNION ALL.
         for day_ranges_batch in batched(day_ranges, _SQLITE_COMPOUND_SELECT_LIMIT):
             day_ranges_list = list(day_ranges_batch)
-            speed_result = await self._session.execute(
-                _daily_speed_medians_stmt(day_ranges_list, account_ids, model, useragent_group, api_key_ids)
-            )
-            speed_values = {
-                speed_row.report_date: (
-                    float(speed_row.median_ttft_ms or 0.0),
-                    float(speed_row.median_tps or 0.0),
-                    float(speed_row.median_queue_ms or 0.0),
+            speed_values: dict[str, tuple[float, float, float]] = {}
+            if window_days <= MAX_SPEED_REPORT_DAYS:
+                speed_result = await self._session.execute(
+                    _daily_speed_medians_stmt(day_ranges_list, account_ids, model, useragent_group, api_key_ids)
                 )
-                for speed_row in speed_result.all()
-            }
+                speed_values = {
+                    speed_row.report_date: (
+                        float(speed_row.median_ttft_ms or 0.0),
+                        float(speed_row.median_tps or 0.0),
+                        float(speed_row.median_queue_ms or 0.0),
+                    )
+                    for speed_row in speed_result.all()
+                }
             conversation_values: dict[str, int] = {}
             if use_satellite:
                 # Same offset the rollup/history unions label their local
@@ -458,8 +466,18 @@ class ReportsRepository:
                     )
                 )
             ).one()
+            # Upstream's report rollup (request_report_hourly_rollups) keeps
+            # the per-row reasoning-known count and the conversation id per
+            # account / API key / model hour, so both survive raw pruning:
+            # folded hours below the report watermark plus the raw tail
+            # (all-raw until the report fold has run).
+            report_union = report_source(
+                self._session, [("summary", start_date, end_date)], account_ids, model, None, api_key_ids
+            )
             reasoning_known_count = (
-                await self._session.execute(select(func.count(RequestLog.reasoning_tokens)).where(and_(*conditions)))
+                await self._session.execute(
+                    select(func.coalesce(func.sum(report_union.c.reasoning_usage_known_requests), 0))
+                )
             ).scalar_one()
             conversation_count = 0
             if use_satellite:
@@ -475,9 +493,7 @@ class ReportsRepository:
                 ).scalar_one()
             else:
                 conversation_count = (
-                    await self._session.execute(
-                        select(func.count(func.distinct(self._conversation_id_expr()))).where(and_(*conditions))
-                    )
+                    await self._session.execute(select(func.count(func.distinct(report_union.c.conversation_id))))
                 ).scalar_one()
             return SummaryAggregateRow(
                 total_cost_usd=float(row.total_cost_usd),
@@ -731,30 +747,22 @@ class ReportsRepository:
         useragent_group: str | None = None,
         api_key_ids: list[str] | None = None,
     ) -> list[UserAgentAggregateRow]:
-        useragent_group_bucket = _useragent_group_bucket_expr()
-        conditions = [
-            *_report_conditions(start_date, end_date, account_ids, model, useragent_group, api_key_ids),
-            or_(RequestLog.useragent_group.is_(None), func.trim(RequestLog.useragent_group) != ""),
-        ]
-
-        stmt = (
-            select(
-                useragent_group_bucket.label("useragent_group"),
-                func.coalesce(func.sum(RequestLog.cost_usd), 0.0).label("cost_usd"),
-                func.count().label("request_count"),
-            )
-            .where(and_(*conditions))
-            .group_by(useragent_group_bucket)
-            .order_by(func.coalesce(func.sum(RequestLog.cost_usd), 0.0).desc())
+        source = report_source(
+            self._session, [("useragents", start_date, end_date)], account_ids, model, useragent_group, api_key_ids
         )
-        result = await self._session.execute(stmt)
-        return [
-            UserAgentAggregateRow(
-                useragent_group=row.useragent_group,
-                cost_usd=float(row.cost_usd),
-                request_count=int(row.request_count),
+        group = func.coalesce(source.c.useragent_group, MISSING_USERAGENT_GROUP)
+        result = await self._session.execute(
+            select(
+                group.label("useragent_group"),
+                func.sum(source.c.cost_usd).label("cost_usd"),
+                func.sum(source.c.request_count).label("request_count"),
             )
-            for row in result.all()
+            .where(or_(source.c.useragent_group.is_(None), func.trim(source.c.useragent_group) != ""))
+            .group_by(group)
+            .order_by(func.sum(source.c.cost_usd).desc(), group)
+        )
+        return [
+            UserAgentAggregateRow(row.useragent_group, float(row.cost_usd), int(row.request_count)) for row in result
         ]
 
     async def count_active_accounts(
@@ -766,15 +774,23 @@ class ReportsRepository:
         useragent_group: str | None = None,
         api_key_ids: list[str] | None = None,
     ) -> int:
-        conditions = [
-            *_report_conditions(start_date, end_date, account_ids, model, useragent_group, api_key_ids),
-            RequestLog.account_id.is_not(None),
-        ]
-
-        result = await self._session.execute(
-            select(func.count(func.distinct(RequestLog.account_id))).where(and_(*conditions))
+        source = report_source(
+            self._session, [("active", start_date, end_date)], account_ids, model, useragent_group, api_key_ids
         )
-        return int(result.scalar_one() or 0)
+        return int((await self._session.execute(select(func.count(func.distinct(source.c.account_id))))).scalar_one())
+
+    async def aggregate_thread_identity(
+        self,
+        start_at: datetime,
+        end_at: datetime,
+    ) -> dict[bool, ThreadIdentityFacetRow]:
+        """Keyed and unkeyed thread-identity counters for one bounded window.
+
+        Deliberately unfiltered by account, API key, model or user agent: an
+        account filter would force every conversation to one account and make
+        the accounts-per-conversation factor read 1.0 by construction.
+        """
+        return await aggregate_thread_identity(self._session, start_at, end_at)
 
     async def earliest_report_activity_at(
         self,
@@ -827,6 +843,25 @@ class ReportsRepository:
                 earliest = rollup_earliest
         return earliest
 
+    async def list_filter_options(
+        self,
+        start_at: datetime,
+        end_at: datetime,
+        account_ids: list[str] | None = None,
+        api_key_ids: list[str] | None = None,
+    ) -> tuple[list[str], list[str]]:
+        source = report_source(
+            self._session, [("options", start_at, end_at)], account_ids, api_key_ids=api_key_ids, catalog=True
+        )
+        pairs = (await self._session.execute(select(source.c.model, source.c.useragent_group).distinct())).all()
+        return sorted({row.model for row in pairs}), sorted(
+            {
+                row.useragent_group if row.useragent_group is not None else MISSING_USERAGENT_GROUP
+                for row in pairs
+                if row.useragent_group is None or row.useragent_group.strip()
+            }
+        )
+
 
 async def _raw_retention_floor() -> datetime | None:
     """Oldest ``requested_at`` raw retention still guarantees (None when
@@ -862,31 +897,6 @@ def _report_conditions(
     if api_key_ids:
         conditions.append(RequestLog.api_key_id.in_(api_key_ids))
     return conditions
-
-
-def _useragent_group_bucket_expr():
-    return case(
-        (RequestLog.useragent_group.is_(None), literal(MISSING_USERAGENT_GROUP)),
-        else_=RequestLog.useragent_group,
-    )
-
-
-def _useragent_group_filter_clause(useragent_group: str | None):
-    if not useragent_group:
-        return None
-    if useragent_group == MISSING_USERAGENT_GROUP:
-        return RequestLog.useragent_group.is_(None)
-    return RequestLog.useragent_group == useragent_group
-
-
-def _normal_traffic_clause():
-    return and_(
-        or_(RequestLog.source.is_(None), RequestLog.source != _INTERNAL_LIMIT_WARMUP_SOURCE),
-        or_(
-            RequestLog.request_kind.is_(None),
-            RequestLog.request_kind.not_in(_INTERNAL_WARMUP_REQUEST_KINDS),
-        ),
-    )
 
 
 def _day_ranges_cte(day_ranges: list[tuple[str, datetime, datetime]]):

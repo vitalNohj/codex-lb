@@ -11,6 +11,11 @@ export type QuotaBarProps = {
   resetLabel?: string | null;
   /** Accessible label for the progress value, e.g. "Weekly quota for alice". */
   "aria-label"?: string;
+  /**
+   * The caller already tweens ``percent`` (``useSmoothPercent``): show one
+   * decimal and let the bar width follow the tween instead of a CSS transition.
+   */
+  smoothed?: boolean;
 };
 
 /**
@@ -18,7 +23,7 @@ export type QuotaBarProps = {
  * CLIProxyAPI credential cards: coloured percentage, a thin bar, and an
  * optional reset hint.
  */
-export function QuotaBar({ label, percent, resetLabel, "aria-label": ariaLabel }: QuotaBarProps) {
+export function QuotaBar({ label, percent, resetLabel, "aria-label": ariaLabel, smoothed = false }: QuotaBarProps) {
   const clamped = percent === null ? 0 : Math.max(0, Math.min(100, percent));
   const hasPercent = percent !== null;
   return (
@@ -37,7 +42,7 @@ export function QuotaBar({ label, percent, resetLabel, "aria-label": ariaLabel }
                   : "text-red-600 dark:text-red-400",
           )}
         >
-          {formatPercentNullable(percent)}
+          {formatPercentNullable(percent, smoothed ? 1 : 0)}
         </span>
       </div>
       {ariaLabel && hasPercent ? (
@@ -45,7 +50,11 @@ export function QuotaBar({ label, percent, resetLabel, "aria-label": ariaLabel }
       ) : null}
       <div className={cn("h-1.5 w-full overflow-hidden rounded-full", quotaBarTrack(clamped))} aria-hidden="true">
         <div
-          className={cn("h-full rounded-full transition-all duration-500 ease-out", quotaBarColor(clamped))}
+          className={cn(
+            "h-full rounded-full duration-500 ease-out",
+            smoothed ? "transition-colors" : "transition-all",
+            quotaBarColor(clamped),
+          )}
           style={{ width: `${clamped}%` }}
         />
       </div>

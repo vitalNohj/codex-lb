@@ -2,7 +2,11 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends
 
-from app.core.auth.dependencies import set_dashboard_error_format, validate_dashboard_session
+from app.core.auth.dependencies import (
+    require_dashboard_write_access,
+    set_dashboard_error_format,
+    validate_dashboard_session,
+)
 from app.dependencies import OllamaSidecarContext, get_ollama_sidecar_context
 from app.modules.ollama_sidecar.schemas import (
     OllamaSidecarModelsResponse,
@@ -24,7 +28,7 @@ async def get_status(
     return await context.service.get_status()
 
 
-@router.post("/test", response_model=OllamaSidecarTestResponse)
+@router.post("/test", response_model=OllamaSidecarTestResponse, dependencies=[Depends(require_dashboard_write_access)])
 async def test_connection(
     context: OllamaSidecarContext = Depends(get_ollama_sidecar_context),
 ) -> OllamaSidecarTestResponse:

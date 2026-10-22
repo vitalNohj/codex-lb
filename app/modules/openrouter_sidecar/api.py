@@ -2,7 +2,11 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends
 
-from app.core.auth.dependencies import set_dashboard_error_format, validate_dashboard_session
+from app.core.auth.dependencies import (
+    require_dashboard_write_access,
+    set_dashboard_error_format,
+    validate_dashboard_session,
+)
 from app.dependencies import OpenRouterSidecarContext, get_openrouter_sidecar_context
 from app.modules.openrouter_sidecar.schemas import (
     OpenRouterSidecarModelsResponse,
@@ -24,7 +28,9 @@ async def get_status(
     return await context.service.get_status()
 
 
-@router.post("/test", response_model=OpenRouterSidecarTestResponse)
+@router.post(
+    "/test", response_model=OpenRouterSidecarTestResponse, dependencies=[Depends(require_dashboard_write_access)]
+)
 async def test_connection(
     context: OpenRouterSidecarContext = Depends(get_openrouter_sidecar_context),
 ) -> OpenRouterSidecarTestResponse:

@@ -20,7 +20,7 @@ vi.mock("@/features/auth/api", () => ({
 
 const baseSettings = createDashboardSettings({
   stickyThreadsEnabled: true,
-  upstreamStreamTransport: "default" as const,
+  upstreamStreamTransport: "auto" as const,
   upstreamProxyRoutingEnabled: false,
   upstreamProxyDefaultPoolId: null,
   preferEarlierResetAccounts: false,
@@ -35,7 +35,6 @@ const baseSettings = createDashboardSettings({
   warmupModel: "gpt-5.4-mini",
   importWithoutOverwrite: false,
   totpRequiredOnLogin: false,
-  totpConfigured: false,
   apiKeyAuthEnabled: true,
 });
 
@@ -54,6 +53,7 @@ describe("TotpSettings", () => {
     vi.clearAllMocks();
     useAuthStore.setState({
       refreshSession: vi.fn().mockResolvedValue(undefined),
+      totpConfigured: false,
     });
   });
 
@@ -77,10 +77,20 @@ describe("TotpSettings", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("hides the requirement toggle without security:write and keeps the personal controls", () => {
+    renderWithClient(
+      <TotpSettings settings={baseSettings} canEditPolicy={false} onSave={vi.fn().mockResolvedValue(undefined)} />,
+    );
+    expect(screen.getByRole("button", { name: "Enable TOTP" })).toBeInTheDocument();
+    expect(screen.queryByRole("switch")).not.toBeInTheDocument();
+    expect(screen.queryByText("Require TOTP on login")).not.toBeInTheDocument();
+  });
+
   it("shows disable button when configured", () => {
+    useAuthStore.setState({ totpConfigured: true });
     renderWithClient(
       <TotpSettings
-        settings={{ ...baseSettings, totpConfigured: true }}
+        settings={baseSettings}
         onSave={vi.fn().mockResolvedValue(undefined)}
       />,
     );
@@ -157,11 +167,11 @@ describe("TotpSettings", () => {
     const user = userEvent.setup();
     vi.mocked(disableTotp).mockResolvedValue({ status: "ok" });
 
+    useAuthStore.setState({ totpConfigured: true });
     renderWithClient(
       <TotpSettings
         settings={{
           ...baseSettings,
-          totpConfigured: true,
           totpRequiredOnLogin: true,
         }}
         onSave={vi.fn().mockResolvedValue(undefined)}
@@ -179,11 +189,11 @@ describe("TotpSettings", () => {
   it("localizes disable validation errors", async () => {
     const user = userEvent.setup();
 
+    useAuthStore.setState({ totpConfigured: true });
     renderWithClient(
       <TotpSettings
         settings={{
           ...baseSettings,
-          totpConfigured: true,
           totpRequiredOnLogin: true,
         }}
         onSave={vi.fn().mockResolvedValue(undefined)}

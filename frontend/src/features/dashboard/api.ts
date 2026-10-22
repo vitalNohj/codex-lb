@@ -11,6 +11,7 @@ import {
   RequestLogsResponseSchema,
   type ConversationTimeframe,
   type OverviewTimeframe,
+  type RequestLogTimeframe,
 } from "@/features/dashboard/schemas";
 
 const DASHBOARD_PATH = "/api/dashboard";
@@ -25,12 +26,14 @@ export type RequestLogsListFilters = {
   apiKeyIds?: string[];
   statuses?: string[];
   modelOptions?: string[];
+  timeframe?: Exclude<RequestLogTimeframe, "all">;
   since?: string;
   until?: string;
   conversationId?: string;
 };
 
 export type RequestLogFacetFilters = {
+  timeframe?: Exclude<RequestLogTimeframe, "all">;
   since?: string;
   until?: string;
   accountIds?: string[];
@@ -85,6 +88,9 @@ export function getRequestLogs(params: RequestLogsListFilters = {}) {
   if (params.conversationId) {
     query.set("conversation_id", params.conversationId);
   }
+  if (params.timeframe) {
+    query.set("timeframe", params.timeframe);
+  }
   if (params.since) {
     query.set("since", params.since);
   }
@@ -97,6 +103,9 @@ export function getRequestLogs(params: RequestLogsListFilters = {}) {
 
 export function getRequestLogOptions(params: RequestLogFacetFilters = {}) {
   const query = new URLSearchParams();
+  if (params.timeframe) {
+    query.set("timeframe", params.timeframe);
+  }
   if (params.since) {
     query.set("since", params.since);
   }

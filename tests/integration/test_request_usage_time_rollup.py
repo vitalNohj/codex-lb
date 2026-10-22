@@ -21,7 +21,6 @@ from app.db.models import (
     RequestUsageHourlyRollup,
 )
 from app.db.session import SessionLocal
-from app.db.session import engine as fold_engine
 from app.modules.accounts.repository import AccountsRepository
 from app.modules.accounts.usage_rollup import FOLD_LAG, lock_fold_state
 from app.modules.accounts.usage_time_rollup import (
@@ -1996,6 +1995,12 @@ async def test_upgrade_repair_daily_mirror_streams_in_batches(db_setup, monkeypa
     # From here on, count the repair's whole-window aggregations: the
     # listener is registered only now so the seeding passes above (the
     # daily fold runs the same grouped statement) are not counted.
+    # The fold runs on get_background_session(): once any earlier test ran the
+    # app lifespan, init_background_db() has given it its own file engine, so
+    # listen on whichever engine the fold actually uses.
+    from app.db import session as db_session_module
+
+    fold_engine = db_session_module._background_engine or db_session_module.engine
     event.listen(fold_engine.sync_engine, "before_cursor_execute", _capture_grouped)
     try:
         # Reprice half the models; delete one group's raw rows entirely so its

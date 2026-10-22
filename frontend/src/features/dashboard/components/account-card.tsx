@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 import { usePrivacyStore } from "@/hooks/use-privacy";
 import { Badge } from "@/components/ui/badge";
 import { useDateDisplayFormatStore } from "@/hooks/use-date-format";
+import { useSmoothPercent } from "@/hooks/use-smooth-percent";
 import { Button } from "@/components/ui/button";
 import { SidecarEffortSelect } from "@/features/accounts/components/sidecar-effort-select";
 import { useClaudeSidecarAccountPause } from "@/features/settings/hooks/use-settings";
@@ -58,14 +59,17 @@ function NativeAccountCard({ account, showAccountId = false, readOnly = false, o
   const blurred = usePrivacyStore((s) => s.blurred);
   const dateDisplayFormat = useDateDisplayFormatStore((s) => s.dateDisplayFormat);
   const status = normalizeStatus(account.status);
-  const primaryRemaining = account.usage?.primaryRemainingPercent ?? null;
-  const secondaryRemaining = account.usage?.secondaryRemainingPercent ?? null;
-  const monthlyRemaining = account.usage?.monthlyRemainingPercent ?? null;
-  const weeklyOnly = account.windowMinutesPrimary == null && account.windowMinutesSecondary != null;
-  const monthlyOnly =
-    account.windowMinutesMonthly != null &&
-    account.windowMinutesPrimary == null &&
-    account.windowMinutesSecondary == null;
+  const primaryState = useSmoothPercent(account.usage?.primaryRemainingPercent ?? null);
+  const secondaryState = useSmoothPercent(account.usage?.secondaryRemainingPercent ?? null);
+  const monthlyState = useSmoothPercent(account.usage?.monthlyRemainingPercent ?? null);
+  const primaryRemaining = primaryState.percent;
+  const secondaryRemaining = secondaryState.percent;
+  const monthlyRemaining = monthlyState.percent;
+  const hasPrimaryWindow = account.windowMinutesPrimary != null || primaryState.everKnown;
+  const hasSecondaryWindow = account.windowMinutesSecondary != null || secondaryState.everKnown;
+  const hasMonthlyWindow = account.windowMinutesMonthly != null || monthlyState.everKnown;
+  const weeklyOnly = !hasPrimaryWindow && hasSecondaryWindow;
+  const monthlyOnly = hasMonthlyWindow && !hasPrimaryWindow && !hasSecondaryWindow;
   const subscriptionCreditsLabel = formatCreditValue(accountSubscriptionCredits(account));
   const purchasedCreditsLabel = formatPurchasedCredits(account, t("common.states.unlimited"));
 
@@ -134,11 +138,16 @@ function NativeAccountCard({ account, showAccountId = false, readOnly = false, o
       {/* Quota bars */}
       <div className={cn("mt-3.5 grid gap-3", weeklyOnly || monthlyOnly ? "grid-cols-1" : "grid-cols-2")}>
         {monthlyOnly ? (
-          <QuotaBar label={t("common.time.monthly")} percent={monthlyRemaining} resetLabel={monthlyReset} />
+          <QuotaBar label={t("common.time.monthly")} percent={monthlyRemaining} resetLabel={monthlyReset} smoothed />
         ) : (
           <>
-            {!weeklyOnly && <QuotaBar label="5h" percent={primaryRemaining} resetLabel={primaryReset} />}
-            <QuotaBar label={t("common.time.weekly")} percent={secondaryRemaining} resetLabel={secondaryReset} />
+            {!weeklyOnly && <QuotaBar label="5h" percent={primaryRemaining} resetLabel={primaryReset} smoothed />}
+            <QuotaBar
+              label={t("common.time.weekly")}
+              percent={secondaryRemaining}
+              resetLabel={secondaryReset}
+              smoothed
+            />
           </>
         )}
       </div>
@@ -183,7 +192,7 @@ function NativeAccountCard({ account, showAccountId = false, readOnly = false, o
       </div>
 
       {/* Actions */}
-      <div className="mt-3 flex items-center gap-1.5 border-t pt-3">
+      <div className="mt-3 flex flex-wrap items-center gap-1.5 border-t pt-3">
         <Button
           type="button"
           size="sm"
@@ -219,7 +228,7 @@ function NativeAccountCard({ account, showAccountId = false, readOnly = false, o
             ) : null}
           </Button>
         ) : null}
-        {status === "paused" ? (
+        {status === "paused" || status === "deactivated" ? (
           <Button
             type="button"
             size="sm"
@@ -231,7 +240,7 @@ function NativeAccountCard({ account, showAccountId = false, readOnly = false, o
             <Play className="h-3 w-3" />
             {t("common.actions.resume")}
           </Button>
-        ) : status === "reauth" || status === "deactivated" ? null : (
+        ) : status === "reauth" ? null : (
           <Button
             type="button"
             size="sm"
