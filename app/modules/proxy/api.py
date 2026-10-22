@@ -1639,7 +1639,12 @@ async def _responses_chat_provider_client(provider: str) -> object | None:
     return None
 
 
-def _unknown_responses_model_response(request: Request, model: str) -> JSONResponse | None:
+def _unknown_responses_model_response(
+    request: Request,
+    model: str,
+    *,
+    headers: Mapping[str, str] | None = None,
+) -> JSONResponse | None:
     """404 a model no sidecar, source, or authoritative Codex catalog serves."""
 
     if codex_serves_model(model):
@@ -1652,6 +1657,7 @@ def _unknown_responses_model_response(request: Request, model: str) -> JSONRespo
             f"The model '{model}' does not exist",
             error_type="invalid_request_error",
         ),
+        headers=headers,
     )
 
 
@@ -6112,6 +6118,12 @@ async def v1_chat_completions(
             responses_payload,
             service_tier_was_enforced=service_tier_was_enforced,
         )
+        # No external route or source owns the model; a model the Codex
+        # catalog doesn't list either is not a Codex error to replay on
+        # every account but a plain unknown model.
+        unknown_model = _unknown_responses_model_response(request, responses_payload.model, headers=rate_limit_headers)
+        if unknown_model is not None:
+            return unknown_model
         # Opportunistic admission gates subscription *account* capacity;
         # source-routed requests use no account, so a closed/empty pool must
         # not reject them.

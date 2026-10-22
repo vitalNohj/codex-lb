@@ -37,7 +37,7 @@ class FunctionCallInputItem(TypedDict):
 class FunctionCallOutputInputItem(TypedDict):
     type: Literal["function_call_output"]
     call_id: str
-    output: str
+    output: str | list[JsonValue]
 
 
 class InputFileItem(TypedDict, total=False):

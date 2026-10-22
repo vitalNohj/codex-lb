@@ -41,6 +41,7 @@ from typing import Literal, cast
 from pydantic import ValidationError
 
 from app.core.openai.chat_requests import ChatCompletionsRequest
+from app.core.openai.message_coercion import chat_tool_content_parts
 from app.core.openai.requests import ResponsesRequest
 from app.core.types import JsonValue
 from app.core.utils.json_guards import is_json_list, is_json_mapping
@@ -386,8 +387,10 @@ def _tool_output_content(output: JsonValue) -> JsonValue:
     """Chat content for a tool result.
 
     Text-only output keeps its parts (one part collapses to a string). Output
-    with other parts (images) is serialized as JSON text, because a chat tool
-    message accepts text only; that keeps every part visible to the model.
+    with images becomes chat ``text`` and ``image_url`` parts in order, with
+    the same image URLs; providers that cannot take tool-result images answer
+    for themselves. Any other non-text output is serialized as JSON text so
+    every part stays visible to the model.
     """
 
     if isinstance(output, str):
@@ -395,6 +398,9 @@ def _tool_output_content(output: JsonValue) -> JsonValue:
     if output is None:
         return ""
     if is_json_list(output):
+        image_content = chat_tool_content_parts(output)
+        if image_content is not None:
+            return cast(JsonValue, image_content)
         texts = [_part_text(part) for part in output]
         if texts and all(text is not None for text in texts):
             return _text_content(cast(list[str], texts))
