@@ -802,13 +802,7 @@ describe("ReportsPage", () => {
     }
   });
 
-<<<<<<< 22625a07e
-  it("renders all six usage charts by default", async () => {
-||||||| 84fde5a1e
-  it("renders all five line charts by default", async () => {
-=======
   it("renders every report chart by default", async () => {
->>>>>>> 72630bbfe
     useReportsMock.mockReturnValue(
       asUseReportsResult({
         data: EMPTY_REPORT,
@@ -894,13 +888,7 @@ describe("ReportsPage", () => {
 
     renderWithProviders(<ReportsPage />);
 
-<<<<<<< 22625a07e
-    await user.click(screen.getByRole("button", { name: "Charts (6)" }));
-||||||| 84fde5a1e
-    await user.click(screen.getByRole("button", { name: "Charts (5)" }));
-=======
     await user.click(screen.getByRole("button", { name: ALL_CHARTS_BUTTON }));
->>>>>>> 72630bbfe
     for (const chartOption of screen.getAllByRole("menuitemcheckbox")) {
       await user.click(chartOption);
     }
@@ -940,13 +928,7 @@ describe("ReportsPage", () => {
     const callsBeforeToggle = useReportsMock.mock.calls.slice(-1).map(
       ([filters, timeZone]) => [filters, timeZone],
     );
-<<<<<<< 22625a07e
-    await user.click(screen.getByRole("button", { name: "Charts (6)" }));
-||||||| 84fde5a1e
-    await user.click(screen.getByRole("button", { name: "Charts (5)" }));
-=======
     await user.click(screen.getByRole("button", { name: ALL_CHARTS_BUTTON }));
->>>>>>> 72630bbfe
     await user.click(
       screen.getByRole("menuitemcheckbox", { name: "Queue Wait" }),
     );

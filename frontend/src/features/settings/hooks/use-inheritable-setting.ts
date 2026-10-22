@@ -1,6 +1,5 @@
 import { useCallback } from "react";
 
-import { buildSettingsUpdateRequest } from "@/features/settings/payload";
 import type { DashboardSettings, SettingProvenance, SettingsUpdateRequest } from "@/features/settings/schemas";
 
 // Update-request fields that accept an explicit null to return to inheritance.
@@ -17,12 +16,14 @@ export function useInheritableSetting(
   settings: DashboardSettings,
   name: string,
   field: InheritableSettingField,
-  onSave: (payload: SettingsUpdateRequest) => Promise<void>,
+  onSave: (patch: Partial<SettingsUpdateRequest>) => Promise<DashboardSettings | void>,
 ): { provenance: SettingProvenance | undefined; resetToInherited: () => Promise<void> } {
   const provenance = settings.provenance?.[name];
+  // Fork: saves send only the patch; the settings mutation stamps the cached
+  // version and retries a scalar conflict once (see persistSettingsPatch).
   const resetToInherited = useCallback(
-    () => onSave(buildSettingsUpdateRequest(settings, { [field]: null })),
-    [field, onSave, settings],
+    () => onSave({ [field]: null }).then(() => undefined),
+    [field, onSave],
   );
   return { provenance, resetToInherited };
 }

@@ -55,7 +55,6 @@ from sqlalchemy import (
     Integer,
     Select,
     and_,
-    case,
     cast,
     func,
     literal,
@@ -382,15 +381,24 @@ def _conversation_watermark_subquery() -> ColumnElement:
     )
 
 
-def _conversation_watermark_epoch_subquery(session: AsyncSession) -> ColumnElement:
-    """Epoch seconds of the conversation watermark (whole hours, so the
-    conversion is exact), dialect-split like the bucket expressions."""
+def _conversation_watermark_epoch_expr(session: AsyncSession) -> ColumnElement:
+    """Epoch seconds of the conversation watermark column (whole hours, so the
+    conversion is exact), dialect-split like the bucket expressions. Callers
+    that join the state row use this column form directly."""
     column = AccountUsageRollupState.conversation_folded_through
     if session.get_bind().dialect.name == "postgresql":
-        epoch = cast(func.floor(func.extract("epoch", column)), BigInteger)
-    else:
-        epoch = cast(func.strftime("%s", column), Integer)
-    return select(epoch).where(AccountUsageRollupState.id == _STATE_ROW_ID).scalar_subquery()
+        return cast(func.floor(func.extract("epoch", column)), BigInteger)
+    return cast(func.strftime("%s", column), Integer)
+
+
+def _conversation_watermark_epoch_subquery(session: AsyncSession) -> ColumnElement:
+    """:func:`_conversation_watermark_epoch_expr` as a scalar subquery of the
+    state row, evaluated once per statement."""
+    return (
+        select(_conversation_watermark_epoch_expr(session))
+        .where(AccountUsageRollupState.id == _STATE_ROW_ID)
+        .scalar_subquery()
+    )
 
 
 def _least_fn(session: AsyncSession):
@@ -453,54 +461,6 @@ def _conversation_tail_start(session: AsyncSession, lo: datetime, hi: datetime |
     return _greatest_fn(session)(lo, clamped)
 
 
-<<<<<<< 22625a07e
-def _conversation_raw_tail_start(session: AsyncSession, lo: datetime, hi: datetime | None) -> ColumnElement:
-    """Where the raw tail after the folded segment ``[lo, min(W, hi))`` starts.
-
-    An uncorrelated scalar subquery on the state row: it reads the same
-    watermark as the folded side of the same statement, and as a constant
-    bound it lets the planner range-scan ``requested_at`` from the tail
-    instead of filtering every row since the window start. A missing state
-    row or NULL watermark degrades the tail to ``lo``, so the raw side then
-    covers the caller's full window.
-    """
-    watermark = AccountUsageRollupState.conversation_folded_through
-    lo_bound = literal(lo, type_=RequestLog.requested_at.type)
-    clamped = watermark if hi is None else _least_fn(session)(watermark, hi)
-    tail_start = (
-        select(case((watermark.is_(None), lo_bound), else_=clamped))
-        .where(AccountUsageRollupState.id == _STATE_ROW_ID)
-        .scalar_subquery()
-    )
-    return _greatest_fn(session)(lo_bound, func.coalesce(tail_start, lo_bound))
-||||||| 84fde5a1e
-def _conversation_raw_complement_clause(
-    session: AsyncSession, lo: datetime, hi: datetime | None
-) -> ColumnElement[bool]:
-    """Rows NOT covered by the folded segment ``[lo, min(W, hi))``: below the
-    ceil-grid start, or at/above the watermark-clamped end. A NULL watermark
-    (state row missing — the callers OUTER-join it) or an epoch watermark
-    degrades to the caller's full window."""
-    watermark = AccountUsageRollupState.conversation_folded_through
-    tail_start = watermark if hi is None else _least_fn(session)(watermark, hi)
-    return or_(watermark.is_(None), RequestLog.requested_at < lo, RequestLog.requested_at >= tail_start)
-=======
-def _conversation_raw_complement_clause(
-    session: AsyncSession, lo: datetime, hi: datetime | None
-) -> ColumnElement[bool]:
-    """Rows NOT covered by the folded segment ``[lo, min(W, hi))``: below the
-    ceil-grid start, or at/above the tail start.
-
-    Both bounds are statement constants (``lo``/``hi`` literals, ``W`` an
-    uncorrelated scalar subquery), so PostgreSQL plans the OR as a BitmapOr of
-    two index ranges on ``requested_at`` — never a per-row test of a joined
-    column. The constant bounds are load-bearing: PostgreSQL applies an OR
-    whose bounds come from a joined row as a per-row filter instead.
-    """
-    return or_(RequestLog.requested_at < lo, RequestLog.requested_at >= _conversation_tail_start(session, lo, hi))
->>>>>>> 72630bbfe
-
-
 def _conversation_raw_selects(
     session: AsyncSession,
     since: datetime,
@@ -525,23 +485,12 @@ def _conversation_raw_selects(
     columns: list = [conversation_id_expr().label("cid"), literal(1).label("request_count")]
     if display_bucket_seconds is not None:
         columns.insert(0, _requested_at_epoch_bucket_expr(session, display_bucket_seconds).label("bucket_epoch"))
-<<<<<<< 22625a07e
     head = select(*columns).where(RequestLog.requested_at >= since, RequestLog.requested_at < lo, *shared)
     tail = select(*columns).where(
-        RequestLog.requested_at >= _conversation_raw_tail_start(session, lo, hi),
+        RequestLog.requested_at >= _conversation_tail_start(session, lo, hi),
         *shared,
     )
     return [head, tail]
-||||||| 84fde5a1e
-    return (
-        select(*columns)
-        .select_from(RequestLog)
-        .outerjoin(AccountUsageRollupState, AccountUsageRollupState.id == _STATE_ROW_ID)
-        .where(and_(*conditions))
-    )
-=======
-    return select(*columns).select_from(RequestLog).where(and_(*conditions))
->>>>>>> 72630bbfe
 
 
 def conversation_presence_union(
@@ -574,7 +523,6 @@ def conversation_presence_union(
     )
 
 
-<<<<<<< 22625a07e
 def conversation_labeled_presence_union(
     session: AsyncSession,
     windows: Sequence[tuple[str, datetime, datetime]],
@@ -745,74 +693,6 @@ async def earliest_hourly_bucket_at(
     model: str | None = None,
     api_key_ids: list[str] | None = None,
 ) -> datetime | None:
-||||||| 84fde5a1e
-def conversation_labeled_presence_union(
-    session: AsyncSession,
-    windows: Sequence[tuple[str, datetime, datetime]],
-    *,
-    raw_conditions: Sequence[ColumnElement[bool]] = (),
-) -> CompoundSelect:
-    """``(label, cid)`` UNION ALL rows over labeled half-open windows (the
-    reports per-local-day ranges, whose bounds need not be hour-aligned).
-
-    Soft-deleted rows are included on both sides — the reports conversation
-    reads carry no ``deleted_at`` filter. Callers group by label and count
-    ``DISTINCT cid``; windows are expected pre-batched below the SQLite
-    compound-select limit (the reports repository already batches at 500).
-    """
-    window_rows = [
-        select(
-            literal(label).label("label"),
-            literal(start).label("window_start"),
-            literal(end).label("window_end"),
-            literal(ceil_to_grid(start, HOURLY_BUCKET_SECONDS)).label("fold_lo_at"),
-            literal(floor_to_grid(end, HOURLY_BUCKET_SECONDS)).label("fold_hi_at"),
-            literal(epoch_seconds(ceil_to_grid(start, HOURLY_BUCKET_SECONDS))).label("fold_lo_epoch"),
-            literal(epoch_seconds(floor_to_grid(end, HOURLY_BUCKET_SECONDS))).label("fold_hi_epoch"),
-        )
-        for label, start, end in windows
-    ]
-    windows_cte = (window_rows[0] if len(window_rows) == 1 else union_all(*window_rows)).cte("conversation_windows")
-    rollup = RequestConversationHourlyRollup
-    folded = select(windows_cte.c.label, rollup.conversation_id.label("cid")).select_from(
-        windows_cte.join(AccountUsageRollupState, AccountUsageRollupState.id == _STATE_ROW_ID).join(
-            rollup,
-            and_(
-                rollup.bucket_epoch >= windows_cte.c.fold_lo_epoch,
-                rollup.bucket_epoch < windows_cte.c.fold_hi_epoch,
-                rollup.bucket_epoch < _conversation_watermark_epoch_expr(session),
-            ),
-        )
-    )
-    watermark = AccountUsageRollupState.conversation_folded_through
-    raw = (
-        select(windows_cte.c.label, conversation_id_expr().label("cid"))
-        .select_from(
-            windows_cte.join(
-                RequestLog,
-                and_(
-                    RequestLog.requested_at >= windows_cte.c.window_start,
-                    RequestLog.requested_at < windows_cte.c.window_end,
-                    conversation_id_expr().is_not(None),
-                    *raw_conditions,
-                ),
-            ).outerjoin(AccountUsageRollupState, AccountUsageRollupState.id == _STATE_ROW_ID)
-        )
-        .where(
-            or_(
-                watermark.is_(None),
-                RequestLog.requested_at < windows_cte.c.fold_lo_at,
-                RequestLog.requested_at >= _least_fn(session)(watermark, windows_cte.c.fold_hi_at),
-            )
-        )
-    )
-    return union_all(folded, raw)
-
-
-async def earliest_hourly_bucket_at(session: AsyncSession) -> datetime | None:
-=======
-async def earliest_hourly_bucket_at(session: AsyncSession) -> datetime | None:
->>>>>>> 72630bbfe
     """Hour-precision earliest countable activity according to the rollups
     (warmup kinds excluded, mirroring the raw earliest-activity filter),
     optionally scoped to report dimension filters. Used as a fallback when

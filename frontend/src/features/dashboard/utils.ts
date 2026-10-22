@@ -972,20 +972,8 @@ export function buildDashboardView(
     // eligible accounts — so null falls back to the projections copy and then
     // to the local projection instead of hiding the card entirely.
     weeklyCreditPace:
-<<<<<<< 22625a07e
-      projections?.weeklyCreditPace !== undefined
-        ? projections.weeklyCreditPace
-        : overview.weeklyCreditPace !== undefined
-          ? overview.weeklyCreditPace
-          : buildWeeklyCreditPace(overview.accounts.filter((account) => !account.synthetic)),
-||||||| 84fde5a1e
-      projections?.weeklyCreditPace !== undefined
-        ? projections.weeklyCreditPace
-        : overview.weeklyCreditPace !== undefined
-          ? overview.weeklyCreditPace
-          : buildWeeklyCreditPace(overview.accounts),
-=======
-      overview.weeklyCreditPace ?? projections?.weeklyCreditPace ?? buildWeeklyCreditPace(overview.accounts),
->>>>>>> 72630bbfe
+      overview.weeklyCreditPace ??
+      projections?.weeklyCreditPace ??
+      buildWeeklyCreditPace(overview.accounts.filter((account) => !account.synthetic)),
   };
 }

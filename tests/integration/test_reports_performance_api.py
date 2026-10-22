@@ -35,7 +35,11 @@ async def test_concurrent_options_requests_share_cache_initialized_at_startup(as
         release.set()
     assert app_instance.state.reports_caches is caches
     assert all(request.result().status_code == 200 for request in requests)
-    assert all(request.result().json() == {"models": ["m1"], "useragents": []} for request in requests)
+    # Fork: the options payload also carries earliestActivityAt for the All-time origin.
+    assert all(
+        request.result().json() == {"models": ["m1"], "useragents": [], "earliestActivityAt": None}
+        for request in requests
+    )
     compute_mock.assert_awaited_once()
 
 
@@ -66,7 +70,11 @@ async def test_options_are_scoped_without_full_report_or_speed_queries(async_cli
         "/api/reports/options", params={"start_date": "2026-06-01", "end_date": "2026-06-30", "api_key_id": "key1"}
     )
     assert response.status_code == 200
-    assert response.json() == {"models": ["m1", "m2", "m4"], "useragents": ["CLI", "Missing User-Agent"]}
+    assert response.json() == {
+        "models": ["m1", "m2", "m4"],
+        "useragents": ["CLI", "Missing User-Agent"],
+        "earliestActivityAt": "2026-06-01",
+    }
 
 
 async def test_long_report_skips_speed_and_reuses_successful_cache(async_client, db_setup, monkeypatch):
@@ -87,7 +95,8 @@ async def test_long_report_skips_speed_and_reuses_successful_cache(async_client,
 async def test_options_validate_dates_and_require_dashboard_auth(async_client, app_instance):
     for query in [
         {"start_date": "2026-06-02", "end_date": "2026-06-01"},
-        {"start_date": "2020-01-01", "end_date": "2026-01-01"},
+        # Fork: the All-time view raised the range cap to 3650 days.
+        {"start_date": "2010-01-01", "end_date": "2026-01-01"},
     ]:
         response = await async_client.get("/api/reports/options", params=query)
         assert response.status_code == 400

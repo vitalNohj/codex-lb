@@ -4,13 +4,7 @@ import asyncio
 import inspect
 import json
 import logging
-<<<<<<< 22625a07e
-import time
 import weakref
-||||||| 84fde5a1e
-import time
-=======
->>>>>>> 72630bbfe
 from collections.abc import Collection, Mapping
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
@@ -227,40 +221,16 @@ class AccountSelection:
     resets_at: int | None = None
     lease: AccountLease | None = None
     catalog_omission_quota_admission: CatalogOmissionQuotaAdmission | None = None
-<<<<<<< 22625a07e
-    # Set when the bounded transient owner-drain hold ran to expiry for this
-    # required-owner failure. Callers translate it into the 503 + Retry-After
-    # ``previous_response_owner_unavailable`` response instead of an instant
-    # 502; a plain failure (no hold warranted) keeps the existing behavior.
-    owner_hold_expired: bool = False
-
-
-@dataclass(frozen=True, slots=True)
-class _ModelAccountFilterResult:
-    accounts: list[Account]
-    general_model_account_ids: frozenset[str] | None
-    # Tier actually applied to the filter, after dropping tiers the model does
-    # not advertise. Set only when the tier narrowed the pool, so an empty
-    # result can say the tier excluded the accounts rather than the model.
-    applied_service_tier: str | None = None
-||||||| 84fde5a1e
-
-
-@dataclass(frozen=True, slots=True)
-class _ModelAccountFilterResult:
-    accounts: list[Account]
-    general_model_account_ids: frozenset[str] | None
-    # Tier actually applied to the filter, after dropping tiers the model does
-    # not advertise. Set only when the tier narrowed the pool, so an empty
-    # result can say the tier excluded the accounts rather than the model.
-    applied_service_tier: str | None = None
-=======
     continuity_owner_no_longer_exists: bool = False
     # ``hard_affinity_saturated`` whose resolved owner is one of the caller's
     # own ``exclude_account_ids``: the wait a transient owner outage earns
     # cannot clear this one (``_hard_affinity_owner_excluded_by_caller``).
     hard_affinity_owner_excluded: bool = False
->>>>>>> 72630bbfe
+    # Set when the bounded transient owner-drain hold ran to expiry for this
+    # required-owner failure. Callers translate it into the 503 + Retry-After
+    # ``previous_response_owner_unavailable`` response instead of an instant
+    # 502; a plain failure (no hold warranted) keeps the existing behavior.
+    owner_hold_expired: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -369,8 +339,20 @@ class LoadBalancer:
         self._account_locks: dict[str, asyncio.Lock] = {}
         self._account_locks_registry_lock = asyncio.Lock()
         self._selection_inputs_cache = get_account_selection_cache()
-<<<<<<< 22625a07e
+        # C2-2 routing/overload: the most recent request-path snapshot; paths
+        # without one (stream error funnel, unkeyed bridge reacquires) reuse it.
+        self._routing_tunables: RoutingTunables | None = None
         _LIVE_LOAD_BALANCERS.add(self)
+
+    def _resolve_routing_tunables(self, routing_tunables: RoutingTunables | None) -> RoutingTunables:
+        if routing_tunables is not None:
+            self._routing_tunables = routing_tunables
+            return routing_tunables
+        return self.current_routing_tunables()
+
+    def current_routing_tunables(self) -> RoutingTunables:
+        """Routing/overload knobs as of the most recent request-path snapshot."""
+        return self._routing_tunables or effective_routing_tunables()
 
     async def _drop_waived_rate_limit_runtime(self, account_id: str, *, waived_blocked_at: int) -> None:
         lock = await self._get_account_lock(account_id)
@@ -387,22 +369,6 @@ class LoadBalancer:
             runtime.reset_at = None
             runtime.version += 1
             runtime.health_version += 1
-||||||| 84fde5a1e
-=======
-        # C2-2 routing/overload: the most recent request-path snapshot; paths
-        # without one (stream error funnel, unkeyed bridge reacquires) reuse it.
-        self._routing_tunables: RoutingTunables | None = None
-
-    def _resolve_routing_tunables(self, routing_tunables: RoutingTunables | None) -> RoutingTunables:
-        if routing_tunables is not None:
-            self._routing_tunables = routing_tunables
-            return routing_tunables
-        return self.current_routing_tunables()
-
-    def current_routing_tunables(self) -> RoutingTunables:
-        """Routing/overload knobs as of the most recent request-path snapshot."""
-        return self._routing_tunables or effective_routing_tunables()
->>>>>>> 72630bbfe
 
     async def release_account_lease(self, lease: AccountLease | None) -> None:
         if lease is None:
@@ -2606,34 +2572,19 @@ def _state_from_account(
         status = AccountStatus.RATE_LIMITED
         reset_at = float(account.reset_at)
 
-<<<<<<< 22625a07e
     if account.blocked_at is None:
         # Persisted null is authoritative. A runtime marker left from the 429
         # that a reset credit just waived must not be written back onto the
         # row, or the old reset_at keeps the account rate-limited until it
         # elapses even after usage shows the window was reset.
         next_blocked_at = None
-    elif status == AccountStatus.QUOTA_EXCEEDED:
-        next_blocked_at = effective_blocked_at
-    elif status == AccountStatus.RATE_LIMITED and account.status != AccountStatus.QUOTA_EXCEEDED:
-        next_blocked_at = effective_blocked_at
     else:
-        next_blocked_at = None
-||||||| 84fde5a1e
-    if status == AccountStatus.QUOTA_EXCEEDED:
-        next_blocked_at = effective_blocked_at
-    elif status == AccountStatus.RATE_LIMITED and account.status != AccountStatus.QUOTA_EXCEEDED:
-        next_blocked_at = effective_blocked_at
-    else:
-        next_blocked_at = None
-=======
-    next_blocked_at = (
-        effective_blocked_at
-        if status == AccountStatus.QUOTA_EXCEEDED
-        or (status == AccountStatus.RATE_LIMITED and account.status != AccountStatus.QUOTA_EXCEEDED)
-        else None
-    )
->>>>>>> 72630bbfe
+        next_blocked_at = (
+            effective_blocked_at
+            if status == AccountStatus.QUOTA_EXCEEDED
+            or (status == AccountStatus.RATE_LIMITED and account.status != AccountStatus.QUOTA_EXCEEDED)
+            else None
+        )
 
     if soft_drain_enabled is None:
         # C2-3 resilience toggles: callers pass the dashboard value; None (tests, tools) = env alias / default.

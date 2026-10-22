@@ -2024,7 +2024,6 @@
   "modelSources.fields.reasoningEffortsDescription": "이 모델 소스가 허용하는 추론 수준 슬러그를 적고 기본값을 고르세요.",
   "modelSources.fields.reasoningEffortsPlaceholder": "none, low, provider-specific",
   "modelSources.fields.defaultReasoningEffort": "기본 추론 수준",
-<<<<<<< 22625a07e
   "dashboard.requests.aliasedFrom": "aliased from {{model}}",
   "dashboard.requestDetails.aliasedFrom": "별칭 출처",
   "reports.filters.allTime": "전체 기간",
@@ -2150,10 +2149,7 @@
   "settings.cliproxy.apiKeys.cacheKeyAria": "{{label}}에 프롬프트 캐시 키 전송",
   "settings.cliproxy.apiKeys.cacheKeyHint": "공급자가 캐시를 재사용할 수 있도록 업스트림에 고정된 prompt_cache_key를 추가합니다. 업스트림이 이 필드를 허용하는 경우에만 켜세요.",
   "settings.cliproxy.apiKeys.cacheKeyGroupHint_one": "라우팅은 키 {{count}}개 중 하나가 아니라 이 그룹에 고정됩니다.",
-  "settings.cliproxy.apiKeys.cacheKeyGroupHint_other": "라우팅은 키 {{count}}개 중 하나가 아니라 이 그룹에 고정됩니다."
-||||||| 84fde5a1e
-  "modelSources.fields.defaultReasoningEffort": "기본 추론 수준"
-=======
+  "settings.cliproxy.apiKeys.cacheKeyGroupHint_other": "라우팅은 키 {{count}}개 중 하나가 아니라 이 그룹에 고정됩니다.",
   "auth.login.continueWith": "{{provider}}(으)로 계속",
   "auth.login.providerNoUrl": "{{provider}}에서 먼저 로그인한 뒤 이 대시보드를 다시 여세요.",
   "auth.login.useLocalPassword": "비밀번호로 로그인하기",
@@ -2283,5 +2279,4 @@
   "organisation.automaticAccounts.secret.copy": "자격 증명 복사",
   "organisation.errors.scim_token_not_found": "그 자격 증명은 더 이상 없습니다.",
   "accounts.importDialog.selectedFiles": "선택한 파일"
->>>>>>> 72630bbfe
 }

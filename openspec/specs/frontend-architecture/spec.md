@@ -3501,7 +3501,6 @@ The x-axis tick format of the Account Trend and API Trend charts SHALL be `MM-DD
 - **WHEN** the API Trend chart renders with timestamp data
 - **THEN** the x-axis tick labels SHALL be in `MM-DD` format (e.g., `"08-09"`)
 
-<<<<<<< 22625a07e
 ### Requirement: Overview timeframe switches keep the current overview visible
 
 When the operator changes the dashboard overview timeframe, the dashboard MUST keep rendering the previously loaded overview, with the refresh indicator active, until the new timeframe's overview arrives, instead of replacing the page with the loading skeleton. The loading skeleton MUST appear only while no overview has loaded yet.
@@ -3512,8 +3511,6 @@ When the operator changes the dashboard overview timeframe, the dashboard MUST k
 - **THEN** the 7d overview stays on screen with the refresh indicator spinning
 - **AND** it is replaced by the 30d overview once that response arrives
 
-||||||| 84fde5a1e
-=======
 ### Requirement: Dashboard refresh cadence is operator-selectable
 
 The dashboard MUST let the operator select a 5, 15, 30, or 60 second refresh
@@ -4273,4 +4270,3 @@ The Accounts import dialog SHALL accept one or more auth.json files and send the
 
 - **WHEN** an import is pending
 - **THEN** the file input and submit action remain disabled
->>>>>>> 72630bbfe

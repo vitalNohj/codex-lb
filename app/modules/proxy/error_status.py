@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from app.core.errors import HTTP_BRIDGE_EVENTLESS_TIMEOUT_CODE
+
 UNAVAILABLE_SELECTION_ERROR_CODES = frozenset(
     {
         "no_accounts",
@@ -22,6 +24,12 @@ def status_for_error_fields(*, code: str | None, error_type: str | None) -> int:
     """
     if code == "previous_response_not_found":
         return 502
+    if code == HTTP_BRIDGE_EVENTLESS_TIMEOUT_CODE:
+        # The bridge never matched a response.created event upstream, so this
+        # is our availability problem: 503, not a 502 that claims the upstream
+        # returned a bad response. Retry safety depends on whether the bridge
+        # observed unmatched upstream liveness before timing out.
+        return 503
     if code in UNAVAILABLE_SELECTION_ERROR_CODES:
         return 503
     if code in {"rate_limit_exceeded", "usage_limit_reached", "insufficient_quota"}:

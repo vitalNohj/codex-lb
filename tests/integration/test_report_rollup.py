@@ -54,6 +54,39 @@ async def _fold(target: datetime) -> None:
             pass
 
 
+async def _fold_fork_history(target: datetime) -> None:
+    """Fork: the reports lifetime layer (app/modules/reports/history.py) reads
+    the hourly/daily usage rollups and the conversation satellite, so a prune
+    test folds those as production's scheduler does, not only the report fold."""
+    from app.modules.accounts.usage_rollup import FOLD_LAG
+    from app.modules.accounts.usage_time_rollup import (
+        run_conversation_fold_pass,
+        run_daily_fold_pass,
+        run_hourly_fold_pass,
+    )
+
+    while await run_hourly_fold_pass(now=target + FOLD_LAG):
+        pass
+    while await run_conversation_fold_pass(now=target + FOLD_LAG):
+        pass
+    while await run_daily_fold_pass():
+        pass
+
+
+async def _enable_request_log_retention(days: int = 30) -> None:
+    """Fork: raw rows are only ever pruned with request-log retention on, and
+    the reports lifetime layer serves days below that retention floor from the
+    usage rollups; a prune test configures it the way production must."""
+    from app.core.config.settings_cache import get_settings_cache
+    from app.modules.settings.repository import SettingsRepository
+
+    async with SessionLocal() as session:
+        row = await SettingsRepository(session).get_or_create()
+        row.request_log_retention_days = days
+        await session.commit()
+    await get_settings_cache().invalidate()
+
+
 async def _snapshot(tz: str = "UTC", **filters):
     async with SessionLocal() as session:
         service = ReportsService(ReportsRepository(session))
@@ -86,7 +119,9 @@ async def test_report_fold_preserves_filters_timezone_and_live_tail(db_setup, tz
 
 async def test_report_statistics_survive_raw_pruning(db_setup):
     await _seed()
+    await _enable_request_log_retention()
     await _fold(END)
+    await _fold_fork_history(END)
     expected = await _snapshot()
     async with SessionLocal() as session:
         await session.execute(delete(RequestLog).where(RequestLog.requested_at < END))
@@ -159,17 +194,22 @@ async def test_report_fold_pass_is_bounded_and_respects_lag(db_setup):
 
 async def test_retention_waits_for_report_watermark(db_setup):
     from app.core.retention.job import _prune_request_logs
-    from app.modules.accounts.usage_rollup import FOLD_LAG
+    from app.modules.accounts.usage_rollup import FOLD_LAG, run_fold_pass
 
     await _seed()
     now = END + FOLD_LAG
+    # Fork: every other rollup is folded for real (the reports lifetime layer
+    # serves pruned days from them); only the report watermark lags.
+    await _enable_request_log_retention()
+    while await run_fold_pass(now=now):
+        pass
+    await _fold_fork_history(END)
     async with SessionLocal() as session:
-        session.add(
-            AccountUsageRollupState(
-                id=1, folded_through=END, hourly_folded_through=END, conversation_folded_through=END
-            )
-        )
-        await session.commit()
+        state = await session.get(AccountUsageRollupState, 1)
+        assert state is not None
+        assert state.upgrade_repair_from is None
+        assert min(state.folded_through, state.hourly_folded_through, state.conversation_folded_through) >= END
+        assert state.reports_folded_through == datetime(1970, 1, 1)
     assert await _prune_request_logs(END - FOLD_LAG, now=now) == 0
     await _fold(END)
     expected = await _snapshot()

@@ -60,12 +60,8 @@ certs/
 .agents/.personality_migration
 .agents/version.json
 .agents/log/
-<<<<<<< 22625a07e
 .agents/plans/
-||||||| 84fde5a1e
-=======
 .agents/scheduled_tasks.lock
->>>>>>> 72630bbfe
 .venv
 
 # Local Responses traffic captures and generated parity reports

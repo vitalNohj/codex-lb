@@ -508,18 +508,8 @@ from app.modules.proxy._service.response_create import (
 from app.modules.proxy._service.response_create import (
     _write_response_create_dump as _write_response_create_dump,
 )
-<<<<<<< 22625a07e
 from app.modules.proxy._service.selection_hold import hold_for_transient_required_owner
-from app.modules.proxy._service.streaming import (
-    _StreamingMixin,
-)
-||||||| 84fde5a1e
-from app.modules.proxy._service.streaming import (
-    _StreamingMixin,
-)
-=======
 from app.modules.proxy._service.streaming import _StreamingMixin
->>>>>>> 72630bbfe
 from app.modules.proxy._service.streaming.helpers import (
     _build_rewritten_stream_response_failed_event as _build_rewritten_stream_response_failed_event,
 )
@@ -1900,10 +1890,10 @@ class ProxyService(
                         sticky_source,
                         legacy_sticky_key,
                     )
-<<<<<<< 22625a07e
 
                     async def run_preferred_owner_selection() -> AccountSelection:
                         return await self._load_balancer.select_account(
+                            dashboard_settings=settings,  # C2-3 resilience toggles
                             sticky_key=preferred_sticky_inputs[0],
                             sticky_kind=preferred_sticky_inputs[1],
                             reallocate_sticky=preferred_sticky_inputs[2],
@@ -1921,17 +1911,18 @@ class ProxyService(
                             routing_strategy=routing_strategy,
                             relative_availability_power=_relative_availability_power(settings),
                             relative_availability_top_k=_relative_availability_top_k(settings),
+                            routing_tunables=routing_tunables,
                             model=model,
                             service_tier=service_tier,
                             additional_limit_name=additional_limit_name,
                             account_ids=(
                                 {single_account_routing_id}
-                                if required_continuity_preferred_account and single_account_routing_id is not None
+                                if required_continuity and single_account_routing_id is not None
                                 else scoped_account_ids
                             ),
                             required_account_id=preferred_account_id,
                             required_account_is_ownership_constraint=required_preferred_account,
-                            required_continuity_owner=(required_continuity_preferred_account),
+                            required_continuity_owner=required_continuity,
                             require_unambiguous_account=require_unambiguous_account,
                             require_security_work_authorized=require_security_work_authorized,
                             budget_threshold_pct=_sticky_reallocation_primary_budget_threshold_pct(settings),
@@ -1950,97 +1941,6 @@ class ProxyService(
                         )
 
                     preferred_selection = await run_preferred_owner_selection()
-||||||| 84fde5a1e
-                    preferred_selection = await self._load_balancer.select_account(
-                        sticky_key=preferred_sticky_inputs[0],
-                        sticky_kind=preferred_sticky_inputs[1],
-                        reallocate_sticky=preferred_sticky_inputs[2],
-                        sticky_max_age_seconds=preferred_sticky_inputs[3],
-                        sticky_source=preferred_sticky_inputs[4],
-                        legacy_sticky_key=preferred_sticky_inputs[5],
-                        legacy_continuity_source=legacy_continuity_source,
-                        # Exact ownership chooses the account; a first-ever thread
-                        # still seeds atomically without overwriting a process default.
-                        sticky_seed_key=sticky_seed_key,
-                        sticky_seed_kind=sticky_seed_kind,
-                        abandon_unavailable_legacy_owner=abandon_unavailable_legacy_owner,
-                        prefer_earlier_reset_accounts=prefer_earlier_reset_accounts,
-                        prefer_earlier_reset_window=prefer_earlier_reset_window,
-                        routing_strategy=routing_strategy,
-                        relative_availability_power=_relative_availability_power(settings),
-                        relative_availability_top_k=_relative_availability_top_k(settings),
-                        model=model,
-                        service_tier=service_tier,
-                        additional_limit_name=additional_limit_name,
-                        account_ids=(
-                            {single_account_routing_id}
-                            if required_continuity_preferred_account and single_account_routing_id is not None
-                            else scoped_account_ids
-                        ),
-                        required_account_id=preferred_account_id,
-                        required_account_is_ownership_constraint=required_preferred_account,
-                        required_continuity_owner=(required_continuity_preferred_account),
-                        require_unambiguous_account=require_unambiguous_account,
-                        require_security_work_authorized=require_security_work_authorized,
-                        budget_threshold_pct=_sticky_reallocation_primary_budget_threshold_pct(settings),
-                        secondary_budget_threshold_pct=_sticky_reallocation_secondary_budget_threshold_pct(settings),
-                        lease_kind=lease_kind,
-                        estimated_lease_tokens=estimated_lease_tokens,
-                        stream_reserve_slots=stream_reserve_slots,
-                        traffic_class=effective_traffic_class,
-                        concurrency_caps=concurrency_caps,
-                        redact_sensitive_details=redact_sensitive_details,
-                        allow_usage_exhaustion_error=not required_preferred_account,
-                        api_key_id=api_key_id,
-                        api_key_stream_fair_share_threshold_pct=api_key_fair_share_threshold_pct,
-                    )
-=======
-                    preferred_selection = await self._load_balancer.select_account(
-                        dashboard_settings=settings,  # C2-3 resilience toggles
-                        sticky_key=preferred_sticky_inputs[0],
-                        sticky_kind=preferred_sticky_inputs[1],
-                        reallocate_sticky=preferred_sticky_inputs[2],
-                        sticky_max_age_seconds=preferred_sticky_inputs[3],
-                        sticky_source=preferred_sticky_inputs[4],
-                        legacy_sticky_key=preferred_sticky_inputs[5],
-                        legacy_continuity_source=legacy_continuity_source,
-                        # Exact ownership chooses the account; a first-ever thread
-                        # still seeds atomically without overwriting a process default.
-                        sticky_seed_key=sticky_seed_key,
-                        sticky_seed_kind=sticky_seed_kind,
-                        abandon_unavailable_legacy_owner=abandon_unavailable_legacy_owner,
-                        prefer_earlier_reset_accounts=prefer_earlier_reset_accounts,
-                        prefer_earlier_reset_window=prefer_earlier_reset_window,
-                        routing_strategy=routing_strategy,
-                        relative_availability_power=_relative_availability_power(settings),
-                        relative_availability_top_k=_relative_availability_top_k(settings),
-                        routing_tunables=routing_tunables,
-                        model=model,
-                        service_tier=service_tier,
-                        additional_limit_name=additional_limit_name,
-                        account_ids=(
-                            {single_account_routing_id}
-                            if required_continuity and single_account_routing_id is not None
-                            else scoped_account_ids
-                        ),
-                        required_account_id=preferred_account_id,
-                        required_account_is_ownership_constraint=required_preferred_account,
-                        required_continuity_owner=required_continuity,
-                        require_unambiguous_account=require_unambiguous_account,
-                        require_security_work_authorized=require_security_work_authorized,
-                        budget_threshold_pct=_sticky_reallocation_primary_budget_threshold_pct(settings),
-                        secondary_budget_threshold_pct=_sticky_reallocation_secondary_budget_threshold_pct(settings),
-                        lease_kind=lease_kind,
-                        estimated_lease_tokens=estimated_lease_tokens,
-                        stream_reserve_slots=stream_reserve_slots,
-                        traffic_class=effective_traffic_class,
-                        concurrency_caps=concurrency_caps,
-                        redact_sensitive_details=redact_sensitive_details,
-                        allow_usage_exhaustion_error=not required_preferred_account,
-                        api_key_id=api_key_id,
-                        api_key_stream_fair_share_threshold_pct=api_key_fair_share_threshold_pct,
-                    )
->>>>>>> 72630bbfe
                     if preferred_selection.account is not None:
                         logger.info(
                             "Selected preferred account request_id=%s kind=%s request_stage=%s account_id=%s",

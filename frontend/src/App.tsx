@@ -87,27 +87,15 @@ function AppLayout() {
         showLogout={(role === "admin" && passwordRequired) || (isGuest && guestPasswordRequired)}
         contentMaxWidthClass={pageMaxWidthClass}
       />
-<<<<<<< 22625a07e
-      <main className={cn("mx-auto w-full flex-1 px-4 py-8 sm:px-6", pageMaxWidthClass)}>
-        <Suspense fallback={null}>
-          <Outlet />
-        </Suspense>
-||||||| 84fde5a1e
-      <main className="mx-auto w-full max-w-[1500px] flex-1 px-4 py-8 sm:px-6">
-        <Suspense fallback={null}>
-          <Outlet />
-        </Suspense>
-=======
-      <main className="mx-auto flex w-full max-w-[1500px] flex-1 flex-col px-4 py-8 sm:px-6">
-        <RouteErrorBoundary
-          key={pathname}
-          resetKey={`${locationKey}:${pathname}${search}${hash}`}
-        >
-          <Suspense fallback={<RouteLoading />}>
-            <Outlet />
-          </Suspense>
-        </RouteErrorBoundary>
->>>>>>> 72630bbfe
+        <main className={cn("mx-auto flex w-full flex-1 flex-col px-4 py-8 sm:px-6", pageMaxWidthClass)}>
+          <RouteErrorBoundary
+            key={pathname}
+            resetKey={`${locationKey}:${pathname}${search}${hash}`}
+          >
+            <Suspense fallback={<RouteLoading />}>
+              <Outlet />
+            </Suspense>
+          </RouteErrorBoundary>
       </main>
       <StatusBar onHeightChange={setStatusBarHeight} contentMaxWidthClass={pageMaxWidthClass} />
       <TelemetryConsentDialog />

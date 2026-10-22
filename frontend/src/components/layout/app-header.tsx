@@ -1,22 +1,12 @@
 import { useQuery } from "@tanstack/react-query";
-<<<<<<< 22625a07e
-import { ChevronDown, ExternalLink, Eye, EyeOff, LogIn, LogOut, Menu } from "lucide-react";
-||||||| 84fde5a1e
-import { ChevronDown, Eye, EyeOff, LogIn, LogOut, Menu } from "lucide-react";
-=======
-import { ChevronDown, Eye, EyeOff, LogIn, LogOut, Menu, ShieldAlert } from "lucide-react";
->>>>>>> 72630bbfe
+import { ChevronDown, ExternalLink, Eye, EyeOff, LogIn, LogOut, Menu, ShieldAlert } from "lucide-react";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Link, NavLink, useLocation } from "react-router-dom";
 
 import { CodexLogo } from "@/components/brand/codex-logo";
-<<<<<<< 22625a07e
 import { ForkMark } from "@/components/brand/fork-mark";
-||||||| 84fde5a1e
-=======
 import { AccountMenu } from "@/components/layout/account-menu";
->>>>>>> 72630bbfe
 import { LanguageToggle, LanguageToggleMobile } from "@/components/layout/language-toggle";
 import { ADVANCED_NAV_ITEMS, CORE_NAV_ITEMS } from "@/components/layout/nav-items";
 import { Button } from "@/components/ui/button";
@@ -35,37 +25,9 @@ import { usePrivacyStore } from "@/hooks/use-privacy";
 import { OMNIROUTE_ENABLED } from "@/lib/product-capabilities";
 import { cn } from "@/lib/utils";
 
-<<<<<<< 22625a07e
-const CORE_NAV_ITEMS = [
-  { to: "/dashboard", labelKey: "nav.dashboard" },
-  { to: "/reports", labelKey: "nav.reports" },
-  { to: "/accounts", labelKey: "nav.accounts" },
-  { to: "/apis", labelKey: "nav.apis" },
-  { to: "/settings", labelKey: "nav.settings" },
-] as const;
-
 const OMNIROUTE_PATH = "/omni";
 const FORK_REPOSITORY_URL = "https://github.com/vitalNohj/codex-lb";
 
-const ADVANCED_NAV_ITEMS = [
-  { to: "/automations", labelKey: "nav.automations" },
-] as const;
-
-||||||| 84fde5a1e
-const CORE_NAV_ITEMS = [
-  { to: "/dashboard", labelKey: "nav.dashboard" },
-  { to: "/reports", labelKey: "nav.reports" },
-  { to: "/accounts", labelKey: "nav.accounts" },
-  { to: "/apis", labelKey: "nav.apis" },
-  { to: "/settings", labelKey: "nav.settings" },
-] as const;
-
-const ADVANCED_NAV_ITEMS = [
-  { to: "/automations", labelKey: "nav.automations" },
-] as const;
-
-=======
->>>>>>> 72630bbfe
 export type AppHeaderProps = {
   onLogout: () => void;
   onAdminLogin?: () => void;

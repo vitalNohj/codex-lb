@@ -1063,18 +1063,14 @@ class RequestLogsRepository:
         cache_write_input_cost_usd: float | None = None,
         reference_cost_usd: float | None = None,
         archive_request_id: str | None = None,
-<<<<<<< 22625a07e
         upstream_model: str | None = None,
         pool_attempts: int | None = None,
         sidecar_provider: str | None = None,
         sidecar_auth_index: str | None = None,
         sidecar_route: str | None = None,
-||||||| 84fde5a1e
-=======
         sticky_key_source: str | None = None,
         sticky_kind: str | None = None,
         sticky_key_hash: str | None = None,
->>>>>>> 72630bbfe
     ) -> RequestLog:
         async with sqlite_writer_section():
             # Telemetry write: this transaction only appends one request-log

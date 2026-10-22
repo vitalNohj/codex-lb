@@ -113,7 +113,6 @@ const EXPECTED_ENDPOINTS = [
 	"POST /api/settings/upstream-proxy/pools",
 	"POST /api/settings/upstream-proxy/pools/:poolId/members",
 	"PUT /api/settings/upstream-proxy/accounts/:accountId/binding",
-<<<<<<< 22625a07e
 	// opencode go
 	"GET */api/opencode-go/quota",
 	"GET */api/cliproxy/accounts",
@@ -145,12 +144,9 @@ const EXPECTED_ENDPOINTS = [
 	"GET */api/opencode-go-sidecar/status",
 	"GET */api/opencode-go-sidecar/models",
 	"POST */api/opencode-go-sidecar/test",
-||||||| 84fde5a1e
-=======
 	"GET /api/settings/model-context-window-overrides",
 	"PUT /api/settings/model-context-window-overrides/:slug*",
 	"DELETE /api/settings/model-context-window-overrides/:slug*",
->>>>>>> 72630bbfe
 	"GET /api/sticky-sessions",
 	"POST /api/sticky-sessions/delete",
 	"POST /api/sticky-sessions/delete-filtered",

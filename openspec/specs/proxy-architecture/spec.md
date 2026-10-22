@@ -13,9 +13,9 @@ instead of maintaining independent numeric copies.
 
 <!-- proxy-architecture-thresholds:start -->
 ```toml
-service_lines = 2600
-load_balancer_lines = 3021
-http_bridge_mixin_lines = 2436
+service_lines = 2623
+load_balancer_lines = 3065
+http_bridge_mixin_lines = 2439
 streaming_mixin_lines = 1100
 proxy_service_method_lines = 1200
 load_balancer_select_account_lines = 527
@@ -68,8 +68,13 @@ _wait_for_websocket_continuity_gap = ["scheduler", "clock"]
 "app/modules/proxy/_service/http_bridge/mixin.py" = { raw-timeout = 1 }
 "app/modules/proxy/_service/realtime_live.py" = { raw-timeout = 2, raw-task-spawn = 3 }
 "app/modules/proxy/_service/request_log.py" = { raw-timeout = 1 }
+"app/modules/proxy/_service/selection_hold.py" = { raw-sleep = 1 }
 "app/modules/proxy/api.py" = { missing-scheduler-kwarg = 19 }
+"app/modules/proxy/claude_sidecar_dispatch.py" = { raw-sleep = 3, raw-timeout = 1 }
 "app/modules/proxy/http_bridge_event_batcher.py" = { raw-timeout = 3, raw-task-spawn = 3 }
+"app/modules/proxy/openai_compat_dispatch.py" = { missing-scheduler-kwarg = 2 }
+"app/modules/proxy/opencode_go_sidecar_dispatch.py" = { raw-timeout = 1, raw-task-spawn = 1 }
+"app/modules/proxy/openrouter_sidecar_dispatch.py" = { missing-scheduler-kwarg = 2 }
 
 [allowances.clock]  # raw-clock-read; unlisted modules = 0
 "app/modules/proxy/_service/clock_budget.py" = 1
@@ -80,18 +85,34 @@ _wait_for_websocket_continuity_gap = ["scheduler", "clock"]
 "app/modules/proxy/_service/rate_limit.py" = 2
 "app/modules/proxy/_service/realtime_live.py" = 2
 "app/modules/proxy/_service/request_log.py" = 2
+"app/modules/proxy/_service/selection_hold.py" = 4
 "app/modules/proxy/_service/support.py" = 2
 "app/modules/proxy/_service/transcribe.py" = 2
 "app/modules/proxy/_service/warmup.py" = 2
 "app/modules/proxy/_service/websocket/helpers.py" = 3
 "app/modules/proxy/account_cache.py" = 2
 "app/modules/proxy/account_eligibility.py" = 1
-"app/modules/proxy/api.py" = 8
+"app/modules/proxy/alias_pool_dispatch.py" = 2
+"app/modules/proxy/api.py" = 6
+"app/modules/proxy/claude_sidecar_dispatch.py" = 17
+"app/modules/proxy/cliproxy_account_routing.py" = 7
+"app/modules/proxy/cliproxy_responses_dispatch.py" = 5
+"app/modules/proxy/cursor_chat_compat.py" = 4
+"app/modules/proxy/deepseek_v4_compat.py" = 2
 "app/modules/proxy/durable_bridge_repository.py" = 2
 "app/modules/proxy/images_observability.py" = 1
 "app/modules/proxy/images_service.py" = 2
 "app/modules/proxy/load_balancer.py" = 3
+"app/modules/proxy/ollama_sidecar_dispatch.py" = 4
+"app/modules/proxy/omniroute_sidecar_dispatch.py" = 3
+"app/modules/proxy/openai_compat_dispatch.py" = 2
+"app/modules/proxy/opencode_go_sidecar_dispatch.py" = 5
+"app/modules/proxy/openrouter_sidecar_dispatch.py" = 3
+"app/modules/proxy/orcarouter_sidecar_dispatch.py" = 3
+"app/modules/proxy/owner_drain.py" = 2
 "app/modules/proxy/rate_limit_cache.py" = 2
+"app/modules/proxy/responses_chat_bridge.py" = 2
+"app/modules/proxy/selection_errors.py" = 2
 ```
 <!-- proxy-timing-seams:end -->
 
@@ -121,16 +142,6 @@ _wait_for_websocket_continuity_gap = ["scheduler", "clock"]
 
 ### Requirement: ProxyService remains a stable façade
 
-<<<<<<< 22625a07e
-`app.modules.proxy.service.ProxyService` and the required compatibility exports SHALL remain available to existing consumers. Behavior extracted from `ProxyService` or `service.py` SHALL be owned by focused private modules under `app/modules/proxy/_service/`. Compatibility shims SHALL remain re-export-only and private service domains SHALL comply with the repository's explicit cross-domain dependency policy.
-||||||| 84fde5a1e
-`app.modules.proxy.service.ProxyService` and the required compatibility exports
-SHALL remain available to existing consumers. Behavior extracted from
-`ProxyService` or `service.py` SHALL be owned by focused private modules under
-`app/modules/proxy/_service/`.
-Compatibility shims SHALL remain re-export-only and private service domains
-SHALL comply with the repository's explicit cross-domain dependency policy.
-=======
 `app.modules.proxy.service.ProxyService` and the required compatibility exports SHALL remain
 available to existing consumers. Behavior extracted from
 `ProxyService` or `service.py` SHALL be owned by focused private modules under
@@ -138,7 +149,6 @@ available to existing consumers. Behavior extracted from
 Private service domains SHALL comply with the repository's explicit cross-domain
 dependency policy. The proxy package SHALL NOT carry re-export-only
 compatibility shim modules that have no importers.
->>>>>>> 72630bbfe
 
 #### Scenario: Existing consumers import the proxy façade
 

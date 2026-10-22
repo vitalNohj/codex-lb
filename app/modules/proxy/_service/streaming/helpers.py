@@ -43,6 +43,7 @@ from app.core.errors import (
     PREVIOUS_RESPONSE_STREAM_INCOMPLETE_MESSAGE,
     SYNTHETIC_TRANSPORT_FAILURE_CODES,
     SYNTHETIC_TRANSPORT_FAILURE_MARKER,
+    OpenAIErrorDetail,
     OpenAIErrorParam,
     openai_error,
     response_failed_event,
@@ -55,26 +56,9 @@ from app.core.errors import (
 from app.core.errors import (
     PREVIOUS_RESPONSE_NOT_FOUND_MESSAGE as PREVIOUS_RESPONSE_NOT_FOUND_MESSAGE,
 )
-<<<<<<< 22625a07e
-from app.core.errors import (
-    PREVIOUS_RESPONSE_STREAM_INCOMPLETE_MESSAGE,
-    OpenAIErrorDetail,
-    response_failed_event,
-)
-from app.core.openai.models import OpenAIEvent
-from app.core.openai.parsing import parse_sse_event
-||||||| 84fde5a1e
-from app.core.errors import (
-    PREVIOUS_RESPONSE_STREAM_INCOMPLETE_MESSAGE,
-    response_failed_event,
-)
-from app.core.openai.models import OpenAIEvent
-from app.core.openai.parsing import parse_sse_event
-=======
 from app.core.openai.models import OpenAIError, OpenAIEvent, OpenAIResponsePayload, ResponseUsage
 from app.core.openai.parsing import classify_event_type, parse_sse_event
 from app.core.openai.requests import ResponsesRequest
->>>>>>> 72630bbfe
 from app.core.resilience.network_recovery import (
     PROCESS_NETWORK_UNAVAILABLE_CODE,
 )
@@ -917,13 +901,9 @@ def _build_rewritten_stream_response_failed_event(
         error_type=error_type,
         response_id=response_id,
     )
-<<<<<<< 22625a07e
     rewritten_event_payload["response"]["error"].update(recovery_metadata or {})
-||||||| 84fde5a1e
-=======
     if error_code in SYNTHETIC_TRANSPORT_FAILURE_CODES:
         rewritten_event_payload = synthetic_transport_failure_event(rewritten_event_payload)
->>>>>>> 72630bbfe
     rewritten_event_block = format_sse_event(rewritten_event_payload)
     rewritten_payload = parse_sse_data_json(rewritten_event_block)
     rewritten_event = parse_sse_event(rewritten_event_block)
@@ -931,7 +911,6 @@ def _build_rewritten_stream_response_failed_event(
     return rewritten_event_block, rewritten_event, rewritten_payload, rewritten_event_type
 
 
-<<<<<<< 22625a07e
 def _stream_terminal_captured_error(
     request_state: _WebSocketRequestState,
     *,
@@ -960,8 +939,8 @@ def _stream_terminal_captured_error(
         request_state.error_message_override or "Upstream error",
         request_state.error_type_override or "server_error",
     )
-||||||| 84fde5a1e
-=======
+
+
 def _stream_transport_failure_event_or_raise(
     error_code: str,
     error_message: str,
@@ -976,7 +955,6 @@ def _stream_transport_failure_event_or_raise(
             failure_phase="upstream",
         )
     return format_sse_event(synthetic_stream_failure_event(error_code, error_message, response_id=response_id))
->>>>>>> 72630bbfe
 
 
 def _build_stream_incomplete_terminal_event_for_request(

@@ -65,7 +65,8 @@ export function AccountActions({
   onRoutingPolicyChange,
 }: AccountActionsProps) {
   const { t } = useTranslation();
-<<<<<<< 22625a07e
+  // Credential export is its own permission (`accounts:export`), not part of account writes.
+  const canExport = usePermission("accounts:export");
   if (account.synthetic || account.readOnly) {
     const sidecarName =
       account.provider === "openrouter"
@@ -88,11 +89,6 @@ export function AccountActions({
     );
   }
 
-||||||| 84fde5a1e
-=======
-  // Credential export is its own permission (`accounts:export`), not part of account writes.
-  const canExport = usePermission("accounts:export");
->>>>>>> 72630bbfe
   const showOperatorRecoveryAction =
     account.status === "reauth_required" || account.status === "deactivated";
   // A deactivated account can be returned to active directly: the reactivate

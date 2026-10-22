@@ -710,6 +710,28 @@ def test_an_unreviewed_top_level_field_fails_closed() -> None:
         sanitize_body(body)
 
 
+def test_an_echoed_empty_annotation_list_survives_and_a_citation_fails_closed() -> None:
+    """Clients replaying store=false history echo ``annotations: []`` (fork: replay_safety)."""
+
+    def body_with(annotations: list[Any]) -> dict[str, Any]:
+        body = _realistic_body()
+        body["input"].append(
+            {
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "done", "annotations": annotations}],
+            }
+        )
+        return body
+
+    rebuilt, _ = sanitize_body(body_with([]))
+    assert rebuilt["input"][-1]["content"][0]["annotations"] == []
+
+    citation = {"type": "file_citation", "file_id": "file-jane-private", "index": 0}
+    with pytest.raises(UnsanitisableBodyError, match="expected an empty array"):
+        sanitize_body(body_with([citation]))
+
+
 @pytest.mark.parametrize(
     ("mutate", "secret"),
     [

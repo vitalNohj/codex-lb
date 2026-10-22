@@ -6,7 +6,6 @@ import { createElement, type PropsWithChildren } from "react";
 import { toast } from "sonner";
 import { describe, expect, it, vi } from "vitest";
 
-<<<<<<< 22625a07e
 import * as settingsApi from "@/features/settings/api";
 import { ExcludedModelsEditor } from "@/features/settings/components/excluded-models-editor";
 import {
@@ -22,15 +21,6 @@ import { createAccountSummary, createDashboardOverview, createDashboardSettings 
 import { SidecarAuthAccountSchema } from "@/features/accounts/schemas";
 import { ClaudeSidecarQuotaResponseSchema, ClaudeSidecarRoutingResponseSchema } from "@/features/settings/schemas";
 import { server } from "@/test/mocks/server";
-||||||| 84fde5a1e
-import { useSettings, useTelemetryConsent, useTelemetryPreview } from "@/features/settings/hooks/use-settings";
-=======
-import {
-  useSettings,
-  useTelemetryConsent,
-  useTelemetryPreview,
-} from "@/features/settings/hooks/use-settings";
->>>>>>> 72630bbfe
 
 function createTestQueryClient(): QueryClient {
   return new QueryClient({

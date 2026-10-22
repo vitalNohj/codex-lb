@@ -27,14 +27,8 @@ import { useOauth } from "@/features/accounts/hooks/use-oauth";
 import { useSettings, useUpstreamProxyAdmin } from "@/features/settings/hooks/use-settings";
 import { useAccountQuotaDisplayStore } from "@/hooks/use-account-quota-display";
 import type { AccountAuthExportResponse } from "@/features/accounts/schemas";
-<<<<<<< 22625a07e
-import { useAuthStore } from "@/features/auth/hooks/use-auth";
-import { isDisabledCapabilityAccount } from "@/lib/product-capabilities";
-||||||| 84fde5a1e
-import { useAuthStore } from "@/features/auth/hooks/use-auth";
-=======
 import { usePermission } from "@/features/auth/hooks/use-auth";
->>>>>>> 72630bbfe
+import { isDisabledCapabilityAccount } from "@/lib/product-capabilities";
 import { getErrorMessageOrNull } from "@/utils/errors";
 
 const OauthDialog = lazy(() =>

@@ -42,7 +42,17 @@ function renderHeader(initialEntry = "/dashboard", onLogout = vi.fn()) {
 }
 
 describe("AppHeader", () => {
-<<<<<<< 22625a07e
+  beforeEach(() => {
+    useAuthStore.setState({
+      permissions: ADMIN_PERMISSIONS,
+      user: null,
+      tier: "individual",
+      canWrite: true,
+      passwordManagementEnabled: true,
+      passwordSessionActive: false,
+    });
+  });
+
   it("renders no OmniRoute navigation while the capability is disabled", () => {
     renderHeader();
 
@@ -60,18 +70,6 @@ describe("AppHeader", () => {
     expect(forkLink).toHaveAttribute("href", "https://github.com/vitalNohj/codex-lb");
     expect(forkLink).toHaveAttribute("target", "_blank");
     expect(forkLink).toHaveAttribute("rel", "noopener noreferrer");
-||||||| 84fde5a1e
-=======
-  beforeEach(() => {
-    useAuthStore.setState({
-      permissions: ADMIN_PERMISSIONS,
-      user: null,
-      tier: "individual",
-      canWrite: true,
-      passwordManagementEnabled: true,
-      passwordSessionActive: false,
-    });
->>>>>>> 72630bbfe
   });
 
   it("shows the summed Accounts reset-credit badge capped at 99+", async () => {

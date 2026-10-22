@@ -50,33 +50,21 @@ dependencies = [
     "pydantic>=2.12.5",
     "pydantic-settings>=2.12.0",
     "pygments>=2.20.0",
-<<<<<<< 22625a07e
     "pyyaml>=6.0.3",
-||||||| 84fde5a1e
-=======
     # 2.13.0 is the first release without an advisory against ``jwt.decode``
     # itself: unknown ``crit`` header extensions accepted (< 2.12.0), unbounded
     # Base64URL decoding of the unused payload segment and the public-key-as-HMAC
     # -secret key confusion (both < 2.13.0). The ID token is the only thing this
     # product verifies with it, so the floor has to exclude them.
     "pyjwt[crypto]>=2.13.0",
->>>>>>> 72630bbfe
     "python-socks[asyncio]>=2.7.2",
     "pyotp>=2.9.0",
     "python-dotenv>=1.2.2",
     "python-multipart>=0.0.27",
     "psycopg[binary]>=3.2.12",
     "segno>=1.6.6",
-<<<<<<< 22625a07e
     "sqlalchemy>=2.0.53",
-    "urllib3>=2.7.0",
-||||||| 84fde5a1e
-    "sqlalchemy>=2.0.45",
-    "urllib3>=2.7.0",
-=======
-    "sqlalchemy>=2.0.45",
     "urllib3>=2.8.0",
->>>>>>> 72630bbfe
     "uvicorn>=0.47.0",
     "websockets>=16.0",
     "zstandard>=0.25.0",

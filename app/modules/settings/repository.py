@@ -1,23 +1,11 @@
 from __future__ import annotations
 
-<<<<<<< 22625a07e
 import json
-from collections.abc import Callable
-from datetime import datetime
-||||||| 84fde5a1e
-from collections.abc import Callable
-=======
 from collections.abc import Callable, Sequence
->>>>>>> 72630bbfe
+from datetime import datetime
 
-<<<<<<< 22625a07e
-from sqlalchemy import delete, func, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
-||||||| 84fde5a1e
-=======
-from sqlalchemy import func, select
-from sqlalchemy.dialects.postgresql import insert as pg_insert
->>>>>>> 72630bbfe
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -25,30 +13,22 @@ from sqlalchemy.orm.attributes import flag_modified
 from sqlalchemy.orm.exc import StaleDataError
 
 from app.core.auth.dashboard_session_ttl import DEFAULT_DASHBOARD_SESSION_TTL_SECONDS
-<<<<<<< 22625a07e
 from app.core.config.settings import get_settings
 from app.core.config.sidecar_prefix_seed import dump_configured_sidecar_prefixes
 from app.core.crypto import TokenEncryptor
-||||||| 84fde5a1e
-from app.core.config.settings import get_settings
-=======
->>>>>>> 72630bbfe
 from app.core.exceptions import DashboardSettingsConflictError
 from app.core.upstream_proxy.cache import get_upstream_route_cache
-<<<<<<< 22625a07e
 from app.db.models import (
     ClaudeHaiku55PinOwnership,
     ClaudeOpus55PinOwnership,
     ClaudeSonnet55PinOwnership,
     DashboardSettings,
+    DashboardUser,
+    LocalLoginPolicy,
+    ModelContextWindowOverride,
 )
-from app.modules.settings.dashboard_layout import DEFAULT_DASHBOARD_LAYOUT_JSON
-||||||| 84fde5a1e
-from app.db.models import DashboardSettings
-=======
-from app.db.models import DashboardSettings, DashboardUser, LocalLoginPolicy, ModelContextWindowOverride
 from app.modules.dashboard_users.repository import DashboardUsersRepository
->>>>>>> 72630bbfe
+from app.modules.settings.dashboard_layout import DEFAULT_DASHBOARD_LAYOUT_JSON
 
 _SETTINGS_ID = 1
 _UNSET = object()
@@ -159,19 +139,7 @@ class SettingsRepository:
             relative_availability_power=2.0,
             relative_availability_top_k=5,
             single_account_id=None,
-<<<<<<< 22625a07e
-            openai_cache_affinity_max_age_seconds=static_settings.openai_cache_affinity_max_age_seconds,
-||||||| 84fde5a1e
-            openai_cache_affinity_max_age_seconds=get_settings().openai_cache_affinity_max_age_seconds,
-=======
->>>>>>> 72630bbfe
             dashboard_session_ttl_seconds=DEFAULT_DASHBOARD_SESSION_TTL_SECONDS,
-<<<<<<< 22625a07e
-            warmup_model=static_settings.warmup_model,
-||||||| 84fde5a1e
-            warmup_model=get_settings().warmup_model,
-=======
->>>>>>> 72630bbfe
             import_without_overwrite=True,
             totp_required_on_login=False,
             totp_required_for_admin_role=False,
@@ -321,11 +289,8 @@ class SettingsRepository:
             limit_warmup_staggered_idle_enabled=False,
             request_log_retention_days=None,
             usage_history_retention_days=None,
-<<<<<<< 22625a07e
             hourly_rollup_retention_days=None,
             dashboard_layout_json=DEFAULT_DASHBOARD_LAYOUT_JSON,
-||||||| 84fde5a1e
-=======
             # C2-3 resilience toggles: NULL = inherit the env alias / default.
             soft_drain_enabled=None,
             deterministic_failover_enabled=None,
@@ -340,7 +305,6 @@ class SettingsRepository:
             conversation_archive_enabled=None,
             # R2 spool retention: NULL = inherit the env alias / default (7d).
             http_responses_session_bridge_operation_spool_retention_seconds=None,
->>>>>>> 72630bbfe
         )
         self._session.add(row)
         try:
@@ -697,11 +661,8 @@ class SettingsRepository:
         hourly_rollup_retention_days: int | None = None,
         clear_request_log_retention: bool = False,
         clear_usage_history_retention: bool = False,
-<<<<<<< 22625a07e
         clear_hourly_rollup_retention: bool = False,
         dashboard_layout_json: str | None = None,
-||||||| 84fde5a1e
-=======
         # C2-3 resilience toggles (tri-state like the retention overrides)
         soft_drain_enabled: bool | None = None,
         clear_soft_drain_enabled: bool = False,
@@ -751,7 +712,6 @@ class SettingsRepository:
         http_responses_session_bridge_request_budget_seconds: float | None = None,
         clear_http_responses_session_bridge_request_budget_seconds: bool = False,
         # end M1 stream/bridge budgets
->>>>>>> 72630bbfe
         expected_version: int | None = None,
     ) -> DashboardSettings:
         settings = await self.get_or_create()
@@ -1114,15 +1074,12 @@ class SettingsRepository:
             settings.usage_history_retention_days = None
         elif usage_history_retention_days is not None:
             settings.usage_history_retention_days = usage_history_retention_days
-<<<<<<< 22625a07e
         if clear_hourly_rollup_retention:
             settings.hourly_rollup_retention_days = None
         elif hourly_rollup_retention_days is not None:
             settings.hourly_rollup_retention_days = hourly_rollup_retention_days
         if dashboard_layout_json is not None:
             settings.dashboard_layout_json = dashboard_layout_json
-||||||| 84fde5a1e
-=======
         # C2-3 resilience toggles: clear flag resets to NULL (inherit the env
         # alias / code default); a non-None value is dashboard-owned.
         if clear_soft_drain_enabled:
@@ -1208,7 +1165,6 @@ class SettingsRepository:
             elif value is not None:
                 setattr(settings, column_name, value)
         # end C2-1 timeouts
->>>>>>> 72630bbfe
         # Force the optimistic-version CAS to run even when the payload makes no
         # net change. `version_id_col` only raises `StaleDataError` when the
         # flush emits an ORM UPDATE; a full-row save that assigns values all
@@ -1287,7 +1243,7 @@ class SettingsRepository:
 
 
 # M4 model catalogue: dashboard rows of the per-model context window overrides.
-_UPSERT_INSERT_FNS = {"postgresql": pg_insert, "sqlite": sqlite_insert}
+_UPSERT_INSERT_FNS = {"postgresql": postgresql_insert, "sqlite": sqlite_insert}
 
 
 class ModelContextWindowOverridesRepository:

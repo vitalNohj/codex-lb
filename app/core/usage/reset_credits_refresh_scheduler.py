@@ -418,17 +418,7 @@ async def _refresh_usage_after_auto_redeem(account: Account) -> None:
             accounts_repo,
             additional_usage_repo,
             auth_manager=AuthManager(accounts_repo),
-<<<<<<< 22625a07e
-        ).force_refresh(
-            current,
-            ignore_refresh_disabled=True,
-            ignore_persisted_cooldown=True,
-        )
-||||||| 84fde5a1e
-        ).force_refresh(current, ignore_refresh_disabled=True)
-=======
-        ).force_refresh(current)
->>>>>>> 72630bbfe
+        ).force_refresh(current, ignore_persisted_cooldown=True)
         if not refreshed:
             raise RuntimeError(f"Forced usage refresh returned no update for account {account.id}")
         get_account_selection_cache().invalidate()

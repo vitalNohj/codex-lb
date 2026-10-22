@@ -778,12 +778,15 @@ def get_pricing_for_model(
         if key.lower() == normalized:
             return key, value
 
-<<<<<<< 22625a07e
+    dated = re.fullmatch(r"(.+)-\d{4}-\d{2}-\d{2}", normalized)
+    if dated and dated[1] in pricing:
+        return dated[1], pricing[dated[1]]
+
     # Versioned identity, then a non-Claude alias. A Claude id matches a key
     # only as that exact string, or after one leading cc/, cp-, or cp_ prefix.
     # A longer, dotted, dated, or effort-suffixed id does not inherit a shorter key.
     for alias in (resolve_versioned_model_id(normalized), resolve_model_alias(normalized, aliases)):
-        if not alias:
+        if not alias or (alias == "gpt-5" and normalized.startswith("gpt-5.")):
             continue
         for key, value in pricing.items():
             if key.lower() == alias.lower():
@@ -793,25 +796,6 @@ def get_pricing_for_model(
         for key, value in pricing.items():
             if key.lower() == routed.lower():
                 return key, value
-||||||| 84fde5a1e
-    alias = resolve_model_alias(normalized, aliases)
-    if not alias:
-        return None
-    for key, value in pricing.items():
-        if key.lower() == alias.lower():
-            return key, value
-=======
-    dated = re.fullmatch(r"(.+)-\d{4}-\d{2}-\d{2}", normalized)
-    if dated and dated[1] in pricing:
-        return dated[1], pricing[dated[1]]
-
-    alias = resolve_model_alias(normalized, aliases)
-    if not alias or (alias == "gpt-5" and normalized.startswith("gpt-5.")):
-        return None
-    for key, value in pricing.items():
-        if key.lower() == alias.lower():
-            return key, value
->>>>>>> 72630bbfe
     return None
 
 

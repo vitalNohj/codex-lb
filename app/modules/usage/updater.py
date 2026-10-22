@@ -405,22 +405,11 @@ class UsageUpdater:
         ignore_persisted_cooldown: bool = False,
     ) -> bool:
         """Refresh one account regardless of cached/fresh usage rows."""
-<<<<<<< 22625a07e
         result = await self.force_refresh_result(
             account,
-            ignore_refresh_disabled=ignore_refresh_disabled,
             access_token_override=access_token_override,
             ignore_persisted_cooldown=ignore_persisted_cooldown,
         )
-||||||| 84fde5a1e
-        result = await self.force_refresh_result(
-            account,
-            ignore_refresh_disabled=ignore_refresh_disabled,
-            access_token_override=access_token_override,
-        )
-=======
-        result = await self.force_refresh_result(account, access_token_override=access_token_override)
->>>>>>> 72630bbfe
         return result.usage_written
 
     async def force_refresh_result(
@@ -431,7 +420,6 @@ class UsageUpdater:
         ignore_persisted_cooldown: bool = False,
     ) -> AccountRefreshResult:
         """Refresh one account and expose whether the upstream fetch completed."""
-<<<<<<< 22625a07e
         if ignore_persisted_cooldown:
             # The consume already proved the blocked window was reset. Drop the
             # 429 block marker before the fetch so a lagged /wham/usage sample
@@ -444,15 +432,6 @@ class UsageUpdater:
             # that marker, and any runtime block newer than the waived one.
             if waived_blocked_at is not None:
                 await _clear_rate_limit_runtime(account.id, waived_blocked_at=waived_blocked_at)
-        settings = get_settings()
-        if not settings.usage_refresh_enabled and not ignore_refresh_disabled:
-            return AccountRefreshResult(usage_written=False, fetch_succeeded=False)
-||||||| 84fde5a1e
-        settings = get_settings()
-        if not settings.usage_refresh_enabled and not ignore_refresh_disabled:
-            return AccountRefreshResult(usage_written=False, fetch_succeeded=False)
-=======
->>>>>>> 72630bbfe
         if account.status in (AccountStatus.REAUTH_REQUIRED, AccountStatus.DEACTIVATED):
             return AccountRefreshResult(usage_written=False, fetch_succeeded=False)
         try:
@@ -1081,13 +1060,12 @@ class UsageUpdater:
         account.blocked_at = stored.blocked_at
 
 
-<<<<<<< 22625a07e
 async def _clear_rate_limit_runtime(account_id: str, *, waived_blocked_at: int) -> None:
     from app.modules.proxy.load_balancer import clear_rate_limit_runtime
 
     await clear_rate_limit_runtime(account_id, waived_blocked_at=waived_blocked_at)
-||||||| 84fde5a1e
-=======
+
+
 async def _run_requested_refresh(account_id: str) -> None:
     async def refresh_factory() -> AccountRefreshResult:
         loaded = await UsageUpdater._load_owned_session_updater(account_id)
@@ -1131,7 +1109,6 @@ async def _run_requested_refresh(account_id: str) -> None:
         # evidence. Drop that entry now instead of letting the >= 100 % row
         # wait out the cache TTL before the pool reports exhaustion.
         get_account_selection_cache().invalidate()
->>>>>>> 72630bbfe
 
 
 def build_background_usage_updater() -> UsageUpdater:

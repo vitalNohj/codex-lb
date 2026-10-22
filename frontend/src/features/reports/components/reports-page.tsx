@@ -24,12 +24,8 @@ import type { QueueWaitChartProps } from "./queue-wait-chart";
 import type { ModelDistributionDonutProps } from "./model-distribution-donut";
 import type { UseragentDistributionDonutProps } from "./useragent-distribution-donut";
 import { DailyDetailTable } from "./daily-detail-table";
-<<<<<<< 22625a07e
 import { ReportsSkeleton } from "./reports-skeleton";
-||||||| 84fde5a1e
-=======
 import { ThreadIdentityCard } from "./thread-identity-card";
->>>>>>> 72630bbfe
 import {
   daysAgoLocalISO,
   getBrowserReportsTimeZone,
@@ -410,18 +406,12 @@ export function ReportsPage({ initialFilters }: ReportsPageProps = {}) {
                   />
                 </Suspense>
               ) : null}
-<<<<<<< 22625a07e
               {visibleChartIds.includes("monthlyUsage") ? (
                 <Suspense fallback={<div className="h-[270px] rounded-xl border bg-card" />}>
                   <MonthlyUsageChart data={reportsQuery.data.monthly ?? []} />
                 </Suspense>
               ) : null}
-              {visibleChartIds.includes("timeToFirstToken") ? (
-||||||| 84fde5a1e
-              {visibleChartIds.includes("timeToFirstToken") ? (
-=======
               {reportsQuery.data.speedMetricsAvailable !== false && visibleChartIds.includes("timeToFirstToken") ? (
->>>>>>> 72630bbfe
                 <Suspense fallback={<div className="h-[270px] rounded-xl border bg-card" />}>
                   <TimeToFirstTokenChart
                     startDate={filters.startDate}

@@ -163,13 +163,9 @@ class _FakeApiKeysRepository(ApiKeysRepositoryProtocol):
         enforced_service_tier: str | None | _Unset = _UNSET,
         traffic_class: str | _Unset = _UNSET,
         transport_policy_override: str | None | _Unset = _UNSET,
-<<<<<<< 22625a07e
         rate_limit_as_payment_required: bool | _Unset = _UNSET,
         is_shared: bool | _Unset = _UNSET,
-||||||| 84fde5a1e
-=======
         thread_cache_identity_override: str | None | _Unset = _UNSET,
->>>>>>> 72630bbfe
         usage_sections: str | _Unset = _UNSET,
         account_assignment_scope_enabled: bool | _Unset = _UNSET,
         source_assignment_scope_enabled: bool | _Unset = _UNSET,
@@ -193,13 +189,9 @@ class _FakeApiKeysRepository(ApiKeysRepositoryProtocol):
             "enforced_service_tier": enforced_service_tier,
             "traffic_class": traffic_class,
             "transport_policy_override": transport_policy_override,
-<<<<<<< 22625a07e
             "rate_limit_as_payment_required": rate_limit_as_payment_required,
             "is_shared": is_shared,
-||||||| 84fde5a1e
-=======
             "thread_cache_identity_override": thread_cache_identity_override,
->>>>>>> 72630bbfe
             "usage_sections": usage_sections,
             "account_assignment_scope_enabled": account_assignment_scope_enabled,
             "source_assignment_scope_enabled": source_assignment_scope_enabled,

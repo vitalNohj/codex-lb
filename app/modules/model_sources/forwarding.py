@@ -20,16 +20,11 @@ from app.core.crypto import TokenEncryptor
 from app.core.openai.parsing import classify_event_type
 from app.core.types import JsonValue
 from app.core.utils.json_guards import is_json_mapping
-<<<<<<< 22625a07e
-from app.core.utils.sse import SSE_DONE, SseJsonDataDecoder, SseJsonEvent
-||||||| 84fde5a1e
-=======
 from app.core.utils.shared_future import (
     _await_cleanup_deferring_cancellation as _shared_await_cleanup_deferring_cancellation,
 )
 from app.core.utils.shared_future import _await_task_deferring_cancellation
 from app.core.utils.sse import extract_sse_data
->>>>>>> 72630bbfe
 from app.db.models import ModelSource
 
 logger = logging.getLogger(__name__)
@@ -167,9 +162,6 @@ class SourceChatStream(_TransportOwnedStream):
     body: AsyncIterator[bytes]
     usage_holder: "SourceUsageHolder"
     upstream_status_code: int
-    #: Owns the upstream response. Closing it releases the connection even when
-    #: ``body`` never started, which closing ``body`` alone would not.
-    upstream: AsyncExitStack | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -177,9 +169,6 @@ class SourceResponsesStream(_TransportOwnedStream):
     body: AsyncIterator[bytes]
     usage_holder: "SourceUsageHolder"
     upstream_status_code: int
-    #: Owns the upstream response. Closing it releases the connection even when
-    #: ``body`` never started, which closing ``body`` alone would not.
-    upstream: AsyncExitStack | None = None
 
 
 @dataclass(slots=True)
@@ -352,39 +341,6 @@ async def stream_chat_completion(
 ) -> SourceChatStream:
     usage_holder = SourceUsageHolder()
     usage_parser = SourceStreamUsageParser(usage_holder, response_shape="chat")
-<<<<<<< 22625a07e
-    stack, response = await _open_source_stream(source, "/chat/completions", payload, encryptor=encryptor)
-
-    async def body() -> AsyncIterator[bytes]:
-        try:
-            async for chunk in response.content.iter_chunked(4096):
-                usage_parser.feed(chunk)
-                yield chunk
-            usage_parser.flush()
-        finally:
-            # A plain ``async with stack`` unwinds unshielded: repeated
-            # cancellation delivery can interrupt ``__aexit__`` mid-unwind and
-            # leak the pooled HTTP session lease.
-            await _await_cleanup_deferring_cancellation(stack.aclose())
-
-    return SourceChatStream(
-        body=body(), usage_holder=usage_holder, upstream_status_code=response.status, upstream=stack
-||||||| 84fde5a1e
-    stack, response = await _open_source_stream(source, "/chat/completions", payload, encryptor=encryptor)
-
-    async def body() -> AsyncIterator[bytes]:
-        try:
-            async for chunk in response.content.iter_chunked(4096):
-                usage_parser.feed(chunk)
-                yield chunk
-        finally:
-            # A plain ``async with stack`` unwinds unshielded: repeated
-            # cancellation delivery can interrupt ``__aexit__`` mid-unwind and
-            # leak the pooled HTTP session lease.
-            await _await_cleanup_deferring_cancellation(stack.aclose())
-
-    return SourceChatStream(body=body(), usage_holder=usage_holder, upstream_status_code=response.status)
-=======
     # Chat completions keep the source's own 401/403 envelope (recode is a
     # Responses-dispatch decision) and return at the source's headers exactly
     # as before the hardening: the first byte is the first token, which a local
@@ -421,7 +377,6 @@ async def stream_chat_completion(
         usage_holder=usage_holder,
         upstream_status_code=response.status,
         transport=transport,
->>>>>>> 72630bbfe
     )
 
 
@@ -714,26 +669,6 @@ async def _source_stream_body(
                 if usage_holder.first_content_seen:
                     usage_holder.content_delivered = True
                 yield chunk
-<<<<<<< 22625a07e
-            usage_parser.flush()
-        finally:
-            # A plain ``async with stack`` unwinds unshielded: repeated
-            # cancellation delivery can interrupt ``__aexit__`` mid-unwind and
-            # leak the pooled HTTP session lease.
-            await _await_cleanup_deferring_cancellation(stack.aclose())
-
-    return SourceResponsesStream(
-        body=body(), usage_holder=usage_holder, upstream_status_code=response.status, upstream=stack
-    )
-||||||| 84fde5a1e
-        finally:
-            # A plain ``async with stack`` unwinds unshielded: repeated
-            # cancellation delivery can interrupt ``__aexit__`` mid-unwind and
-            # leak the pooled HTTP session lease.
-            await _await_cleanup_deferring_cancellation(stack.aclose())
-
-    return SourceResponsesStream(body=body(), usage_holder=usage_holder, upstream_status_code=response.status)
-=======
             else:
                 withheld.append(chunk)
                 withheld_bytes += len(chunk)
@@ -764,7 +699,6 @@ async def _source_stream_body(
         # cancellation delivery can interrupt ``__aexit__`` mid-unwind and
         # leak the pooled HTTP session lease.
         await transport.aclose()
->>>>>>> 72630bbfe
 
 
 async def _open_source_stream(
@@ -1358,31 +1292,11 @@ class SourceStreamUsageParser:
     def __init__(self, usage_holder: SourceUsageHolder, *, response_shape: str) -> None:
         self._usage_holder = usage_holder
         self._response_shape = response_shape
-<<<<<<< 22625a07e
-        self._events = SseJsonDataDecoder(max_event_chars=self._MAX_BUFFER_CHARS)
-||||||| 84fde5a1e
-        self._buffer = ""
-=======
         self._buffer = ""
         self._bom_pending = True
         self._cr_pending = False
->>>>>>> 72630bbfe
 
     def feed(self, chunk: bytes) -> None:
-<<<<<<< 22625a07e
-        for event in self._events.feed(chunk):
-            self._capture_event(event)
-||||||| 84fde5a1e
-        # SSE permits CRLF (and bare CR) line endings; normalize so frame
-        # detection below only has to handle "\n\n".
-        text = chunk.decode("utf-8", errors="ignore").replace("\r\n", "\n").replace("\r", "\n")
-        self._buffer += text
-        while "\n\n" in self._buffer:
-            frame, self._buffer = self._buffer.split("\n\n", 1)
-            self._capture_frame(frame)
-        if len(self._buffer) > self._MAX_BUFFER_CHARS:
-            self._buffer = self._buffer[-self._MAX_BUFFER_CHARS :]
-=======
         # SSE permits CRLF (and bare CR) line endings; normalize so frame
         # detection below only has to handle "\n\n". A CRLF split across two
         # chunks must stay one line ending: the CR that closed the previous
@@ -1420,54 +1334,7 @@ class SourceStreamUsageParser:
             if self._response_shape == "responses":
                 self._usage_holder.first_content_seen = True
             self._buffer = self._buffer[-self._MAX_BUFFER_CHARS :]
->>>>>>> 72630bbfe
 
-<<<<<<< 22625a07e
-    def flush(self) -> None:
-        """End the stream, reading a last frame the upstream did not close with a blank line."""
-
-        for event in self._events.flush():
-            self._capture_event(event)
-
-    def _capture_event(self, event: SseJsonEvent) -> None:
-        if event == SSE_DONE:
-            return
-        if self._response_shape == "responses":
-            usage = _usage_from_responses_event(event)
-            timings = _timings_from_responses_event(event)
-        else:
-            usage = _usage_from_chat_payload(event)
-            timings = _timings_from_payload(event)
-        if usage is not None:
-            self._usage_holder.usage = usage
-        if timings is not None:
-            self._usage_holder.timings = timings
-||||||| 84fde5a1e
-    def _capture_frame(self, frame: str) -> None:
-        for line in frame.splitlines():
-            stripped = line.strip()
-            if not stripped.startswith("data:"):
-                continue
-            data = stripped.removeprefix("data:").strip()
-            if not data or data == "[DONE]":
-                continue
-            try:
-                parsed = json.loads(data)
-            except ValueError:
-                continue
-            if not isinstance(parsed, dict):
-                continue
-            if self._response_shape == "responses":
-                usage = _usage_from_responses_event(parsed)
-                timings = _timings_from_responses_event(parsed)
-            else:
-                usage = _usage_from_chat_payload(parsed)
-                timings = _timings_from_payload(parsed)
-            if usage is not None:
-                self._usage_holder.usage = usage
-            if timings is not None:
-                self._usage_holder.timings = timings
-=======
     def finish(self) -> None:
         """Parse the unterminated tail at EOF as a final frame.
 
@@ -1550,7 +1417,6 @@ class SourceStreamUsageParser:
             delta = event.get("delta")
             if isinstance(delta, str):
                 holder.delta_chars += len(delta)
->>>>>>> 72630bbfe
 
 
 def _usage_from_responses_event(payload: Mapping[str, JsonValue]) -> SourceUsage | None:

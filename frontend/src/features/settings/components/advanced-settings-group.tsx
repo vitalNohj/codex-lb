@@ -102,42 +102,22 @@ export function AdvancedSettingsGroup({
       className="rounded-xl border border-dashed bg-card/60 shadow-[var(--shadow-sm)] data-[state=open]:border-solid data-[state=open]:bg-card"
     >
       <CollapsibleTrigger
-<<<<<<< 22625a07e
-        aria-label={open ? t("settings.advanced.hide") : t("settings.advanced.show")}
-        className="flex w-full items-center gap-3 rounded-xl p-5 text-left transition-colors hover:bg-accent/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60 sm:p-6"
-||||||| 84fde5a1e
-        aria-label={open ? t("settings.advanced.hide") : t("settings.advanced.show")}
-        className="flex w-full items-center gap-3 rounded-xl p-5 text-left transition-colors hover:bg-muted/40"
-=======
         aria-label={open ? t(labels.hide) : t(labels.show)}
-        className="flex w-full items-center gap-3 rounded-xl p-5 text-left transition-colors hover:bg-muted/40"
->>>>>>> 72630bbfe
+        className="flex w-full items-center gap-3 rounded-xl p-5 text-left transition-colors hover:bg-accent/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60 sm:p-6"
       >
         <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-primary/12 text-primary ring-1 ring-primary/20">
           <SlidersHorizontal className="h-4 w-4" aria-hidden="true" />
         </span>
         <span className="min-w-0 flex-1">
-          <span className="block text-base font-semibold leading-tight tracking-tight">{t("settings.advanced.title")}</span>
-          <span className="mt-1 block text-sm leading-relaxed text-muted-foreground">{t("settings.advanced.description")}</span>
+          <span className="block text-base font-semibold leading-tight tracking-tight">{t(labels.title)}</span>
+          <span data-testid={descriptionTestId} className="mt-1 block text-sm leading-relaxed text-muted-foreground">
+            {t(labels.description, descriptionValues)}
+          </span>
         </span>
         <ChevronRight
           aria-hidden="true"
           className={cn("h-5 w-5 shrink-0 text-muted-foreground transition-transform duration-200", open && "rotate-90")}
         />
-<<<<<<< 22625a07e
-||||||| 84fde5a1e
-        <span className="min-w-0">
-          <span className="block text-sm font-semibold tracking-tight">{t("settings.advanced.title")}</span>
-          <span className="mt-0.5 block text-xs text-muted-foreground">{t("settings.advanced.description")}</span>
-        </span>
-=======
-        <span className="min-w-0">
-          <span className="block text-sm font-semibold tracking-tight">{t(labels.title)}</span>
-          <span data-testid={descriptionTestId} className="mt-0.5 block text-xs text-muted-foreground">
-            {t(labels.description, descriptionValues)}
-          </span>
-        </span>
->>>>>>> 72630bbfe
       </CollapsibleTrigger>
       <CollapsibleContent className="space-y-5 border-t p-4 sm:p-6">
         {children}

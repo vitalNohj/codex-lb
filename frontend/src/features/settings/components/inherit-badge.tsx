@@ -22,7 +22,7 @@ type InheritBadgeProps = {
   /** Update-request field that is set to null to clear the dashboard value. */
   field: InheritableSettingField;
   busy: boolean;
-  onSave: (payload: SettingsUpdateRequest) => Promise<void>;
+  onSave: (patch: Partial<SettingsUpdateRequest>) => Promise<DashboardSettings | void>;
   /**
    * Effective inherited value shown as a plain hint when the backend does not
    * report provenance yet (older releases). Callers pass it only while the

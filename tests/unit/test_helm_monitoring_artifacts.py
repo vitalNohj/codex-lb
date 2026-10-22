@@ -80,7 +80,6 @@ def test_grafana_error_rate_aggregates_request_series_before_division() -> None:
     )
 
 
-<<<<<<< 22625a07e
 def test_grafana_overview_charts_cliproxy_route_outcomes() -> None:
     dashboard = json.loads((_CHART_DIR / "dashboards" / "codex-lb.json").read_text())
     panel = next(panel for panel in dashboard["panels"] if panel["title"] == "CLIProxyAPI Route Outcomes")
@@ -108,8 +107,8 @@ def test_claude_sticky_cache_miss_alert_needs_a_sustained_majority_of_misses() -
         " and sum by (namespace, job) ( increase(codex_lb_cliproxy_claude_sticky_cache_total[30m]) ) >= 10"
     )
     assert "api.anthropic.com" in prometheus_rule
-||||||| 84fde5a1e
-=======
+
+
 def test_grafana_latency_quantiles_aggregate_selected_bucket_series_by_le() -> None:
     latency_queries = {
         (dashboard_path.name, panel["title"], target["legendFormat"]): target["expr"]
@@ -151,4 +150,3 @@ def test_high_latency_quantile_aggregates_bucket_series_by_scope_and_le() -> Non
         "histogram_quantile(0.99, sum by (namespace, job, le) ("
         " rate(codex_lb_request_duration_seconds_bucket[5m]) ) ) > 10"
     )
->>>>>>> 72630bbfe

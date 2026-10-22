@@ -4,7 +4,6 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { AutomationsPauseToggle } from "@/features/automations/components/automations-pause-toggle";
 import { useAuthStore } from "@/features/auth/hooks/use-auth";
-import { buildSettingsUpdateRequest } from "@/features/settings/payload";
 import type { DashboardSettings } from "@/features/settings/schemas";
 import { createDashboardSettings } from "@/test/mocks/factories";
 
@@ -47,7 +46,7 @@ describe("AutomationsPauseToggle", () => {
     await user.click(toggle);
 
     expect(mutateAsync).toHaveBeenCalledWith(
-      buildSettingsUpdateRequest(settingsData, { automationsSchedulerEnabled: false }),
+      { automationsSchedulerEnabled: false },
     );
   });
 
@@ -65,7 +64,7 @@ describe("AutomationsPauseToggle", () => {
 
     await user.click(screen.getByRole("button", { name: "Reset to inherited" }));
 
-    const payload = buildSettingsUpdateRequest(settingsData, { automationsSchedulerEnabled: null });
+    const payload = { automationsSchedulerEnabled: null };
     expect(payload.automationsSchedulerEnabled).toBeNull();
     expect(mutateAsync).toHaveBeenCalledWith(payload);
   });

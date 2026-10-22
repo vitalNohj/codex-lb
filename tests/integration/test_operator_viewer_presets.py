@@ -229,7 +229,8 @@ async def test_viewer_reads_the_guest_surface_and_mutates_nothing(async_client: 
         # The guest read surface, with the same identity masking guests get (no accounts:write).
         listing = await viewer.get("/api/accounts")
         assert listing.status_code == 200, listing.text
-        [account] = listing.json()["accounts"]
+        # Fork: the listing also carries the synthetic sidecar accounts (public hosts only).
+        [account] = [item for item in listing.json()["accounts"] if item["accountId"] == "acc-1"]
         assert account["email"] == "a***@example.com"
         assert account["chatgptAccountId"] is None
         for path in (

@@ -1,24 +1,36 @@
 from __future__ import annotations
 
 import json
-<<<<<<< 22625a07e
+import logging
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from datetime import datetime
-||||||| 84fde5a1e
-from dataclasses import dataclass
-=======
-import logging
-from collections.abc import Mapping
-from dataclasses import dataclass, field
 from typing import Any
->>>>>>> 72630bbfe
 
-<<<<<<< 22625a07e
+from app.core.auth.dashboard_access import is_admin_level
 from app.core.clients.claude_sidecar import SidecarPrefix
+from app.core.clients.thread_cache_identity import (
+    THREAD_CACHE_IDENTITY_MODE_DEFAULT,
+    normalize_thread_cache_identity_mode,
+)
+from app.core.config.background_jobs import BACKGROUND_JOB_SETTINGS
+from app.core.config.dashboard_overrides import DASHBOARD_TIMEOUT_SETTINGS
+
+# Re-exported: the resolver lives in ``app.core.config.inheritable`` so hot
+# paths in ``app.core`` share it without importing this module.
+from app.core.config.inheritable import InheritableValue as InheritableValue
+from app.core.config.inheritable import SettingScalar as SettingScalar
+from app.core.config.inheritable import SettingSource as SettingSource
+from app.core.config.inheritable import resolve_inheritable as resolve_inheritable
 from app.core.config.product_capabilities import omniroute_enabled
-from app.core.config.settings import get_settings
+from app.core.config.settings import Settings, get_settings
+from app.core.config.spool_retention import OPERATION_SPOOL_RETENTION_SETTING
+from app.core.conversation_archive import CONVERSATION_ARCHIVE_SETTING
 from app.core.crypto import TokenEncryptor
+from app.core.resilience.toggles import RESILIENCE_TOGGLE_SETTINGS
+from app.db.models import DashboardSettings, LocalLoginPolicy
+from app.modules.dashboard_roles.service import resolve_role_grants
+from app.modules.dashboard_users.break_glass import BreakGlassRequiresTotpError
 from app.modules.openai_compat.endpoints import (
     OpenAICompatEndpointUpdateData,
     StoredOpenAICompatEndpoint,
@@ -48,31 +60,6 @@ from app.modules.settings.model_alias_pools import (
     normalize_alias_pools,
     parse_alias_pools_json,
 )
-||||||| 84fde5a1e
-from app.core.config.settings import get_settings
-=======
-from app.core.auth.dashboard_access import is_admin_level
-from app.core.clients.thread_cache_identity import (
-    THREAD_CACHE_IDENTITY_MODE_DEFAULT,
-    normalize_thread_cache_identity_mode,
-)
-from app.core.config.background_jobs import BACKGROUND_JOB_SETTINGS
-from app.core.config.dashboard_overrides import DASHBOARD_TIMEOUT_SETTINGS
-
-# Re-exported: the resolver lives in ``app.core.config.inheritable`` so hot
-# paths in ``app.core`` share it without importing this module.
-from app.core.config.inheritable import InheritableValue as InheritableValue
-from app.core.config.inheritable import SettingScalar as SettingScalar
-from app.core.config.inheritable import SettingSource as SettingSource
-from app.core.config.inheritable import resolve_inheritable as resolve_inheritable
-from app.core.config.settings import Settings, get_settings
-from app.core.config.spool_retention import OPERATION_SPOOL_RETENTION_SETTING
-from app.core.conversation_archive import CONVERSATION_ARCHIVE_SETTING
-from app.core.resilience.toggles import RESILIENCE_TOGGLE_SETTINGS
-from app.db.models import DashboardSettings, LocalLoginPolicy
-from app.modules.dashboard_roles.service import resolve_role_grants
-from app.modules.dashboard_users.break_glass import BreakGlassRequiresTotpError
->>>>>>> 72630bbfe
 from app.modules.settings.repository import SettingsRepository
 from app.modules.usage.additional_quota_keys import (
     normalize_additional_quota_key,
@@ -256,10 +243,7 @@ class DashboardSettingsData:
     hourly_rollup_retention_days: int
     request_log_retention_override_days: int | None
     usage_history_retention_override_days: int | None
-<<<<<<< 22625a07e
     hourly_rollup_retention_override_days: int | None
-||||||| 84fde5a1e
-=======
     # C2-3 resilience toggles: effective values (dashboard column, else the
     # deprecated env alias, else the code default); provenance carries the source.
     soft_drain_enabled: bool
@@ -281,13 +265,7 @@ class DashboardSettingsData:
     # the code default); provenance carries the source.
     http_responses_session_bridge_operation_spool_retention_seconds: float
     # end R2 spool retention
->>>>>>> 72630bbfe
     version: int
-<<<<<<< 22625a07e
-    cliproxy_capacity_routing_enabled: bool = True
-    dashboard_layout: DashboardLayoutVisibility = field(default_factory=DashboardLayoutVisibility)
-||||||| 84fde5a1e
-=======
     # C2-1 timeouts: effective values (dashboard column, else environment,
     # else code default); the column values are exposed through ``provenance``.
     upstream_connect_timeout_seconds: float
@@ -306,7 +284,8 @@ class DashboardSettingsData:
     # Effective value, source and fallbacks of every inheritable setting, keyed
     # by setting name; the settings API exposes it as ``provenance``.
     provenance: Mapping[str, InheritableValue[Any]] = field(default_factory=dict)
->>>>>>> 72630bbfe
+    cliproxy_capacity_routing_enabled: bool = True
+    dashboard_layout: DashboardLayoutVisibility = field(default_factory=DashboardLayoutVisibility)
 
 
 @dataclass(frozen=True, slots=True)
@@ -451,51 +430,6 @@ class DashboardSettingsUpdateData:
     usage_history_retention_override_days: int | None
     clear_request_log_retention_override: bool
     clear_usage_history_retention_override: bool
-<<<<<<< 22625a07e
-    # Lower-cased full model -> provider key of the integration starred as the
-    # model's default route. ``None`` keeps the stored stars, so a client that
-    # predates stars cannot erase them by saving; a submitted map replaces the
-    # stored one and is re-filtered against the cards in the same save.
-    sidecar_full_model_stars: dict[str, str] | None = None
-    # Hourly-rollup retention joins the tri-state retention group; defaulted
-    # so existing update payloads that predate the field keep constructing
-    # the dataclass unchanged (None/False = leave the stored value untouched).
-    hourly_rollup_retention_override_days: int | None = None
-    clear_hourly_rollup_retention_override: bool = False
-    cliproxy_capacity_routing_enabled: bool | None = None
-    dashboard_layout: DashboardLayoutVisibility | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class SidecarRoutingConflict:
-    kind: str
-    value: str
-    owner: str
-    challenger: str
-
-
-class SidecarRoutingConflictError(ValueError):
-    def __init__(self, conflict: SidecarRoutingConflict) -> None:
-        self.conflict = conflict
-        super().__init__(
-            f"{conflict.kind} '{conflict.value}' is already used by {conflict.owner}; "
-            f"{conflict.challenger} cannot use it"
-        )
-
-
-class ModelAliasPoolError(ValueError):
-    """An alias pool the operator submitted cannot be saved.
-
-    Carries the alias and offending target so the dashboard can attach the
-    message to the right row instead of a page-level toast.
-    """
-
-    def __init__(self, message: str, *, alias: str, target: str | None = None) -> None:
-        self.alias = alias
-        self.target = target
-        super().__init__(message)
-||||||| 84fde5a1e
-=======
     # C2-3 resilience toggles: tri-state (value = store, clear flag = back to
     # NULL so the env alias / default applies again, neither = untouched).
     soft_drain_enabled: bool | None = None
@@ -549,6 +483,49 @@ class ModelAliasPoolError(ValueError):
     clear_http_responses_session_bridge_request_budget_seconds: bool = False
     # end M1 stream/bridge budgets
 
+    # Lower-cased full model -> provider key of the integration starred as the
+    # model's default route. ``None`` keeps the stored stars, so a client that
+    # predates stars cannot erase them by saving; a submitted map replaces the
+    # stored one and is re-filtered against the cards in the same save.
+    sidecar_full_model_stars: dict[str, str] | None = None
+    # Hourly-rollup retention joins the tri-state retention group; defaulted
+    # so existing update payloads that predate the field keep constructing
+    # the dataclass unchanged (None/False = leave the stored value untouched).
+    hourly_rollup_retention_override_days: int | None = None
+    clear_hourly_rollup_retention_override: bool = False
+    cliproxy_capacity_routing_enabled: bool | None = None
+    dashboard_layout: DashboardLayoutVisibility | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class SidecarRoutingConflict:
+    kind: str
+    value: str
+    owner: str
+    challenger: str
+
+
+class SidecarRoutingConflictError(ValueError):
+    def __init__(self, conflict: SidecarRoutingConflict) -> None:
+        self.conflict = conflict
+        super().__init__(
+            f"{conflict.kind} '{conflict.value}' is already used by {conflict.owner}; "
+            f"{conflict.challenger} cannot use it"
+        )
+
+
+class ModelAliasPoolError(ValueError):
+    """An alias pool the operator submitted cannot be saved.
+
+    Carries the alias and offending target so the dashboard can attach the
+    message to the right row instead of a page-level toast.
+    """
+
+    def __init__(self, message: str, *, alias: str, target: str | None = None) -> None:
+        self.alias = alias
+        self.target = target
+        super().__init__(message)
+
 
 @dataclass(frozen=True, slots=True)
 class TotpEnrollmentSummary:
@@ -557,7 +534,6 @@ class TotpEnrollmentSummary:
     actor_configured: bool
     users_without_totp: int
     admins_without_totp: int
->>>>>>> 72630bbfe
 
 
 class SettingsService:
@@ -565,77 +541,6 @@ class SettingsService:
         self._repository = repository
         self._encryptor = TokenEncryptor()
 
-<<<<<<< 22625a07e
-    async def get_settings(self) -> DashboardSettingsData:
-        row = await self._repository.get_or_create()
-        return self._to_data(row)
-||||||| 84fde5a1e
-    async def get_settings(self) -> DashboardSettingsData:
-        row = await self._repository.get_or_create()
-        return DashboardSettingsData(
-            sticky_threads_enabled=row.sticky_threads_enabled,
-            upstream_stream_transport=row.upstream_stream_transport,
-            prohibit_fast_mode=row.prohibit_fast_mode,
-            http_downstream_transport_policy=row.http_downstream_transport_policy,
-            proxy_account_response_create_limit=_effective_response_create_limit(
-                row.proxy_account_response_create_limit
-            ),
-            proxy_account_stream_limit=_effective_stream_limit(row.proxy_account_stream_limit),
-            proxy_account_stream_recovery_reserve=_effective_stream_recovery_reserve(
-                row.proxy_account_stream_recovery_reserve
-            ),
-            proxy_api_key_fair_share_congestion_threshold_pct=_effective_api_key_fair_share_threshold_pct(
-                row.proxy_api_key_fair_share_congestion_threshold_pct
-            ),
-            upstream_proxy_routing_enabled=row.upstream_proxy_routing_enabled,
-            upstream_proxy_default_pool_id=row.upstream_proxy_default_pool_id,
-            prefer_earlier_reset_accounts=row.prefer_earlier_reset_accounts,
-            prefer_earlier_reset_window=row.prefer_earlier_reset_window,
-            show_reset_credit_badges=row.show_reset_credit_badges,
-            auto_redeem_reset_credits_before_expiry=row.auto_redeem_reset_credits_before_expiry,
-            show_reset_credit_expiry_badge=row.show_reset_credit_expiry_badge,
-            routing_strategy=row.routing_strategy,
-            relative_availability_power=row.relative_availability_power,
-            relative_availability_top_k=row.relative_availability_top_k,
-            single_account_id=row.single_account_id,
-            openai_cache_affinity_max_age_seconds=row.openai_cache_affinity_max_age_seconds,
-            dashboard_session_ttl_seconds=row.dashboard_session_ttl_seconds,
-            http_responses_session_bridge_prompt_cache_idle_ttl_seconds=(
-                row.http_responses_session_bridge_prompt_cache_idle_ttl_seconds
-            ),
-            http_responses_session_bridge_gateway_safe_mode=row.http_responses_session_bridge_gateway_safe_mode,
-            sticky_reallocation_budget_threshold_pct=row.sticky_reallocation_budget_threshold_pct,
-            sticky_reallocation_primary_budget_threshold_pct=row.sticky_reallocation_primary_budget_threshold_pct,
-            sticky_reallocation_secondary_budget_threshold_pct=row.sticky_reallocation_secondary_budget_threshold_pct,
-            additional_quota_routing_policies=_parse_additional_quota_routing_policies(
-                row.additional_quota_routing_policies_json
-            ),
-            warmup_model=row.warmup_model,
-            import_without_overwrite=row.import_without_overwrite,
-            totp_required_on_login=row.totp_required_on_login,
-            totp_configured=row.totp_secret_encrypted is not None,
-            api_key_auth_enabled=row.api_key_auth_enabled,
-            hide_upstream_quota_from_api_keys=row.hide_upstream_quota_from_api_keys,
-            limit_warmup_enabled=row.limit_warmup_enabled,
-            limit_warmup_windows=row.limit_warmup_windows,
-            limit_warmup_model=row.limit_warmup_model,
-            limit_warmup_prompt=row.limit_warmup_prompt,
-            limit_warmup_cooldown_seconds=row.limit_warmup_cooldown_seconds,
-            limit_warmup_exhausted_threshold_percent=row.limit_warmup_exhausted_threshold_percent,
-            limit_warmup_idle_threshold_percent=row.limit_warmup_idle_threshold_percent,
-            limit_warmup_min_available_percent=row.limit_warmup_min_available_percent,
-            weekly_pace_working_days=row.weekly_pace_working_days,
-            weekly_pace_smoothing_minutes=row.weekly_pace_smoothing_minutes,
-            guest_access_enabled=row.guest_access_enabled,
-            guest_password_configured=row.guest_password_hash is not None,
-            limit_warmup_staggered_idle_enabled=row.limit_warmup_staggered_idle_enabled,
-            request_log_retention_days=_effective_request_log_retention(row.request_log_retention_days),
-            usage_history_retention_days=_effective_usage_history_retention(row.usage_history_retention_days),
-            request_log_retention_override_days=row.request_log_retention_days,
-            usage_history_retention_override_days=row.usage_history_retention_days,
-            version=row.version,
-        )
-=======
     async def totp_enrollment(self, actor_user_id: str | None) -> TotpEnrollmentSummary:
         users = await self._repository.list_active_password_users()
         without_totp = [user for user in users if user.totp_secret_encrypted is None]
@@ -644,7 +549,6 @@ class SettingsService:
             users_without_totp=len(without_totp),
             admins_without_totp=sum(1 for user in without_totp if is_admin_level(resolve_role_grants(user.role))),
         )
->>>>>>> 72630bbfe
 
     async def get_settings(self, *, actor_user_id: str | None = None) -> DashboardSettingsData:
         row = await self._repository.get_or_create()
@@ -667,7 +571,6 @@ class SettingsService:
         if payload.local_login_policy not in (None, LocalLoginPolicy.ENABLED.value):
             await self._repository.acquire_account_write_intent()
         current = await self._repository.get_or_create()
-<<<<<<< 22625a07e
         omniroute_is_enabled = omniroute_enabled()
         if not omniroute_is_enabled:
             stored_models = _parse_omniroute_sidecar_selected_models(current.omniroute_sidecar_selected_models_json)
@@ -687,8 +590,40 @@ class SettingsService:
                 omniroute_sidecar_models_cache_ttl_seconds=current.omniroute_sidecar_models_cache_ttl_seconds,
                 omniroute_sidecar_default_reasoning_effort=current.omniroute_sidecar_default_reasoning_effort,
             )
-        if payload.totp_required_on_login and current.totp_secret_encrypted is None:
-            raise ValueError("Configure TOTP before enabling login enforcement")
+        # Requiring TOTP of others starts with the acting account: whoever turns
+        # either requirement on must already hold a secret, or the next request
+        # would park them at the enrolment gate they just created.
+        enabling_global = payload.totp_required_on_login and not current.totp_required_on_login
+        enabling_admin_role = payload.totp_required_for_admin_role and not current.totp_required_for_admin_role
+        if enabling_global or enabling_admin_role:
+            enrollment = await self.totp_enrollment(actor_user_id)
+            if not enrollment.actor_configured:
+                raise ValueError("Set up your own TOTP before requiring it at sign-in")
+        # Closing the local password form is the most dangerous button in the
+        # product: it is also the setting that locks the install out when the
+        # identity provider is down. Only the tightening transition is gated
+        # (re-saving the stored value, and relaxing back to ``enabled``, never
+        # are), and the refusal names the account that would fix it. The count
+        # and the settings write are one atomic step: the accounts lock above
+        # is held until ``update`` commits, so no concurrent mutation can
+        # remove the last qualifying account in between.
+        tightening = (
+            payload.local_login_policy is not None
+            and payload.local_login_policy != current.local_login_policy
+            and payload.local_login_policy != LocalLoginPolicy.ENABLED.value
+        )
+        if tightening and await self._repository.count_qualifying_break_glass() == 0:
+            designated = await self._repository.list_break_glass_designations()
+            username = designated[0].username if designated else None
+            raise BreakGlassRequiresTotpError(
+                (
+                    f"Turn on two-factor for '{username}' before restricting local sign-in"
+                    if username is not None
+                    else "Designate an admin account with two-factor as the emergency account "
+                    "before restricting local sign-in"
+                ),
+                username=username,
+            )
         effective_full_model_stars = _validate_unique_sidecar_routes(
             payload,
             stored_full_model_stars=parse_full_model_stars(current.sidecar_full_model_stars_json),
@@ -747,45 +682,6 @@ class SettingsService:
         elif payload.ollama_sidecar_api_key is not None:
             ollama_api_key_value = payload.ollama_sidecar_api_key.strip()
             ollama_api_key_encrypted = self._encryptor.encrypt(ollama_api_key_value) if ollama_api_key_value else None
-||||||| 84fde5a1e
-        if payload.totp_required_on_login and current.totp_secret_encrypted is None:
-            raise ValueError("Configure TOTP before enabling login enforcement")
-=======
-        # Requiring TOTP of others starts with the acting account: whoever turns
-        # either requirement on must already hold a secret, or the next request
-        # would park them at the enrolment gate they just created.
-        enabling_global = payload.totp_required_on_login and not current.totp_required_on_login
-        enabling_admin_role = payload.totp_required_for_admin_role and not current.totp_required_for_admin_role
-        if enabling_global or enabling_admin_role:
-            enrollment = await self.totp_enrollment(actor_user_id)
-            if not enrollment.actor_configured:
-                raise ValueError("Set up your own TOTP before requiring it at sign-in")
-        # Closing the local password form is the most dangerous button in the
-        # product: it is also the setting that locks the install out when the
-        # identity provider is down. Only the tightening transition is gated
-        # (re-saving the stored value, and relaxing back to ``enabled``, never
-        # are), and the refusal names the account that would fix it. The count
-        # and the settings write are one atomic step: the accounts lock above
-        # is held until ``update`` commits, so no concurrent mutation can
-        # remove the last qualifying account in between.
-        tightening = (
-            payload.local_login_policy is not None
-            and payload.local_login_policy != current.local_login_policy
-            and payload.local_login_policy != LocalLoginPolicy.ENABLED.value
-        )
-        if tightening and await self._repository.count_qualifying_break_glass() == 0:
-            designated = await self._repository.list_break_glass_designations()
-            username = designated[0].username if designated else None
-            raise BreakGlassRequiresTotpError(
-                (
-                    f"Turn on two-factor for '{username}' before restricting local sign-in"
-                    if username is not None
-                    else "Designate an admin account with two-factor as the emergency account "
-                    "before restricting local sign-in"
-                ),
-                username=username,
-            )
->>>>>>> 72630bbfe
         row = await self._repository.update(
             expected_version=expected_version,
             sticky_threads_enabled=payload.sticky_threads_enabled,
@@ -952,14 +848,11 @@ class SettingsService:
             hourly_rollup_retention_days=payload.hourly_rollup_retention_override_days,
             clear_request_log_retention=payload.clear_request_log_retention_override,
             clear_usage_history_retention=payload.clear_usage_history_retention_override,
-<<<<<<< 22625a07e
             clear_hourly_rollup_retention=payload.clear_hourly_rollup_retention_override,
             sidecar_full_model_stars_json=_dump_full_model_stars(effective_full_model_stars),
             dashboard_layout_json=(
                 dump_dashboard_layout(payload.dashboard_layout) if payload.dashboard_layout is not None else None
             ),
-||||||| 84fde5a1e
-=======
             # C2-3 resilience toggles
             soft_drain_enabled=payload.soft_drain_enabled,
             clear_soft_drain_enabled=payload.clear_soft_drain_enabled,
@@ -1025,10 +918,8 @@ class SettingsService:
                 payload.clear_http_responses_session_bridge_request_budget_seconds
             ),
             # end M1 stream/bridge budgets
->>>>>>> 72630bbfe
         )
-<<<<<<< 22625a07e
-        return self._to_data(row)
+        return _settings_data(row, await self.totp_enrollment(actor_user_id))
 
     def decrypt_claude_sidecar_api_key(self, encrypted: bytes | None) -> str | None:
         if encrypted is None:
@@ -1040,247 +931,11 @@ class SettingsService:
             return None
         return self._encryptor.decrypt(encrypted)
 
-    def _to_data(self, row) -> DashboardSettingsData:
-        return DashboardSettingsData(
-            sticky_threads_enabled=row.sticky_threads_enabled,
-            upstream_stream_transport=row.upstream_stream_transport,
-            prohibit_fast_mode=row.prohibit_fast_mode,
-            http_downstream_transport_policy=row.http_downstream_transport_policy,
-            proxy_account_response_create_limit=_effective_response_create_limit(
-                row.proxy_account_response_create_limit
-            ),
-            proxy_account_stream_limit=_effective_stream_limit(row.proxy_account_stream_limit),
-            proxy_account_stream_recovery_reserve=_effective_stream_recovery_reserve(
-                row.proxy_account_stream_recovery_reserve
-            ),
-            proxy_api_key_fair_share_congestion_threshold_pct=_effective_api_key_fair_share_threshold_pct(
-                row.proxy_api_key_fair_share_congestion_threshold_pct
-            ),
-            upstream_proxy_routing_enabled=row.upstream_proxy_routing_enabled,
-            upstream_proxy_default_pool_id=row.upstream_proxy_default_pool_id,
-            prefer_earlier_reset_accounts=row.prefer_earlier_reset_accounts,
-            prefer_earlier_reset_window=row.prefer_earlier_reset_window,
-            show_reset_credit_badges=row.show_reset_credit_badges,
-            auto_redeem_reset_credits_before_expiry=row.auto_redeem_reset_credits_before_expiry,
-            show_reset_credit_expiry_badge=row.show_reset_credit_expiry_badge,
-            routing_strategy=row.routing_strategy,
-            relative_availability_power=row.relative_availability_power,
-            relative_availability_top_k=row.relative_availability_top_k,
-            single_account_id=row.single_account_id,
-            openai_cache_affinity_max_age_seconds=row.openai_cache_affinity_max_age_seconds,
-            dashboard_session_ttl_seconds=row.dashboard_session_ttl_seconds,
-            http_responses_session_bridge_prompt_cache_idle_ttl_seconds=(
-                row.http_responses_session_bridge_prompt_cache_idle_ttl_seconds
-            ),
-            http_responses_session_bridge_gateway_safe_mode=row.http_responses_session_bridge_gateway_safe_mode,
-            sticky_reallocation_budget_threshold_pct=row.sticky_reallocation_budget_threshold_pct,
-            sticky_reallocation_primary_budget_threshold_pct=row.sticky_reallocation_primary_budget_threshold_pct,
-            sticky_reallocation_secondary_budget_threshold_pct=row.sticky_reallocation_secondary_budget_threshold_pct,
-            additional_quota_routing_policies=_parse_additional_quota_routing_policies(
-                row.additional_quota_routing_policies_json
-            ),
-            model_aliases=_parse_model_aliases(row.model_aliases_json),
-            custom_alias_catalog=_parse_custom_alias_catalog(row.custom_alias_catalog_json),
-            warmup_model=row.warmup_model,
-            import_without_overwrite=row.import_without_overwrite,
-            totp_required_on_login=row.totp_required_on_login,
-            totp_configured=row.totp_secret_encrypted is not None,
-            api_key_auth_enabled=row.api_key_auth_enabled,
-            hide_upstream_quota_from_api_keys=row.hide_upstream_quota_from_api_keys,
-            limit_warmup_enabled=row.limit_warmup_enabled,
-            limit_warmup_windows=row.limit_warmup_windows,
-            limit_warmup_model=row.limit_warmup_model,
-            limit_warmup_prompt=row.limit_warmup_prompt,
-            limit_warmup_cooldown_seconds=row.limit_warmup_cooldown_seconds,
-            limit_warmup_exhausted_threshold_percent=row.limit_warmup_exhausted_threshold_percent,
-            limit_warmup_idle_threshold_percent=row.limit_warmup_idle_threshold_percent,
-            limit_warmup_min_available_percent=row.limit_warmup_min_available_percent,
-            weekly_pace_working_days=row.weekly_pace_working_days,
-            weekly_pace_smoothing_minutes=row.weekly_pace_smoothing_minutes,
-            claude_sidecar_enabled=row.claude_sidecar_enabled,
-            claude_sidecar_base_url=row.claude_sidecar_base_url,
-            claude_sidecar_api_key_configured=row.claude_sidecar_api_key_encrypted is not None,
-            claude_sidecar_model_prefixes=_parse_claude_sidecar_model_prefixes(row.claude_sidecar_model_prefixes_json),
-            claude_sidecar_full_models=_parse_sidecar_full_models(row.claude_sidecar_full_models_json),
-            claude_sidecar_connect_timeout_seconds=row.claude_sidecar_connect_timeout_seconds,
-            claude_sidecar_request_timeout_seconds=row.claude_sidecar_request_timeout_seconds,
-            claude_sidecar_models_cache_ttl_seconds=row.claude_sidecar_models_cache_ttl_seconds,
-            claude_sidecar_last_health_status=row.claude_sidecar_last_health_status,
-            claude_sidecar_last_health_message=row.claude_sidecar_last_health_message,
-            claude_sidecar_last_checked_at=row.claude_sidecar_last_checked_at,
-            claude_sidecar_last_model_count=row.claude_sidecar_last_model_count,
-            claude_sidecar_management_key_configured=row.claude_sidecar_management_key_encrypted is not None,
-            claude_sidecar_quota_poll_interval_seconds=row.claude_sidecar_quota_poll_interval_seconds,
-            claude_sidecar_auth_plans=_parse_claude_sidecar_auth_plans(row.claude_sidecar_auth_plans_json),
-            claude_sidecar_usage_poll_interval_seconds=row.claude_sidecar_usage_poll_interval_seconds,
-            claude_sidecar_usage_queue_batch_size=row.claude_sidecar_usage_queue_batch_size,
-            claude_sidecar_usage_collection_enabled=row.claude_sidecar_usage_collection_enabled,
-            claude_sidecar_default_reasoning_effort=row.claude_sidecar_default_reasoning_effort,
-            openrouter_sidecar_enabled=row.openrouter_sidecar_enabled,
-            openrouter_sidecar_base_url=row.openrouter_sidecar_base_url,
-            openrouter_sidecar_api_key_configured=row.openrouter_sidecar_api_key_encrypted is not None,
-            openrouter_sidecar_model_prefixes=_parse_openrouter_sidecar_model_prefixes(
-                row.openrouter_sidecar_model_prefixes_json
-            ),
-            openrouter_sidecar_full_models=_parse_sidecar_full_models(row.openrouter_sidecar_full_models_json),
-            openrouter_sidecar_connect_timeout_seconds=row.openrouter_sidecar_connect_timeout_seconds,
-            openrouter_sidecar_request_timeout_seconds=row.openrouter_sidecar_request_timeout_seconds,
-            openrouter_sidecar_models_cache_ttl_seconds=row.openrouter_sidecar_models_cache_ttl_seconds,
-            openrouter_sidecar_last_health_status=row.openrouter_sidecar_last_health_status,
-            openrouter_sidecar_last_health_message=row.openrouter_sidecar_last_health_message,
-            openrouter_sidecar_last_checked_at=row.openrouter_sidecar_last_checked_at,
-            openrouter_sidecar_last_model_count=row.openrouter_sidecar_last_model_count,
-            openrouter_sidecar_default_reasoning_effort=row.openrouter_sidecar_default_reasoning_effort,
-            openai_compat_endpoints=list(parse_openai_compat_endpoints(row.openai_compat_endpoints_json)),
-            orcarouter_sidecar_enabled=row.orcarouter_sidecar_enabled,
-            orcarouter_sidecar_base_url=row.orcarouter_sidecar_base_url,
-            orcarouter_sidecar_api_key_configured=row.orcarouter_sidecar_api_key_encrypted is not None,
-            orcarouter_sidecar_model_prefixes=_parse_orcarouter_sidecar_model_prefixes(
-                row.orcarouter_sidecar_model_prefixes_json
-            ),
-            orcarouter_sidecar_full_models=_parse_sidecar_full_models(row.orcarouter_sidecar_full_models_json),
-            orcarouter_sidecar_connect_timeout_seconds=row.orcarouter_sidecar_connect_timeout_seconds,
-            orcarouter_sidecar_request_timeout_seconds=row.orcarouter_sidecar_request_timeout_seconds,
-            orcarouter_sidecar_models_cache_ttl_seconds=row.orcarouter_sidecar_models_cache_ttl_seconds,
-            orcarouter_sidecar_last_health_status=row.orcarouter_sidecar_last_health_status,
-            orcarouter_sidecar_last_health_message=row.orcarouter_sidecar_last_health_message,
-            orcarouter_sidecar_last_checked_at=row.orcarouter_sidecar_last_checked_at,
-            orcarouter_sidecar_last_model_count=row.orcarouter_sidecar_last_model_count,
-            orcarouter_sidecar_default_reasoning_effort=row.orcarouter_sidecar_default_reasoning_effort,
-            opencode_go_sidecar_enabled=row.opencode_go_sidecar_enabled,
-            opencode_go_sidecar_base_url=row.opencode_go_sidecar_base_url,
-            opencode_go_sidecar_api_key_configured=row.opencode_go_sidecar_api_key_encrypted is not None,
-            opencode_go_sidecar_model_prefixes=_parse_sidecar_model_prefixes(
-                row.opencode_go_sidecar_model_prefixes_json
-            ),
-            opencode_go_sidecar_full_models=_parse_sidecar_full_models(row.opencode_go_sidecar_full_models_json),
-            opencode_go_sidecar_connect_timeout_seconds=row.opencode_go_sidecar_connect_timeout_seconds,
-            opencode_go_sidecar_request_timeout_seconds=row.opencode_go_sidecar_request_timeout_seconds,
-            opencode_go_sidecar_models_cache_ttl_seconds=row.opencode_go_sidecar_models_cache_ttl_seconds,
-            opencode_go_sidecar_last_health_status=row.opencode_go_sidecar_last_health_status,
-            opencode_go_sidecar_last_health_message=row.opencode_go_sidecar_last_health_message,
-            opencode_go_sidecar_last_checked_at=row.opencode_go_sidecar_last_checked_at,
-            opencode_go_sidecar_last_model_count=row.opencode_go_sidecar_last_model_count,
-            omniroute_sidecar_enabled=row.omniroute_sidecar_enabled,
-            omniroute_sidecar_base_url=row.omniroute_sidecar_base_url,
-            omniroute_sidecar_api_key_configured=row.omniroute_sidecar_api_key_encrypted is not None,
-            omniroute_sidecar_model_prefixes=_parse_omniroute_sidecar_model_prefixes(
-                row.omniroute_sidecar_prefixes_json
-            ),
-            omniroute_sidecar_full_models=_parse_omniroute_sidecar_selected_models(
-                row.omniroute_sidecar_selected_models_json
-            ),
-            omniroute_sidecar_selected_models=_parse_omniroute_sidecar_selected_models(
-                row.omniroute_sidecar_selected_models_json
-            ),
-            omniroute_sidecar_connect_timeout_seconds=row.omniroute_sidecar_connect_timeout_seconds,
-            omniroute_sidecar_request_timeout_seconds=row.omniroute_sidecar_request_timeout_seconds,
-            omniroute_sidecar_models_cache_ttl_seconds=row.omniroute_sidecar_models_cache_ttl_seconds,
-            omniroute_sidecar_last_health_status=row.omniroute_sidecar_last_health_status,
-            omniroute_sidecar_last_health_message=row.omniroute_sidecar_last_health_message,
-            omniroute_sidecar_last_checked_at=row.omniroute_sidecar_last_checked_at,
-            omniroute_sidecar_last_model_count=row.omniroute_sidecar_last_model_count,
-            omniroute_sidecar_default_reasoning_effort=row.omniroute_sidecar_default_reasoning_effort,
-            ollama_sidecar_enabled=row.ollama_sidecar_enabled,
-            ollama_sidecar_base_url=row.ollama_sidecar_base_url,
-            ollama_sidecar_api_key_configured=row.ollama_sidecar_api_key_encrypted is not None,
-            ollama_sidecar_model_prefixes=_parse_ollama_sidecar_model_prefixes(row.ollama_sidecar_model_prefixes_json),
-            ollama_sidecar_full_models=_parse_sidecar_full_models(row.ollama_sidecar_full_models_json),
-            ollama_sidecar_connect_timeout_seconds=row.ollama_sidecar_connect_timeout_seconds,
-            ollama_sidecar_request_timeout_seconds=row.ollama_sidecar_request_timeout_seconds,
-            ollama_sidecar_models_cache_ttl_seconds=row.ollama_sidecar_models_cache_ttl_seconds,
-            ollama_sidecar_last_health_status=row.ollama_sidecar_last_health_status,
-            ollama_sidecar_last_health_message=row.ollama_sidecar_last_health_message,
-            ollama_sidecar_last_checked_at=row.ollama_sidecar_last_checked_at,
-            ollama_sidecar_last_model_count=row.ollama_sidecar_last_model_count,
-            ollama_sidecar_default_reasoning_effort=row.ollama_sidecar_default_reasoning_effort,
-            sidecar_full_model_stars=parse_full_model_stars(row.sidecar_full_model_stars_json),
-            guest_access_enabled=row.guest_access_enabled,
-            guest_password_configured=row.guest_password_hash is not None,
-            limit_warmup_staggered_idle_enabled=row.limit_warmup_staggered_idle_enabled,
-            request_log_retention_days=_effective_request_log_retention(row.request_log_retention_days),
-            usage_history_retention_days=_effective_usage_history_retention(row.usage_history_retention_days),
-            hourly_rollup_retention_days=_effective_hourly_rollup_retention(row.hourly_rollup_retention_days),
-            request_log_retention_override_days=row.request_log_retention_days,
-            usage_history_retention_override_days=row.usage_history_retention_days,
-            hourly_rollup_retention_override_days=row.hourly_rollup_retention_days,
-            version=row.version,
-            cliproxy_capacity_routing_enabled=row.cliproxy_capacity_routing_enabled,
-            dashboard_layout=parse_dashboard_layout(row.dashboard_layout_json),
-        )
-||||||| 84fde5a1e
-        return DashboardSettingsData(
-            sticky_threads_enabled=row.sticky_threads_enabled,
-            upstream_stream_transport=row.upstream_stream_transport,
-            prohibit_fast_mode=row.prohibit_fast_mode,
-            http_downstream_transport_policy=row.http_downstream_transport_policy,
-            proxy_account_response_create_limit=_effective_response_create_limit(
-                row.proxy_account_response_create_limit
-            ),
-            proxy_account_stream_limit=_effective_stream_limit(row.proxy_account_stream_limit),
-            proxy_account_stream_recovery_reserve=_effective_stream_recovery_reserve(
-                row.proxy_account_stream_recovery_reserve
-            ),
-            proxy_api_key_fair_share_congestion_threshold_pct=_effective_api_key_fair_share_threshold_pct(
-                row.proxy_api_key_fair_share_congestion_threshold_pct
-            ),
-            upstream_proxy_routing_enabled=row.upstream_proxy_routing_enabled,
-            upstream_proxy_default_pool_id=row.upstream_proxy_default_pool_id,
-            prefer_earlier_reset_accounts=row.prefer_earlier_reset_accounts,
-            prefer_earlier_reset_window=row.prefer_earlier_reset_window,
-            show_reset_credit_badges=row.show_reset_credit_badges,
-            auto_redeem_reset_credits_before_expiry=row.auto_redeem_reset_credits_before_expiry,
-            show_reset_credit_expiry_badge=row.show_reset_credit_expiry_badge,
-            routing_strategy=row.routing_strategy,
-            relative_availability_power=row.relative_availability_power,
-            relative_availability_top_k=row.relative_availability_top_k,
-            single_account_id=row.single_account_id,
-            openai_cache_affinity_max_age_seconds=row.openai_cache_affinity_max_age_seconds,
-            dashboard_session_ttl_seconds=row.dashboard_session_ttl_seconds,
-            http_responses_session_bridge_prompt_cache_idle_ttl_seconds=(
-                row.http_responses_session_bridge_prompt_cache_idle_ttl_seconds
-            ),
-            http_responses_session_bridge_gateway_safe_mode=row.http_responses_session_bridge_gateway_safe_mode,
-            sticky_reallocation_budget_threshold_pct=row.sticky_reallocation_budget_threshold_pct,
-            sticky_reallocation_primary_budget_threshold_pct=row.sticky_reallocation_primary_budget_threshold_pct,
-            sticky_reallocation_secondary_budget_threshold_pct=row.sticky_reallocation_secondary_budget_threshold_pct,
-            additional_quota_routing_policies=_parse_additional_quota_routing_policies(
-                row.additional_quota_routing_policies_json
-            ),
-            warmup_model=row.warmup_model,
-            import_without_overwrite=row.import_without_overwrite,
-            totp_required_on_login=row.totp_required_on_login,
-            totp_configured=row.totp_secret_encrypted is not None,
-            api_key_auth_enabled=row.api_key_auth_enabled,
-            hide_upstream_quota_from_api_keys=row.hide_upstream_quota_from_api_keys,
-            limit_warmup_enabled=row.limit_warmup_enabled,
-            limit_warmup_windows=row.limit_warmup_windows,
-            limit_warmup_model=row.limit_warmup_model,
-            limit_warmup_prompt=row.limit_warmup_prompt,
-            limit_warmup_cooldown_seconds=row.limit_warmup_cooldown_seconds,
-            limit_warmup_exhausted_threshold_percent=row.limit_warmup_exhausted_threshold_percent,
-            limit_warmup_idle_threshold_percent=row.limit_warmup_idle_threshold_percent,
-            limit_warmup_min_available_percent=row.limit_warmup_min_available_percent,
-            weekly_pace_working_days=row.weekly_pace_working_days,
-            weekly_pace_smoothing_minutes=row.weekly_pace_smoothing_minutes,
-            guest_access_enabled=row.guest_access_enabled,
-            guest_password_configured=row.guest_password_hash is not None,
-            limit_warmup_staggered_idle_enabled=row.limit_warmup_staggered_idle_enabled,
-            request_log_retention_days=_effective_request_log_retention(row.request_log_retention_days),
-            usage_history_retention_days=_effective_usage_history_retention(row.usage_history_retention_days),
-            request_log_retention_override_days=row.request_log_retention_days,
-            usage_history_retention_override_days=row.usage_history_retention_days,
-            version=row.version,
-        )
-=======
-        return _settings_data(row, await self.totp_enrollment(actor_user_id))
-        return _settings_data(row, await self.totp_enrollment(actor_user_id))
 
-
-# Retention has no environment fallback: NULL = never set from the dashboard =
-# disabled; 0 = explicitly disabled.
+# Request-log and usage-history retention have no environment fallback: NULL =
+# never set from the dashboard = disabled; 0 = explicitly disabled. The fork's
+# hourly-rollup retention keeps its env alias (``_effective_hourly_rollup_retention``).
 _RETENTION_DISABLED_DAYS = 0
->>>>>>> 72630bbfe
 
 
 _ROUTING_POLICIES = frozenset({"inherit", "normal", "burn_first", "preserve"})
@@ -1314,9 +969,6 @@ _ENVIRONMENT_INHERITABLE_SETTINGS = (
     # R2 spool retention: float; a NULL column inherits the deprecated env alias.
     OPERATION_SPOOL_RETENTION_SETTING,
 )
-# Retention has no environment fallback: NULL = never set from the dashboard =
-# disabled; 0 = explicitly disabled.
-_RETENTION_DISABLED_DAYS = 0
 
 
 def _resolve_environment_inheritable(row: DashboardSettings, name: str) -> InheritableValue[Any]:
@@ -1394,27 +1046,15 @@ def _resolve_inheritable_settings(
     return resolved
 
 
-<<<<<<< 22625a07e
 def _effective_hourly_rollup_retention(value: int | None) -> int:
-    return get_settings().hourly_rollup_retention_days if value is None else value
+    if value is not None:
+        return value
+    # Same environment leg as the other inheritable settings: a settings object
+    # without the field (an upstream-shaped stub) inherits the code default.
+    environment = getattr(get_settings(), "hourly_rollup_retention_days", None)
+    return _RETENTION_DISABLED_DAYS if environment is None else environment
 
 
-def _normalize_additional_quota_key(raw_quota_key: str) -> str | None:
-    canonical_key = canonicalize_additional_quota_key(quota_key=raw_quota_key, limit_name=raw_quota_key)
-    if canonical_key is None:
-        return None
-    if get_additional_quota_definition(canonical_key) is None:
-        return None
-    return canonical_key
-||||||| 84fde5a1e
-def _normalize_additional_quota_key(raw_quota_key: str) -> str | None:
-    canonical_key = canonicalize_additional_quota_key(quota_key=raw_quota_key, limit_name=raw_quota_key)
-    if canonical_key is None:
-        return None
-    if get_additional_quota_definition(canonical_key) is None:
-        return None
-    return canonical_key
-=======
 def _settings_data(row: DashboardSettings, totp: TotpEnrollmentSummary) -> DashboardSettingsData:
     resolved = _resolve_inheritable_settings(row)
     return DashboardSettingsData(
@@ -1535,9 +1175,109 @@ def _settings_data(row: DashboardSettings, totp: TotpEnrollmentSummary) -> Dashb
             resolved["http_responses_session_bridge_request_budget_seconds"].value
         ),
         # end M1 stream/bridge budgets
+        # Fork integrations, alias pools and dashboard layout.
+        model_aliases=_parse_model_aliases(row.model_aliases_json),
+        custom_alias_catalog=_parse_custom_alias_catalog(row.custom_alias_catalog_json),
+        claude_sidecar_enabled=row.claude_sidecar_enabled,
+        claude_sidecar_base_url=row.claude_sidecar_base_url,
+        claude_sidecar_api_key_configured=row.claude_sidecar_api_key_encrypted is not None,
+        claude_sidecar_model_prefixes=_parse_claude_sidecar_model_prefixes(row.claude_sidecar_model_prefixes_json),
+        claude_sidecar_full_models=_parse_sidecar_full_models(row.claude_sidecar_full_models_json),
+        claude_sidecar_connect_timeout_seconds=row.claude_sidecar_connect_timeout_seconds,
+        claude_sidecar_request_timeout_seconds=row.claude_sidecar_request_timeout_seconds,
+        claude_sidecar_models_cache_ttl_seconds=row.claude_sidecar_models_cache_ttl_seconds,
+        claude_sidecar_last_health_status=row.claude_sidecar_last_health_status,
+        claude_sidecar_last_health_message=row.claude_sidecar_last_health_message,
+        claude_sidecar_last_checked_at=row.claude_sidecar_last_checked_at,
+        claude_sidecar_last_model_count=row.claude_sidecar_last_model_count,
+        claude_sidecar_management_key_configured=row.claude_sidecar_management_key_encrypted is not None,
+        claude_sidecar_quota_poll_interval_seconds=row.claude_sidecar_quota_poll_interval_seconds,
+        claude_sidecar_auth_plans=_parse_claude_sidecar_auth_plans(row.claude_sidecar_auth_plans_json),
+        claude_sidecar_usage_poll_interval_seconds=row.claude_sidecar_usage_poll_interval_seconds,
+        claude_sidecar_usage_queue_batch_size=row.claude_sidecar_usage_queue_batch_size,
+        claude_sidecar_usage_collection_enabled=row.claude_sidecar_usage_collection_enabled,
+        claude_sidecar_default_reasoning_effort=row.claude_sidecar_default_reasoning_effort,
+        openrouter_sidecar_enabled=row.openrouter_sidecar_enabled,
+        openrouter_sidecar_base_url=row.openrouter_sidecar_base_url,
+        openrouter_sidecar_api_key_configured=row.openrouter_sidecar_api_key_encrypted is not None,
+        openrouter_sidecar_model_prefixes=_parse_openrouter_sidecar_model_prefixes(
+            row.openrouter_sidecar_model_prefixes_json
+        ),
+        openrouter_sidecar_full_models=_parse_sidecar_full_models(row.openrouter_sidecar_full_models_json),
+        openrouter_sidecar_connect_timeout_seconds=row.openrouter_sidecar_connect_timeout_seconds,
+        openrouter_sidecar_request_timeout_seconds=row.openrouter_sidecar_request_timeout_seconds,
+        openrouter_sidecar_models_cache_ttl_seconds=row.openrouter_sidecar_models_cache_ttl_seconds,
+        openrouter_sidecar_last_health_status=row.openrouter_sidecar_last_health_status,
+        openrouter_sidecar_last_health_message=row.openrouter_sidecar_last_health_message,
+        openrouter_sidecar_last_checked_at=row.openrouter_sidecar_last_checked_at,
+        openrouter_sidecar_last_model_count=row.openrouter_sidecar_last_model_count,
+        openrouter_sidecar_default_reasoning_effort=row.openrouter_sidecar_default_reasoning_effort,
+        openai_compat_endpoints=list(parse_openai_compat_endpoints(row.openai_compat_endpoints_json)),
+        orcarouter_sidecar_enabled=row.orcarouter_sidecar_enabled,
+        orcarouter_sidecar_base_url=row.orcarouter_sidecar_base_url,
+        orcarouter_sidecar_api_key_configured=row.orcarouter_sidecar_api_key_encrypted is not None,
+        orcarouter_sidecar_model_prefixes=_parse_orcarouter_sidecar_model_prefixes(
+            row.orcarouter_sidecar_model_prefixes_json
+        ),
+        orcarouter_sidecar_full_models=_parse_sidecar_full_models(row.orcarouter_sidecar_full_models_json),
+        orcarouter_sidecar_connect_timeout_seconds=row.orcarouter_sidecar_connect_timeout_seconds,
+        orcarouter_sidecar_request_timeout_seconds=row.orcarouter_sidecar_request_timeout_seconds,
+        orcarouter_sidecar_models_cache_ttl_seconds=row.orcarouter_sidecar_models_cache_ttl_seconds,
+        orcarouter_sidecar_last_health_status=row.orcarouter_sidecar_last_health_status,
+        orcarouter_sidecar_last_health_message=row.orcarouter_sidecar_last_health_message,
+        orcarouter_sidecar_last_checked_at=row.orcarouter_sidecar_last_checked_at,
+        orcarouter_sidecar_last_model_count=row.orcarouter_sidecar_last_model_count,
+        orcarouter_sidecar_default_reasoning_effort=row.orcarouter_sidecar_default_reasoning_effort,
+        opencode_go_sidecar_enabled=row.opencode_go_sidecar_enabled,
+        opencode_go_sidecar_base_url=row.opencode_go_sidecar_base_url,
+        opencode_go_sidecar_api_key_configured=row.opencode_go_sidecar_api_key_encrypted is not None,
+        opencode_go_sidecar_model_prefixes=_parse_sidecar_model_prefixes(row.opencode_go_sidecar_model_prefixes_json),
+        opencode_go_sidecar_full_models=_parse_sidecar_full_models(row.opencode_go_sidecar_full_models_json),
+        opencode_go_sidecar_connect_timeout_seconds=row.opencode_go_sidecar_connect_timeout_seconds,
+        opencode_go_sidecar_request_timeout_seconds=row.opencode_go_sidecar_request_timeout_seconds,
+        opencode_go_sidecar_models_cache_ttl_seconds=row.opencode_go_sidecar_models_cache_ttl_seconds,
+        opencode_go_sidecar_last_health_status=row.opencode_go_sidecar_last_health_status,
+        opencode_go_sidecar_last_health_message=row.opencode_go_sidecar_last_health_message,
+        opencode_go_sidecar_last_checked_at=row.opencode_go_sidecar_last_checked_at,
+        opencode_go_sidecar_last_model_count=row.opencode_go_sidecar_last_model_count,
+        omniroute_sidecar_enabled=row.omniroute_sidecar_enabled,
+        omniroute_sidecar_base_url=row.omniroute_sidecar_base_url,
+        omniroute_sidecar_api_key_configured=row.omniroute_sidecar_api_key_encrypted is not None,
+        omniroute_sidecar_model_prefixes=_parse_omniroute_sidecar_model_prefixes(row.omniroute_sidecar_prefixes_json),
+        omniroute_sidecar_full_models=_parse_omniroute_sidecar_selected_models(
+            row.omniroute_sidecar_selected_models_json
+        ),
+        omniroute_sidecar_selected_models=_parse_omniroute_sidecar_selected_models(
+            row.omniroute_sidecar_selected_models_json
+        ),
+        omniroute_sidecar_connect_timeout_seconds=row.omniroute_sidecar_connect_timeout_seconds,
+        omniroute_sidecar_request_timeout_seconds=row.omniroute_sidecar_request_timeout_seconds,
+        omniroute_sidecar_models_cache_ttl_seconds=row.omniroute_sidecar_models_cache_ttl_seconds,
+        omniroute_sidecar_last_health_status=row.omniroute_sidecar_last_health_status,
+        omniroute_sidecar_last_health_message=row.omniroute_sidecar_last_health_message,
+        omniroute_sidecar_last_checked_at=row.omniroute_sidecar_last_checked_at,
+        omniroute_sidecar_last_model_count=row.omniroute_sidecar_last_model_count,
+        omniroute_sidecar_default_reasoning_effort=row.omniroute_sidecar_default_reasoning_effort,
+        ollama_sidecar_enabled=row.ollama_sidecar_enabled,
+        ollama_sidecar_base_url=row.ollama_sidecar_base_url,
+        ollama_sidecar_api_key_configured=row.ollama_sidecar_api_key_encrypted is not None,
+        ollama_sidecar_model_prefixes=_parse_ollama_sidecar_model_prefixes(row.ollama_sidecar_model_prefixes_json),
+        ollama_sidecar_full_models=_parse_sidecar_full_models(row.ollama_sidecar_full_models_json),
+        ollama_sidecar_connect_timeout_seconds=row.ollama_sidecar_connect_timeout_seconds,
+        ollama_sidecar_request_timeout_seconds=row.ollama_sidecar_request_timeout_seconds,
+        ollama_sidecar_models_cache_ttl_seconds=row.ollama_sidecar_models_cache_ttl_seconds,
+        ollama_sidecar_last_health_status=row.ollama_sidecar_last_health_status,
+        ollama_sidecar_last_health_message=row.ollama_sidecar_last_health_message,
+        ollama_sidecar_last_checked_at=row.ollama_sidecar_last_checked_at,
+        ollama_sidecar_last_model_count=row.ollama_sidecar_last_model_count,
+        ollama_sidecar_default_reasoning_effort=row.ollama_sidecar_default_reasoning_effort,
+        sidecar_full_model_stars=parse_full_model_stars(row.sidecar_full_model_stars_json),
+        hourly_rollup_retention_days=_effective_hourly_rollup_retention(row.hourly_rollup_retention_days),
+        hourly_rollup_retention_override_days=row.hourly_rollup_retention_days,
+        cliproxy_capacity_routing_enabled=row.cliproxy_capacity_routing_enabled,
+        dashboard_layout=parse_dashboard_layout(row.dashboard_layout_json),
         provenance=resolved,
     )
->>>>>>> 72630bbfe
 
 
 def _parse_additional_quota_routing_policies(raw: str | None) -> dict[str, str]:

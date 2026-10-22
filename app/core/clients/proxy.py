@@ -614,18 +614,12 @@ class ProxyResponseError(Exception):
         self.upstream_status_code = upstream_status_code
         self.upstream_error_code = upstream_error_code
         self.failed_session = failed_session
-<<<<<<< 22625a07e
         self.retry_after_seconds = (
             error_retry_after_seconds(payload.get("error"), retry_after_seconds)
             if status_code in {429, 503}
             else retry_after_seconds
         )
-||||||| 84fde5a1e
-        self.retry_after_seconds = retry_after_seconds
-=======
-        self.retry_after_seconds = retry_after_seconds
         self.retry_after_header = retry_after_header
->>>>>>> 72630bbfe
         self.reservation_released = reservation_released
         # True when the proxy refused the request itself before any upstream
         # frame was sent, so the failure is not an observed upstream transport

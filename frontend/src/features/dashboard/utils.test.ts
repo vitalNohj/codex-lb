@@ -1,11 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-<<<<<<< 22625a07e
 import { DEFAULT_DASHBOARD_LAYOUT } from "@/features/dashboard/layout";
-||||||| 84fde5a1e
-=======
 import { DashboardOverviewSchema } from "@/features/dashboard/schemas";
->>>>>>> 72630bbfe
 import type { AccountSummary, Depletion } from "@/features/dashboard/schemas";
 import {
   accountTypeKey,

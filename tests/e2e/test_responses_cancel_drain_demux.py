@@ -13,14 +13,7 @@ from unittest.mock import AsyncMock
 import anyio
 import pytest
 
-<<<<<<< 22625a07e
 from app.core.clients.proxy_websocket import UpstreamWebSocket, UpstreamWebSocketMessage
-||||||| 84fde5a1e
-from app.core.clients.proxy_websocket import UpstreamWebSocket
-=======
-from app.core.clients.proxy_websocket import UpstreamWebSocket
-from app.core.clients.proxy_websocket import UpstreamWebSocketMessage as _FakeUpstreamMessage
->>>>>>> 72630bbfe
 from app.db.models import AccountStatus
 from app.modules.proxy import service as proxy_service
 

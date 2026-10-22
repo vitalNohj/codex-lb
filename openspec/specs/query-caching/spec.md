@@ -66,13 +66,7 @@ Selector and dashboard hot-path reads MUST avoid unbounded SQL window-ranking ov
 
 ### Requirement: Dashboard overview memoizes per-account depletion EWMA state
 
-<<<<<<< 22625a07e
-`GET /api/dashboard/overview` MUST cache per-account EWMA depletion state in memory so repeated polls do not re-walk the full in-window `usage_history` slice in the depletion cache check when its content is unchanged. SQLite bulk history cache hits MUST avoid rebuilding or materializing the full cached history window when compact digest metadata proves older rows are unchanged; they MUST append newly inserted rows by monotonic row ID and reuse the cached grouped history for older rows. Repository-owned mutations that reassign or delete usage-history rows MUST clear the SQLite bulk history cache. Once a later request's `since` has advanced past the cached window start by more than a fixed slack, the cache entry MUST drop the rows behind the new `since` and validate only the remaining window from then on. On SQLite, `usage_history` MUST carry AFTER UPDATE and AFTER DELETE triggers that bump a single-row mutation generation; a cache hit whose generation is unchanged since its last validation, and whose cached range still matches the database's row count and max id, MUST be served without recomputing the content digest. A changed generation, or a store without both triggers and the generation row, MUST fall back to the content-digest validation. Projection history reads with a per-account row cap MUST return the same rows on SQLite as on PostgreSQL: rows at or after the per-account cutoff, every row at or after the uncapped recent floor, and the newest capped rows between them.
-||||||| 84fde5a1e
-`GET /api/dashboard/overview` MUST cache per-account EWMA depletion state in memory so repeated polls do not re-walk the full in-window `usage_history` slice in the depletion cache check when its content is unchanged. SQLite bulk history cache hits MUST avoid rebuilding or materializing the full cached history window when compact digest metadata proves older rows are unchanged; they MUST append newly inserted rows by monotonic row ID and reuse the cached grouped history for older rows. Repository-owned mutations that reassign or delete usage-history rows MUST clear the SQLite bulk history cache.
-=======
-`GET /api/dashboard/overview` MUST cache per-account EWMA depletion state in memory so repeated polls do not re-walk the full in-window `usage_history` slice in the depletion cache check when its content is unchanged. The attached compact content signature MUST be fixed-width regardless of history length (row count, first and latest row edge tuples, and one fixed-width content hash over every row's value-bearing fields); it MAY be process-local because the cache it guards is process memory only, and the cache MUST NOT retain a per-row signature structure. SQLite bulk history cache hits MUST avoid rebuilding or materializing the full cached history window when compact digest metadata proves older rows are unchanged; they MUST append newly inserted rows by monotonic row ID and reuse the cached grouped history for older rows. Repository-owned mutations that reassign or delete usage-history rows MUST clear the SQLite bulk history cache.
->>>>>>> 72630bbfe
+`GET /api/dashboard/overview` MUST cache per-account EWMA depletion state in memory so repeated polls do not re-walk the full in-window `usage_history` slice in the depletion cache check when its content is unchanged. The attached compact content signature MUST be fixed-width regardless of history length (row count, first and latest row edge tuples, and one fixed-width content hash over every row's value-bearing fields); it MAY be process-local because the cache it guards is process memory only, and the cache MUST NOT retain a per-row signature structure. SQLite bulk history cache hits MUST avoid rebuilding or materializing the full cached history window when compact digest metadata proves older rows are unchanged; they MUST append newly inserted rows by monotonic row ID and reuse the cached grouped history for older rows. Repository-owned mutations that reassign or delete usage-history rows MUST clear the SQLite bulk history cache. Once a later request's `since` has advanced past the cached window start by more than a fixed slack, the cache entry MUST drop the rows behind the new `since` and validate only the remaining window from then on. On SQLite, `usage_history` MUST carry AFTER UPDATE and AFTER DELETE triggers that bump a single-row mutation generation; a cache hit whose generation is unchanged since its last validation, and whose cached range still matches the database's row count and max id, MUST be served without recomputing the content digest. A changed generation, or a store without both triggers and the generation row, MUST fall back to the content-digest validation. Projection history reads with a per-account row cap MUST return the same rows on SQLite as on PostgreSQL: rows at or after the per-account cutoff, every row at or after the uncapped recent floor, and the newest capped rows between them.
 
 #### Scenario: Repeated polls with unchanged history reuse cached EWMA state
 - **GIVEN** the dashboard service has previously computed depletion for an account
@@ -364,13 +358,7 @@ Additional usage latest-per-account reads on SQLite MUST avoid `row_number()` wi
 
 ### Requirement: Unfiltered request-log filter options avoid full DISTINCT passes
 
-<<<<<<< 22625a07e
-When `GET /api/request-logs/options` is requested without user-supplied filters, each facet (account ids, model/reasoning-effort pairs, api-key ids, status/error-code pairs) MUST be computed with loose-index-scan probes bounded by the facet's distinct-value count, not by the size of `request_logs`. The returned option sets, their ordering, and the soft-delete/status-facet semantics MUST be identical to the unbounded `DISTINCT` results. On SQLite, the baseline facet filters (soft-delete exclusion and the status allow-list) MUST be disqualified from index selection so that every probe seeks the facet column's own index instead of an index on a baseline-filter column.
-||||||| 84fde5a1e
-When `GET /api/request-logs/options` is requested without user-supplied filters, each facet (account ids, model/reasoning-effort pairs, api-key ids, status/error-code pairs) MUST be computed with loose-index-scan probes bounded by the facet's distinct-value count, not by the size of `request_logs`. The returned option sets, their ordering, and the soft-delete/status-facet semantics MUST be identical to the unbounded `DISTINCT` results.
-=======
-When `GET /api/request-logs/options` is requested without user-supplied filters, each facet MUST traverse ordered distinct values with index probes rather than repeatedly scan the live request-log cohort or perform a full `DISTINCT` pass. A candidate value MUST be returned only when a row satisfies the endpoint's visibility and status predicates. Returned option sets, ordering, NULL handling, and soft-delete/status-facet semantics MUST match the unbounded `DISTINCT` results.
->>>>>>> 72630bbfe
+When `GET /api/request-logs/options` is requested without user-supplied filters, each facet MUST traverse ordered distinct values with index probes rather than repeatedly scan the live request-log cohort or perform a full `DISTINCT` pass. A candidate value MUST be returned only when a row satisfies the endpoint's visibility and status predicates. Returned option sets, ordering, NULL handling, and soft-delete/status-facet semantics MUST match the unbounded `DISTINCT` results. On SQLite, the baseline facet filters (soft-delete exclusion and the status allow-list) MUST be disqualified from index selection so that every probe seeks the facet column's own index instead of an index on a baseline-filter column.
 
 #### Scenario: Unfiltered facets return identical option sets via bounded probes
 
@@ -395,18 +383,10 @@ When `GET /api/request-logs/options` is requested without user-supplied filters,
 
 #### Scenario: SQLite probes seek the facet index rather than a baseline-filter index
 
-<<<<<<< 22625a07e
 - **GIVEN** a SQLite store
 - **WHEN** the options endpoint is called with no filters
 - **THEN** no skip-scan probe's query plan MUST search `request_logs` by `deleted_at`
 - **AND** only the status facet and its error-code pair probes MAY search `request_logs` by `status`
-||||||| 84fde5a1e
-- **WHEN** the options endpoint is called with any user filter (`since`, `until`, account, api-key, model, or reasoning-effort constraints)
-- **THEN** the facets MUST apply those filters with unchanged semantics and results
-=======
-- **WHEN** the options endpoint receives user filters such as time bounds, account, API-key, model, or reasoning-effort constraints
-- **THEN** the facets MUST apply those filters with unchanged semantics and results
->>>>>>> 72630bbfe
 
 ### Requirement: Proxy API-key auth caching is invalidation-driven with a TTL backstop
 
@@ -1059,7 +1039,6 @@ single-session ownership constraint.
 - **THEN** each database read MUST complete before the next read starts on the shared session
 - **AND** the returned payload remains schema- and value-compatible for equivalent rows
 
-<<<<<<< 22625a07e
 ### Requirement: Claude sidecar quota estimates read a cached usage-event window
 
 Every read that builds Claude sidecar quota estimates (dashboard overview, accounts list, sidecar quota panel, pooled OAuth usage) MUST obtain the seven-day `claude_sidecar_usage_events` window from a process-wide in-memory cache rather than materializing the window per request. Each read MUST fetch only rows whose id exceeds the cache's watermark, MUST validate the cached window against a count and max-id fingerprint read in the same transaction, and MUST reload the whole window when the fingerprint disagrees. Reads MUST return exactly the events at or after the requested `since`, ordered by timestamp then id. The Claude sidecar usage collector MUST refresh the cache after each drain. Estimate results MUST be identical to computing them from a fresh read of the window.
@@ -1114,8 +1093,6 @@ The aggregate depletion reported for a usage window MUST select the account with
 - **WHEN** projections are computed in any account order, or in processes with different hash seeds
 - **THEN** the reported safe line, burn rate, and exhaustion time come from the same account every time
 
-||||||| 84fde5a1e
-=======
 ### Requirement: Request-log endpoints accept server-authoritative timeframes
 
 `GET /api/request-logs` and `/api/request-logs/options` MUST accept
@@ -1162,4 +1139,3 @@ empty conversation ID and return a detail not-found response.
 - **WHEN** the API handles `GET /api/conversations/`
 - **THEN** it returns the same collection envelope as `GET /api/conversations`
 - **AND** it does not invoke detail lookup for an empty conversation ID
->>>>>>> 72630bbfe

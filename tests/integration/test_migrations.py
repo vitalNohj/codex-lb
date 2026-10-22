@@ -4195,7 +4195,6 @@ async def test_file_account_pins_migration_upgrade_and_downgrade(tmp_path):
 
 
 @pytest.mark.asyncio
-<<<<<<< 22625a07e
 async def test_claude_opus_5_5_full_model_pin_appends_and_downgrades(tmp_path):
     from alembic import command
 
@@ -5467,8 +5466,8 @@ async def test_postgresql_lifetime_limit_window_migration_adds_the_enum_value(db
     await to_thread.run_sync(lambda: command.downgrade(_build_alembic_config(_DATABASE_URL), _LIFETIME_WINDOW_PARENT))
     await to_thread.run_sync(lambda: run_upgrade(_DATABASE_URL, "head", bootstrap_legacy=False))
     assert (await _enum_values()).count("lifetime") == 1
-||||||| 84fde5a1e
-=======
+
+
 async def test_http_bridge_event_chunks_migration_preserves_legacy_and_guards_downgrade(tmp_path):
     from alembic import command
     from sqlalchemy import inspect as sa_inspect
@@ -6783,4 +6782,3 @@ async def test_bridge_continuity_abandonment_migration_upgrade_and_downgrade(tmp
 
 
 # end bridge continuity abandonment
->>>>>>> 72630bbfe

@@ -297,17 +297,7 @@ def add_exception_handlers(app: FastAPI) -> None:
             )
             return JSONResponse(
                 status_code=exc.status_code,
-<<<<<<< 22625a07e
-                content=dashboard_error(
-                    exc.code,
-                    exc.message,
-                    details=getattr(exc, "details", None),
-                ),
-||||||| 84fde5a1e
-                content=dashboard_error(exc.code, exc.message),
-=======
                 content=dashboard_error(exc.code, exc.message, param=exc.param, details=exc.details),
->>>>>>> 72630bbfe
                 headers=headers,
             )
 

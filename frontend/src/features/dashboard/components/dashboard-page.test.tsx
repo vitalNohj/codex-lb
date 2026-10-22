@@ -4,20 +4,13 @@ import userEvent from "@testing-library/user-event";
 
 import { renderWithProviders } from "@/test/utils";
 import {
-<<<<<<< 22625a07e
+  ADMIN_PERMISSIONS,
+  OPERATOR_PERMISSIONS,
+  VIEWER_PERMISSIONS,
   createAccountSummary,
   createDashboardOverview,
   createDashboardProjections,
   type DashboardOverview,
-||||||| 84fde5a1e
-import { createDashboardOverview, createDashboardProjections } from "@/test/mocks/factories";
-=======
-  ADMIN_PERMISSIONS,
-  OPERATOR_PERMISSIONS,
-  VIEWER_PERMISSIONS,
-  createDashboardOverview,
-  createDashboardProjections,
->>>>>>> 72630bbfe
 } from "@/test/mocks/factories";
 import { useAccountMutations } from "@/features/accounts/hooks/use-accounts";
 import { useAuthStore } from "@/features/auth/hooks/use-auth";
@@ -567,51 +560,6 @@ describe("DashboardPage", () => {
     expect(useConversationsMock.mock.calls.every(([options]) => options !== undefined && options.enabled === false)).toBe(true);
   });
 
-<<<<<<< 22625a07e
-||||||| 84fde5a1e
-  it("customizes and restores the request-log table without a global width control", async () => {
-    const user = userEvent.setup();
-    mockReadyDashboard();
-
-    renderWithProviders(<DashboardPage />);
-
-    expect(screen.getByRole("button", { name: "Columns (12)" })).toBeInTheDocument();
-    expect(screen.queryByRole("slider")).not.toBeInTheDocument();
-    expect(screen.queryByText(/^Width$/)).not.toBeInTheDocument();
-
-    await user.click(screen.getByRole("button", { name: "Columns (12)" }));
-    expect(screen.getByText("Visible columns")).toBeInTheDocument();
-    await user.click(screen.getByRole("menuitemcheckbox", { name: "Plan" }));
-
-    expect(screen.getByRole("menu", { name: "Columns (11)" })).toBeInTheDocument();
-    const selectedProps = recentRequestsTableSpy.mock.lastCall?.[0] as
-      | RecentRequestsTableProps
-      | undefined;
-    expect(selectedProps?.visibleColumns).not.toContain("plan");
-
-    act(() => {
-      selectedProps?.onColumnWidthChange?.("account", 240);
-    });
-    const resizedProps = recentRequestsTableSpy.mock.lastCall?.[0] as
-      | RecentRequestsTableProps
-      | undefined;
-    expect(resizedProps?.columnWidths?.account).toBe(240);
-
-    await user.keyboard("{Escape}");
-    await user.click(
-      screen.getByRole("button", { name: "Restore default column layout" }),
-    );
-
-    const restoredProps = recentRequestsTableSpy.mock.lastCall?.[0] as
-      | RecentRequestsTableProps
-      | undefined;
-    expect(restoredProps?.visibleColumns).toHaveLength(12);
-    expect(restoredProps?.columnWidths).toEqual({});
-    expect(
-      window.localStorage.getItem(REQUEST_LOG_TABLE_PREFERENCES_STORAGE_KEY),
-    ).toBeNull();
-  });
-=======
   it("fails closed during auth hydration from the least-privilege boot state", async () => {
     // The store now boots as guest with no permissions; the gate normally
     // holds rendering until initialized, but the page must still fail closed
@@ -646,50 +594,6 @@ describe("DashboardPage", () => {
     });
     expect(window.location.search).toContain("view=conversations");
   });
-
-  it("customizes and restores the request-log table without a global width control", async () => {
-    const user = userEvent.setup();
-    mockReadyDashboard();
-
-    renderWithProviders(<DashboardPage />);
-
-    expect(screen.getByRole("button", { name: "Columns (12)" })).toBeInTheDocument();
-    expect(screen.queryByRole("slider")).not.toBeInTheDocument();
-    expect(screen.queryByText(/^Width$/)).not.toBeInTheDocument();
-
-    await user.click(screen.getByRole("button", { name: "Columns (12)" }));
-    expect(screen.getByText("Visible columns")).toBeInTheDocument();
-    await user.click(screen.getByRole("menuitemcheckbox", { name: "Plan" }));
-
-    expect(screen.getByRole("menu", { name: "Columns (11)" })).toBeInTheDocument();
-    const selectedProps = recentRequestsTableSpy.mock.lastCall?.[0] as
-      | RecentRequestsTableProps
-      | undefined;
-    expect(selectedProps?.visibleColumns).not.toContain("plan");
-
-    act(() => {
-      selectedProps?.onColumnWidthChange?.("account", 240);
-    });
-    const resizedProps = recentRequestsTableSpy.mock.lastCall?.[0] as
-      | RecentRequestsTableProps
-      | undefined;
-    expect(resizedProps?.columnWidths?.account).toBe(240);
-
-    await user.keyboard("{Escape}");
-    await user.click(
-      screen.getByRole("button", { name: "Restore default column layout" }),
-    );
-
-    const restoredProps = recentRequestsTableSpy.mock.lastCall?.[0] as
-      | RecentRequestsTableProps
-      | undefined;
-    expect(restoredProps?.visibleColumns).toHaveLength(12);
-    expect(restoredProps?.columnWidths).toEqual({});
-    expect(
-      window.localStorage.getItem(REQUEST_LOG_TABLE_PREFERENCES_STORAGE_KEY),
-    ).toBeNull();
-  });
->>>>>>> 72630bbfe
 
   it("renders the account summary line in the Accounts header using overview accounts", () => {
     const overview = mockReadyDashboard();

@@ -143,9 +143,10 @@ async def test_a_pending_reservation_settles_once_during_lifespan_shutdown(_rese
 
     original = app_main._drain_opencode_go_settlements
 
-    async def _patched(timeout_seconds: float) -> None:
+    async def _patched(timeout_seconds: float) -> bool:
         if not await _release_then_drain(timeout_seconds=timeout_seconds):
             raise AssertionError("shutdown drain did not finish the pending settlement")
+        return True
 
     app_main._drain_opencode_go_settlements = _patched
     try:
@@ -188,9 +189,9 @@ async def test_the_drain_runs_before_http_and_db_teardown(_reset_db_state):
     original_drain = app_main._drain_opencode_go_settlements
     original_close_http = app_main.close_http_client
 
-    async def _tracked_drain(timeout_seconds: float) -> None:
+    async def _tracked_drain(timeout_seconds: float) -> bool:
         order.append("drain_settlements")
-        await original_drain(timeout_seconds)
+        return await original_drain(timeout_seconds)
 
     async def _tracked_close_http() -> None:
         order.append("close_http_client")

@@ -8,19 +8,15 @@ const ACCOUNT_VIEW_MODE_STORAGE_KEY = "codex-lb-dashboard-account-view-mode";
 const REQUEST_LOG_VIEW_MODE_STORAGE_KEY = "codex-lb-dashboard-request-log-view-mode";
 const ACCOUNT_TYPE_VISIBILITY_STORAGE_KEY = "codex-lb-dashboard-account-type-visibility";
 const ACCOUNT_LIST_SORT_STORAGE_KEY = "codex-lb-dashboard-account-list-sort";
-<<<<<<< 22625a07e
 const ACCOUNT_PANEL_HEIGHT_STORAGE_KEY = "codex-lb-dashboard-account-panel-height";
 const SPLIT_VIEW_STORAGE_KEY = "codex-lb-dashboard-split-view";
+const DASHBOARD_REFRESH_STORAGE_KEY = "codex-lb-dashboard-refresh-seconds";
 
 /** Bounds for the operator-resized accounts panel, in px. */
 export const ACCOUNT_PANEL_MIN_HEIGHT_PX = 160;
 export const ACCOUNT_PANEL_MAX_HEIGHT_PX = 2400;
-||||||| 84fde5a1e
-=======
-const DASHBOARD_REFRESH_STORAGE_KEY = "codex-lb-dashboard-refresh-seconds";
 
 export type DashboardRefreshSeconds = 5 | 15 | 30 | 60;
->>>>>>> 72630bbfe
 
 export type DashboardAccountViewMode = "cards" | "list";
 export type DashboardRequestLogViewMode = "simplified" | "expanded";
@@ -70,15 +66,11 @@ type DashboardPreferencesState = {
   requestLogViewMode: DashboardRequestLogViewMode;
   accountTypeVisibility: AccountTypeVisibility;
   accountListSort: AccountListSort;
-<<<<<<< 22625a07e
   /** Operator-resized accounts panel height in px; `null` = component default. */
   accountPanelHeight: number | null;
   /** Wide-screen layout: page spans the viewport and sections sit side by side. */
   splitViewEnabled: boolean;
-||||||| 84fde5a1e
-=======
   refreshSeconds: DashboardRefreshSeconds;
->>>>>>> 72630bbfe
   initialized: boolean;
   initializePreferences: () => void;
   setAccountBurnrateEnabled: (enabled: boolean) => void;
@@ -86,13 +78,9 @@ type DashboardPreferencesState = {
   setRequestLogViewMode: (mode: DashboardRequestLogViewMode) => void;
   setAccountTypeVisibility: (key: AccountTypeKey, enabled: boolean) => void;
   setAccountListSort: (sort: AccountListSort) => void;
-<<<<<<< 22625a07e
   setAccountPanelHeight: (height: number | null) => void;
   setSplitViewEnabled: (enabled: boolean) => void;
-||||||| 84fde5a1e
-=======
   setRefreshSeconds: (seconds: DashboardRefreshSeconds) => void;
->>>>>>> 72630bbfe
 };
 
 const ACCOUNT_LIST_SORT_KEYS: AccountListSortKey[] = [
@@ -164,7 +152,6 @@ function readStoredAccountListSort(): AccountListSort {
   return null;
 }
 
-<<<<<<< 22625a07e
 function readStoredAccountPanelHeight(): number | null {
   if (typeof window === "undefined") {
     return null;
@@ -203,8 +190,8 @@ function persistSplitViewEnabled(enabled: boolean): void {
     return;
   }
   window.localStorage.setItem(SPLIT_VIEW_STORAGE_KEY, String(enabled));
-||||||| 84fde5a1e
-=======
+}
+
 function readStoredRefreshSeconds(): DashboardRefreshSeconds | null {
   if (typeof window === "undefined") {
     return null;
@@ -213,7 +200,6 @@ function readStoredRefreshSeconds(): DashboardRefreshSeconds | null {
   return numeric === 5 || numeric === 15 || numeric === 30 || numeric === 60
     ? numeric
     : null;
->>>>>>> 72630bbfe
 }
 
 function persistAccountBurnrateEnabled(enabled: boolean): void {
@@ -282,11 +268,6 @@ function persistAccountListSort(sort: AccountListSort): void {
   window.localStorage.setItem(ACCOUNT_LIST_SORT_STORAGE_KEY, JSON.stringify(sort));
 }
 
-<<<<<<< 22625a07e
-export const useDashboardPreferencesStore = create<DashboardPreferencesState>((set, get) => ({
-||||||| 84fde5a1e
-export const useDashboardPreferencesStore = create<DashboardPreferencesState>((set) => ({
-=======
 function persistRefreshSeconds(seconds: DashboardRefreshSeconds): void {
   if (typeof window === "undefined") {
     return;
@@ -294,20 +275,15 @@ function persistRefreshSeconds(seconds: DashboardRefreshSeconds): void {
   window.localStorage.setItem(DASHBOARD_REFRESH_STORAGE_KEY, String(seconds));
 }
 
-export const useDashboardPreferencesStore = create<DashboardPreferencesState>((set) => ({
->>>>>>> 72630bbfe
+export const useDashboardPreferencesStore = create<DashboardPreferencesState>((set, get) => ({
   accountBurnrateEnabled: true,
   accountViewMode: "cards",
   requestLogViewMode: "simplified",
   accountTypeVisibility: defaultAccountTypeVisibility(),
   accountListSort: null,
-<<<<<<< 22625a07e
   accountPanelHeight: null,
   splitViewEnabled: false,
-||||||| 84fde5a1e
-=======
   refreshSeconds: 15,
->>>>>>> 72630bbfe
   initialized: false,
   initializePreferences: () => {
     const accountBurnrateEnabled = readStoredAccountBurnrateEnabled() ?? true;
@@ -315,19 +291,15 @@ export const useDashboardPreferencesStore = create<DashboardPreferencesState>((s
     const requestLogViewMode = readStoredRequestLogViewMode() ?? "simplified";
     const accountTypeVisibility = readStoredAccountTypeVisibility() ?? defaultAccountTypeVisibility();
     const accountListSort = readStoredAccountListSort();
-<<<<<<< 22625a07e
     const accountPanelHeight = readStoredAccountPanelHeight();
     const splitViewEnabled = readStoredSplitViewEnabled();
-||||||| 84fde5a1e
-=======
     const refreshSeconds = readStoredRefreshSeconds() ?? 15;
->>>>>>> 72630bbfe
     persistAccountBurnrateEnabled(accountBurnrateEnabled);
     persistAccountViewMode(accountViewMode);
     persistRequestLogViewMode(requestLogViewMode);
     persistAccountTypeVisibility(accountTypeVisibility);
     persistAccountListSort(accountListSort);
-<<<<<<< 22625a07e
+    persistRefreshSeconds(refreshSeconds);
     set({
       accountBurnrateEnabled,
       accountViewMode,
@@ -336,14 +308,9 @@ export const useDashboardPreferencesStore = create<DashboardPreferencesState>((s
       accountListSort,
       accountPanelHeight,
       splitViewEnabled,
+      refreshSeconds,
       initialized: true,
     });
-||||||| 84fde5a1e
-    set({ accountBurnrateEnabled, accountViewMode, accountListSort, initialized: true });
-=======
-    persistRefreshSeconds(refreshSeconds);
-    set({ accountBurnrateEnabled, accountViewMode, accountListSort, refreshSeconds, initialized: true });
->>>>>>> 72630bbfe
   },
   setAccountBurnrateEnabled: (enabled) => {
     persistAccountBurnrateEnabled(enabled);
@@ -366,7 +333,6 @@ export const useDashboardPreferencesStore = create<DashboardPreferencesState>((s
     persistAccountListSort(sort);
     set({ accountListSort: sort, initialized: true });
   },
-<<<<<<< 22625a07e
   setAccountPanelHeight: (height) => {
     const next =
       height === null
@@ -378,11 +344,9 @@ export const useDashboardPreferencesStore = create<DashboardPreferencesState>((s
   setSplitViewEnabled: (enabled) => {
     persistSplitViewEnabled(enabled);
     set({ splitViewEnabled: enabled, initialized: true });
-||||||| 84fde5a1e
-=======
+  },
   setRefreshSeconds: (seconds) => {
     persistRefreshSeconds(seconds);
     set({ refreshSeconds: seconds, initialized: true });
->>>>>>> 72630bbfe
   },
 }));

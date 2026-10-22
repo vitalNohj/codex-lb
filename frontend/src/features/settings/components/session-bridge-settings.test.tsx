@@ -49,7 +49,7 @@ describe("SessionBridgeSettings", () => {
     await user.click(screen.getByRole("switch", { name: "Codex session prewarm" }));
 
     expect(onSave).toHaveBeenCalledWith(
-      buildSettingsUpdateRequest(settings, { httpResponsesSessionBridgeCodexPrewarmEnabled: true }),
+      { httpResponsesSessionBridgeCodexPrewarmEnabled: true },
     );
   });
 
@@ -63,7 +63,7 @@ describe("SessionBridgeSettings", () => {
 
     await user.click(screen.getByRole("button", { name: "Reset to inherited" }));
 
-    const payload = buildSettingsUpdateRequest(settings, { httpResponsesSessionBridgeCodexPrewarmEnabled: null });
+    const payload = { httpResponsesSessionBridgeCodexPrewarmEnabled: null };
     expect(payload.httpResponsesSessionBridgeCodexPrewarmEnabled).toBeNull();
     expect(onSave).toHaveBeenCalledWith(payload);
   });

@@ -4,11 +4,7 @@ import ipaddress
 import socket
 import time
 from collections.abc import Mapping
-<<<<<<< 22625a07e
 from dataclasses import asdict
-||||||| 84fde5a1e
-=======
->>>>>>> 72630bbfe
 from typing import Any, cast
 
 import aiohttp
@@ -29,13 +25,7 @@ from app.core.auth.dependencies import (
     set_dashboard_error_format,
     validate_dashboard_session,
 )
-<<<<<<< 22625a07e
 from app.core.clients.claude_sidecar import SidecarPrefix
-from app.core.clients.http import _build_ssl_context
-from app.core.config.product_capabilities import omniroute_enabled
-||||||| 84fde5a1e
-from app.core.clients.http import _build_ssl_context
-=======
 from app.core.clients.http import _shared_ssl_context
 from app.core.config import settings as settings_module
 from app.core.config.background_jobs import BACKGROUND_JOB_SETTINGS
@@ -45,7 +35,7 @@ from app.core.config.context_window_overrides import (
 )
 from app.core.config.dashboard_overrides import DASHBOARD_TIMEOUT_SETTINGS
 from app.core.config.inheritable import resolve_inheritable
->>>>>>> 72630bbfe
+from app.core.config.product_capabilities import omniroute_enabled
 from app.core.config.settings import get_settings as get_app_settings
 from app.core.config.settings_cache import get_settings_cache
 from app.core.config.spool_retention import (
@@ -64,33 +54,26 @@ from app.core.exceptions import (
 )
 from app.core.resilience.toggles import RESILIENCE_TOGGLE_SETTINGS
 from app.core.timeout_invariants import find_timeout_invariant_violations
+from app.core.types import JsonValue
 from app.core.upstream_proxy import UpstreamProxyRouteError, resolve_proxy_endpoint, sends_plaintext_credentials
 from app.core.upstream_proxy.cache import get_upstream_route_cache
 from app.db.models import Account, AccountProxyBinding, AccountStatus, ProxyEndpoint, ProxyPool, ProxyPoolMember
 from app.dependencies import SettingsContext, get_proxy_service_for_app, get_settings_context
-<<<<<<< 22625a07e
+from app.modules.dashboard_users.break_glass import BreakGlassRequiresTotpError
 from app.modules.openai_compat.endpoints import (
     OpenAICompatEndpointUpdateData,
     StoredOpenAICompatEndpoint,
 )
-||||||| 84fde5a1e
-=======
-from app.modules.dashboard_users.break_glass import BreakGlassRequiresTotpError
->>>>>>> 72630bbfe
 from app.modules.proxy.account_cache import (
     clear_account_routing_unavailable,
     get_account_selection_cache,
     propagate_account_routing_change,
 )
-<<<<<<< 22625a07e
 from app.modules.proxy.alias_pool_attempts import get_alias_pool_cooldowns
 from app.modules.proxy.custom_alias_catalog import reconcile_custom_alias_catalog
 from app.modules.settings.dashboard_layout import DashboardLayoutVisibility, merge_dashboard_layout
 from app.modules.settings.model_alias_pools import ModelAliasPool
-||||||| 84fde5a1e
-=======
 from app.modules.settings.repository import ModelContextWindowOverridesRepository
->>>>>>> 72630bbfe
 from app.modules.settings.schemas import (
     SECURITY_SETTINGS_FIELDS,
     AccountProxyBindingRequest,
@@ -103,17 +86,13 @@ from app.modules.settings.schemas import (
     DashboardLayoutVisibilityUpdate,
     DashboardSettingsResponse,
     DashboardSettingsUpdateRequest,
-<<<<<<< 22625a07e
-    ModelAliasPoolSchema,
-    OpenAICompatEndpointResponse,
-    OpenAICompatEndpointUpdate,
-||||||| 84fde5a1e
-=======
     LocalLoginPolicyLiteral,
+    ModelAliasPoolSchema,
     ModelContextWindowOverrideResponse,
     ModelContextWindowOverridesResponse,
     ModelContextWindowOverrideUpsertRequest,
->>>>>>> 72630bbfe
+    OpenAICompatEndpointResponse,
+    OpenAICompatEndpointUpdate,
     RuntimeConnectAddressResponse,
     SettingProvenance,
     UpstreamProxyAdminResponse,
@@ -220,7 +199,6 @@ router = APIRouter(
 )
 
 
-<<<<<<< 22625a07e
 def _layout_schema(layout: DashboardLayoutVisibility) -> DashboardLayoutVisibilitySchema:
     return DashboardLayoutVisibilitySchema(
         requests=layout.requests,
@@ -250,10 +228,6 @@ def _merged_dashboard_layout(
     return merge_dashboard_layout(current, updates)
 
 
-def _dashboard_settings_response(settings) -> DashboardSettingsResponse:
-||||||| 84fde5a1e
-def _dashboard_settings_response(settings) -> DashboardSettingsResponse:
-=======
 # C2-2 routing/overload
 _ROUTING_OVERLOAD_SETTINGS: tuple[str, ...] = (
     "proxy_overload_isolation_seconds",
@@ -288,7 +262,6 @@ def _dashboard_settings_response(settings, *, principal: DashboardPrincipal) -> 
     conversation_archive_dir = (
         str(archive_dir) if archive_dir is not None and principal.role == DashboardRole.ADMIN else None
     )
->>>>>>> 72630bbfe
     additional_quota_policies = [
         AdditionalQuotaPolicy(
             quota_key=definition.quota_key,
@@ -485,10 +458,7 @@ def _dashboard_settings_response(settings, *, principal: DashboardPrincipal) -> 
         hourly_rollup_retention_days=settings.hourly_rollup_retention_days,
         request_log_retention_override_days=settings.request_log_retention_override_days,
         usage_history_retention_override_days=settings.usage_history_retention_override_days,
-<<<<<<< 22625a07e
         hourly_rollup_retention_override_days=settings.hourly_rollup_retention_override_days,
-||||||| 84fde5a1e
-=======
         # C2-3 resilience toggles
         soft_drain_enabled=settings.soft_drain_enabled,
         deterministic_failover_enabled=settings.deterministic_failover_enabled,
@@ -512,7 +482,6 @@ def _dashboard_settings_response(settings, *, principal: DashboardPrincipal) -> 
             operation_spool_retention_floor_seconds(settings, startup_settings=environment_settings)
         ),
         # end R2 spool retention
->>>>>>> 72630bbfe
         version=settings.version,
         # C2-1 timeouts
         upstream_connect_timeout_seconds=settings.upstream_connect_timeout_seconds,
@@ -652,7 +621,7 @@ def _reject_disabled_capability_fields(payload: DashboardSettingsUpdateRequest) 
     raise DashboardBadRequestError(
         "The OmniRoute integration is disabled and cannot be configured",
         code="capability_disabled",
-        details={"capability": "omniroute", "fields": activating},
+        details={"capability": "omniroute", "fields": list[JsonValue](activating)},
     )
 
 
@@ -723,7 +692,6 @@ async def get_runtime_connect_address(request: Request) -> RuntimeConnectAddress
     return RuntimeConnectAddressResponse(connect_address=_resolve_runtime_connect_address(request))
 
 
-<<<<<<< 22625a07e
 @router.get("/alias-pools/health", response_model=AliasPoolsHealthResponse)
 async def get_alias_pools_health(
     context: SettingsContext = Depends(get_settings_context),
@@ -753,16 +721,11 @@ async def get_alias_pools_health(
     return AliasPoolsHealthResponse(aliases=aliases)
 
 
-@router.get("/upstream-proxy", response_model=UpstreamProxyAdminResponse)
-||||||| 84fde5a1e
-@router.get("/upstream-proxy", response_model=UpstreamProxyAdminResponse)
-=======
 @router.get(
     "/upstream-proxy",
     response_model=UpstreamProxyAdminResponse,
     dependencies=[Depends(require_dashboard_permission(Permission.OPS_WRITE))],
 )
->>>>>>> 72630bbfe
 async def get_upstream_proxy_admin(
     context: SettingsContext = Depends(get_settings_context),
 ) -> UpstreamProxyAdminResponse:
@@ -1435,12 +1398,7 @@ async def update_settings(
     principal: DashboardPrincipal = Depends(require_dashboard_write_access),
     context: SettingsContext = Depends(get_settings_context),
 ) -> DashboardSettingsResponse:
-<<<<<<< 22625a07e
     _reject_disabled_capability_fields(payload)
-    current = await context.service.get_settings()
-||||||| 84fde5a1e
-    current = await context.service.get_settings()
-=======
     current = await context.service.get_settings(actor_user_id=principal.user_id)
     # The dashboard client submits the whole form on every save, so a security
     # field merely being present must not require security:write; only a value
@@ -1453,7 +1411,6 @@ async def update_settings(
     if security_changes:
         ensure_dashboard_permission(principal, Permission.SECURITY_WRITE)
         await ensure_step_up(request, principal, Permission.SECURITY_WRITE)
->>>>>>> 72630bbfe
     if payload.expected_version is not None and payload.expected_version != current.version:
         raise DashboardSettingsConflictError(
             "Settings were modified since this form was loaded; reload and retry",
@@ -1523,7 +1480,6 @@ async def update_settings(
         single_account_id = (
             payload.single_account_id if "single_account_id" in payload.model_fields_set else current.single_account_id
         )
-<<<<<<< 22625a07e
         resolved_model_aliases = (
             _model_aliases_to_service(cast(dict[str, ModelAliasPoolSchema], payload.model_aliases))
             if payload.model_aliases is not None
@@ -1537,10 +1493,7 @@ async def update_settings(
             resolved_custom_alias_catalog,
             resolved_model_aliases,
         )
-||||||| 84fde5a1e
-=======
         startup_settings = get_app_settings()
->>>>>>> 72630bbfe
         stream_limit = (
             payload.proxy_account_stream_limit
             if payload.proxy_account_stream_limit is not None
@@ -2130,7 +2083,6 @@ async def update_settings(
                     "usage_history_retention_override_days" in payload.model_fields_set
                     and payload.usage_history_retention_override_days is None
                 ),
-<<<<<<< 22625a07e
                 clear_hourly_rollup_retention_override=(
                     "hourly_rollup_retention_override_days" in payload.model_fields_set
                     and payload.hourly_rollup_retention_override_days is None
@@ -2139,8 +2091,6 @@ async def update_settings(
                     payload.sidecar_full_model_stars if "sidecar_full_model_stars" in payload.model_fields_set else None
                 ),
                 dashboard_layout=_merged_dashboard_layout(current.dashboard_layout, payload.dashboard_layout),
-||||||| 84fde5a1e
-=======
                 # C2-3 resilience toggles: tri-state via model_fields_set.
                 soft_drain_enabled=(
                     payload.soft_drain_enabled if "soft_drain_enabled" in payload.model_fields_set else None
@@ -2229,7 +2179,6 @@ async def update_settings(
                     "http_responses_session_bridge_request_budget_seconds"
                 ][1],
                 # end M1 stream/bridge budgets
->>>>>>> 72630bbfe
             ),
             # CAS anchor: omitted fields above were merged from `current`
             # (version checked against expectedVersion when supplied), so the
@@ -2239,7 +2188,6 @@ async def update_settings(
             actor_user_id=principal.user_id,
             expected_version=current.version,
         )
-<<<<<<< 22625a07e
     except SidecarRoutingConflictError as exc:
         conflict = exc.conflict
         raise DashboardBadRequestError(
@@ -2262,8 +2210,7 @@ async def update_settings(
                 "alias": exc.alias,
                 "target": exc.target,
             },
-||||||| 84fde5a1e
-=======
+        ) from exc
     except BreakGlassRequiresTotpError as exc:
         # Before the generic ValueError arm: this refusal is a 409 whose body
         # names the account that would clear it, not a malformed-input 400.
@@ -2272,7 +2219,6 @@ async def update_settings(
             code="break_glass_requires_totp",
             param=exc.username,
             details={"username": exc.username},
->>>>>>> 72630bbfe
         ) from exc
     except ValueError as exc:
         code = "invalid_totp_config" if "TOTP" in str(exc) else "invalid_settings"
@@ -2429,11 +2375,8 @@ async def update_settings(
             "limit_warmup_staggered_idle_enabled",
             "request_log_retention_override_days",
             "usage_history_retention_override_days",
-<<<<<<< 22625a07e
             "hourly_rollup_retention_override_days",
             "dashboard_layout",
-||||||| 84fde5a1e
-=======
             # C2-3 resilience toggles
             "soft_drain_enabled",
             "deterministic_failover_enabled",
@@ -2442,7 +2385,6 @@ async def update_settings(
             CONVERSATION_ARCHIVE_SETTING,  # M5 conversation archive
             OPERATION_SPOOL_RETENTION_SETTING,  # R2 spool retention
             *DASHBOARD_TIMEOUT_SETTINGS,  # C2-1 timeouts
->>>>>>> 72630bbfe
         )
         if getattr(current, field_name) != getattr(updated, field_name)
     ]

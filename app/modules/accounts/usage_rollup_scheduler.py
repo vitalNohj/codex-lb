@@ -7,18 +7,12 @@ from dataclasses import dataclass, field
 
 from app.core.scheduling.leader_election_handle import get_leader_election as _get_leader_election
 from app.modules.accounts.usage_rollup import run_fold_pass
-<<<<<<< 22625a07e
 from app.modules.accounts.usage_time_rollup import (
     run_conversation_fold_pass,
     run_daily_fold_pass,
     run_hourly_fold_pass,
 )
-||||||| 84fde5a1e
-from app.modules.accounts.usage_time_rollup import run_conversation_fold_pass, run_hourly_fold_pass
-=======
-from app.modules.accounts.usage_time_rollup import run_conversation_fold_pass, run_hourly_fold_pass
 from app.modules.reports.rollup import run_report_fold_pass
->>>>>>> 72630bbfe
 
 logger = logging.getLogger(__name__)
 

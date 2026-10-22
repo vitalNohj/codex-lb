@@ -26,27 +26,6 @@ HTTP_BRIDGE_MIXIN_PATH = PROXY_DIR / "_service" / "http_bridge" / "mixin.py"
 STREAMING_MIXIN_PATH = PROXY_DIR / "_service" / "streaming" / "mixin.py"
 PROXY_ARCHITECTURE_SPEC_PATH = ROOT / "openspec" / "specs" / "proxy-architecture" / "spec.md"
 
-<<<<<<< 22625a07e
-# Ruff 0.16's formatter adds blank lines around top-level definitions. Keep
-# the ratchets at the formatted baseline so whitespace normalization does not
-# consume architectural budget.
-MAX_SERVICE_LINES = 2_636
-MAX_LOAD_BALANCER_LINES = 3_260
-MAX_HTTP_BRIDGE_MIXIN_LINES = 2_436
-MAX_STREAMING_MIXIN_LINES = 1_100
-MAX_PROXY_SERVICE_METHOD_LINES = 1_200
-MAX_LOAD_BALANCER_SELECT_ACCOUNT_LINES = 699
-||||||| 84fde5a1e
-# Ruff 0.16's formatter adds blank lines around top-level definitions. Keep
-# the ratchets at the formatted baseline so whitespace normalization does not
-# consume architectural budget.
-MAX_SERVICE_LINES = 2_617
-MAX_LOAD_BALANCER_LINES = 3_260
-MAX_HTTP_BRIDGE_MIXIN_LINES = 2_436
-MAX_STREAMING_MIXIN_LINES = 1_100
-MAX_PROXY_SERVICE_METHOD_LINES = 1_200
-MAX_LOAD_BALANCER_SELECT_ACCOUNT_LINES = 699
-=======
 _THRESHOLD_BLOCK_START = "<!-- proxy-architecture-thresholds:start -->"
 _THRESHOLD_BLOCK_END = "<!-- proxy-architecture-thresholds:end -->"
 _THRESHOLD_KEYS = (
@@ -57,7 +36,6 @@ _THRESHOLD_KEYS = (
     "proxy_service_method_lines",
     "load_balancer_select_account_lines",
 )
->>>>>>> 72630bbfe
 
 REQUIRED_SERVICE_PACKAGES = {
     "http_bridge",

@@ -229,13 +229,6 @@ HTTP_BRIDGE_CODEX_IDLE_TTL_SECONDS: Final = 900.0
 # Owner-side stuck handoff gate; anchored to the 300s wait Codex Desktop uses.
 HTTP_BRIDGE_STUCK_GATE_RETIRE_AFTER_SECONDS: Final = 300.0
 _HTTP_BRIDGE_MISSING_RESPONSE_CREATED_TIMEOUT_DETAIL = "missing_response_created_timeout"
-<<<<<<< 22625a07e
-# Detail tag for anchor invalidation triggered by a definitive upstream
-# `previous_response_not_found` verdict (as opposed to the eventless
-# response-create timeout that invalidates the same durable anchor).
-_HTTP_BRIDGE_UPSTREAM_ANCHOR_NOT_FOUND_DETAIL = "upstream_previous_response_not_found"
-||||||| 84fde5a1e
-=======
 # Keep process-local *uncaptured* entries bounded. A denied entry is retained
 # until the matching durable anchor is confirmed cleared; evicting it would let
 # a stale durable row regain generation zero after enough unrelated denials.
@@ -717,7 +710,6 @@ _HTTP_BRIDGE_EVENTLESS_COOLDOWN_MESSAGE = (
 # Local bridge recovery closes and rebuilds our own upstream session. Reserve
 # upstream-close wording for frames the upstream actually sent.
 _HTTP_BRIDGE_LOCAL_RESET_MESSAGE = HTTP_BRIDGE_LOCAL_RESET_MESSAGE
->>>>>>> 72630bbfe
 T = TypeVar("T")
 
 _HTTP_BRIDGE_INFLIGHT_STARTED_AT_ATTR = "_codex_lb_started_at"

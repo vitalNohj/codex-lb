@@ -2177,7 +2177,6 @@ async def test_full_put_with_persisted_auto_redeem_allowed_while_polling_disable
 
 
 @pytest.mark.asyncio
-<<<<<<< 22625a07e
 async def test_dashboard_layout_defaults_hidden_conversations_and_round_trips(async_client):
     response = await async_client.get("/api/settings")
     assert response.status_code == 200
@@ -2233,8 +2232,8 @@ async def test_dashboard_layout_defaults_hidden_conversations_and_round_trips(as
     assert response.status_code == 200
     assert response.json()["dashboardLayout"]["conversations"] is False
     assert response.json()["dashboardLayout"]["requestLogs"] is False
-||||||| 84fde5a1e
-=======
+
+
 async def test_settings_api_background_job_toggles_round_trip_with_provenance(async_client, monkeypatch):
     """M2 background jobs: default -> dashboard -> cleared/env -> unchanged on omit, plus the topology flag."""
     from app.modules.settings import service as settings_service
@@ -3024,4 +3023,3 @@ async def test_settings_api_rejects_raising_a_reuse_window_above_the_spool_reten
 
 
 # end R2 spool retention
->>>>>>> 72630bbfe

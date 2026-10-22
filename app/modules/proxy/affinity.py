@@ -8,11 +8,12 @@ orchestration class.
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from hashlib import sha256
-from typing import Literal, TypedDict
+from typing import Literal, TypedDict, cast
 from uuid import uuid4
 
 from app.core.metrics.prometheus import (
@@ -417,20 +418,8 @@ def _derive_prompt_cache_key(
     ``None`` means the turn is unanchorable and nothing is attached; see
     ``_PromptCacheAnchor``.
     """
-<<<<<<< 22625a07e
-    model = getattr(payload, "model", None)
-    model_class, parts, _content_parts = _derived_key_parts(
-        model=model if isinstance(model, str) else None,
-        instructions=getattr(payload, "instructions", None),
-        input_value=getattr(payload, "input", None),
-        api_key_id=api_key.id if api_key is not None else None,
-    )
 
-    if not parts:
-        random_suffix = uuid4().hex[:24]
-        return f"{model_class}-{random_suffix}" if model_class is not None else random_suffix
-
-    return "-".join([model_class, *parts]) if model_class is not None else "-".join(parts)
+    return _derive_prompt_cache_anchor(payload, api_key, max_age_seconds=max_age_seconds).sticky_key
 
 
 def derive_content_prompt_cache_key(
@@ -440,14 +429,18 @@ def derive_content_prompt_cache_key(
     input_value: object,
     api_key_id: str | None,
 ) -> str | None:
-    """The content-derived part of ``_derive_prompt_cache_key``.
+    """A content-derived prompt-cache key for the CLIProxyAPI credential router.
+
+    Codex traffic anchors its key to the thread (``_derive_prompt_cache_anchor``);
+    the CLIProxyAPI router keeps this content hash, the key derivation codex-lb
+    used before thread anchors, because it pins one conversation to one sidecar
+    credential across turns without a per-process anchor index.
 
     ``input_value`` is a Responses ``input`` list or a Chat Completions
     ``messages`` list; both carry ``role`` and ``content`` per item, and a
     chat ``system`` message is hashed like a Responses system input item.
-    ``None`` means the request carries nothing stable to hash. The Codex
-    path then falls back to a random key; the CLIProxyAPI router leaves the
-    request unpinned instead, because a random key never matches again. An
+    ``None`` means the request carries nothing stable to hash; the router then
+    leaves the request unpinned, because a random key never matches again. An
     API key alone is not enough either: it would put every conversation of
     that key on one pin.
     """
@@ -490,10 +483,6 @@ def _derived_key_parts(
     return model_class, parts, len(parts) - (1 if api_key_id else 0)
 
 
-def _extract_instruction_input(payload: ResponsesRequest | ResponsesCompactRequest) -> str | None:
-    return _instruction_text_from_items(getattr(payload, "input", None))
-
-
 def _instruction_text_from_items(input_value: object) -> str | None:
     if not isinstance(input_value, list):
         return None
@@ -513,11 +502,6 @@ def _instruction_text_from_items(input_value: object) -> str | None:
     if not parts:
         return None
     return "\n".join(parts)[:512]
-
-
-def _extract_first_user_input(payload: ResponsesRequest | ResponsesCompactRequest) -> str | None:
-    """Return a text representation of the first user input item for cache key derivation."""
-    return _first_user_text_from_items(getattr(payload, "input", None))
 
 
 def _first_user_text_from_items(input_value: object) -> str | None:
@@ -559,116 +543,6 @@ def _extract_message_content_text(content: object) -> str | None:
         if isinstance(text, str):
             parts.append(text)
     return "".join(parts) if parts else None
-
-
-def _sticky_key_from_payload(payload: ResponsesRequest) -> str | None:
-    value = _prompt_cache_key_from_request_model(payload)
-    if not value:
-        return None
-    stripped = value.strip()
-    return stripped or None
-||||||| 84fde5a1e
-    parts: list[str] = []
-    model = getattr(payload, "model", None)
-    model_class = _extract_model_class(model) if isinstance(model, str) and model else None
-
-    if api_key is not None:
-        parts.append(api_key.id[:12])
-
-    instructions = getattr(payload, "instructions", None)
-    if isinstance(instructions, str) and instructions:
-        parts.append(sha256(instructions[:512].encode()).hexdigest()[:12])
-
-    instruction_input_text = _extract_instruction_input(payload)
-    if instruction_input_text:
-        parts.append(sha256(instruction_input_text[:512].encode()).hexdigest()[:12])
-
-    first_user_text = _extract_first_user_input(payload)
-    if first_user_text:
-        parts.append(sha256(first_user_text[:512].encode()).hexdigest()[:12])
-
-    if not parts:
-        random_suffix = uuid4().hex[:24]
-        return f"{model_class}-{random_suffix}" if model_class is not None else random_suffix
-
-    return "-".join([model_class, *parts]) if model_class is not None else "-".join(parts)
-
-
-def _extract_instruction_input(payload: ResponsesRequest | ResponsesCompactRequest) -> str | None:
-    input_value = getattr(payload, "input", None)
-    if not isinstance(input_value, list):
-        return None
-    parts: list[str] = []
-    for item in input_value:
-        if not isinstance(item, dict):
-            continue
-        if item.get("role") not in ("system", "developer"):
-            continue
-        content_text = _extract_message_content_text(item.get("content"))
-        if content_text:
-            parts.append(content_text)
-        else:
-            parts.append(json.dumps(item, sort_keys=True, ensure_ascii=False))
-        if sum(len(part) for part in parts) >= 512:
-            break
-    if not parts:
-        return None
-    return "\n".join(parts)[:512]
-
-
-def _extract_first_user_input(payload: ResponsesRequest | ResponsesCompactRequest) -> str | None:
-    """Return a text representation of the first user input item for cache key derivation."""
-    input_value = getattr(payload, "input", None)
-    if isinstance(input_value, str):
-        return input_value[:512]
-    if not isinstance(input_value, list):
-        return None
-    for item in input_value:
-        if not isinstance(item, dict):
-            continue
-        role = item.get("role")
-        if role == "user":
-            content = item.get("content")
-            content_text = _extract_message_content_text(content)
-            if content_text:
-                return content_text[:512]
-            return json.dumps(item, sort_keys=True, ensure_ascii=False)[:512]
-    return None
-
-
-def _extract_message_content_text(content: object) -> str | None:
-    if isinstance(content, str):
-        return content
-    if isinstance(content, dict):
-        content_mapping = cast(Mapping[str, object], content)
-        text = content_mapping.get("text")
-        return text if isinstance(text, str) else None
-    if not isinstance(content, list):
-        return None
-    parts: list[str] = []
-    for part in content:
-        if isinstance(part, str):
-            parts.append(part)
-            continue
-        if not isinstance(part, dict):
-            continue
-        part_mapping = cast(Mapping[str, object], part)
-        text = part_mapping.get("text")
-        if isinstance(text, str):
-            parts.append(text)
-    return "".join(parts) if parts else None
-
-
-def _sticky_key_from_payload(payload: ResponsesRequest) -> str | None:
-    value = _prompt_cache_key_from_request_model(payload)
-    if not value:
-        return None
-    stripped = value.strip()
-    return stripped or None
-=======
-
-    return _derive_prompt_cache_anchor(payload, api_key, max_age_seconds=max_age_seconds).sticky_key
->>>>>>> 72630bbfe
 
 
 def _sticky_key_from_session_header(headers: Mapping[str, str]) -> str | None:

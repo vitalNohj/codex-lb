@@ -287,7 +287,14 @@ class ReportsService:
             account_ids,
             api_key_ids,
         )
-        return ReportsOptionsResponse(models=models, useragents=useragents)
+        earliest_activity_at = await self._repository.earliest_report_activity_at(account_ids, None, None, api_key_ids)
+        return ReportsOptionsResponse(
+            models=models,
+            useragents=useragents,
+            earliest_activity_at=(
+                earliest_activity_at.date().isoformat() if earliest_activity_at is not None else None
+            ),
+        )
 
 
 def resolve_report_range(

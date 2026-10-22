@@ -10,13 +10,7 @@ import subprocess
 import sys
 import time
 from collections import deque
-<<<<<<< 22625a07e
-from collections.abc import AsyncIterator, Callable
-||||||| 84fde5a1e
-from collections.abc import Callable
-=======
 from collections.abc import AsyncIterator, Awaitable, Callable
->>>>>>> 72630bbfe
 from contextlib import nullcontext
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta, timezone
@@ -27,16 +21,10 @@ from unittest.mock import ANY, AsyncMock, Mock
 import aiohttp
 import anyio
 import pytest
-<<<<<<< 22625a07e
 from fastapi import Request, WebSocket
-from sqlalchemy import select
-||||||| 84fde5a1e
-from fastapi import WebSocket
-=======
-from fastapi import WebSocket
 from hypothesis import given, settings
 from hypothesis import strategies as st
->>>>>>> 72630bbfe
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from websockets.exceptions import ConnectionClosedError
 from websockets.frames import Close
@@ -58,29 +46,17 @@ from app.core.clients.proxy_websocket import (
 from app.core.clock import REAL_SCHEDULER, RealScheduler
 from app.core.config.dashboard_overrides import dashboard_overrides_bound, with_dashboard_overrides
 from app.core.config.settings import Settings
-<<<<<<< 22625a07e
-from app.core.errors import openai_error
-from app.core.openai.models import OpenAIError
-||||||| 84fde5a1e
-from app.core.errors import openai_error
-=======
 from app.core.errors import HTTP_BRIDGE_EVENTLESS_TIMEOUT_CODE, openai_error
 from app.core.openai.models import OpenAIError, OpenAIResponsePayload
 from app.core.openai.requests import ResponsesRequest
->>>>>>> 72630bbfe
 from app.core.utils.request_id import get_request_id, reset_request_scope_id, set_request_scope_id
-<<<<<<< 22625a07e
 from app.db.models import (
     AccountStatus,
     Base,
+    DashboardSettings,
     HttpBridgeOperationRecord,
     HttpBridgeSessionState,
 )
-||||||| 84fde5a1e
-from app.db.models import AccountStatus, Base, HttpBridgeSessionState
-=======
-from app.db.models import AccountStatus, Base, DashboardSettings, HttpBridgeSessionState
->>>>>>> 72630bbfe
 from app.modules.proxy import affinity as proxy_affinity
 from app.modules.proxy import api as proxy_api
 from app.modules.proxy import http_bridge_forwarding as http_bridge_forwarding_module
@@ -1169,7 +1145,6 @@ class _SilentEventlessUpstream:
         self.closed = True
 
 
-<<<<<<< 22625a07e
 def _precreated_frame_log_session(*, awaiting: bool = True) -> proxy_service._HTTPBridgeSession:
     request_state = proxy_service._WebSocketRequestState(
         request_id="req-frame-log",
@@ -1235,8 +1210,8 @@ def test_http_bridge_precreated_frame_log_skips_frames_after_response_created(
         http_bridge_upstream_events_module._log_http_bridge_upstream_frame(session, delta)
 
     assert "http_bridge_precreated_frame" not in caplog.text
-||||||| 84fde5a1e
-=======
+
+
 @pytest.mark.asyncio
 async def test_http_bridge_reader_receive_deadline_uses_injected_scheduler(
     monkeypatch: pytest.MonkeyPatch,
@@ -1412,7 +1387,6 @@ async def test_http_bridge_reader_timeout_rechecks_receive_completed_during_time
     assert session.closed is True
     await scheduler.drain()
     assert scheduler._tasks == set()
->>>>>>> 72630bbfe
 
 
 def test_http_bridge_eventless_precreated_deadline_uses_current_send_and_client_safe_cap() -> None:
@@ -5002,28 +4976,24 @@ async def test_http_bridge_submit_capacity_wait_fails_fast_past_cumulative_silen
     capacity_error = ProxyResponseError(
         429,
         openai_error(
-            "usage_limit_reached",
+            "rate_limit_exceeded",
             "Rate limit exceeded. Try again in 300s",
-            error_type="usage_limit_reached",
+            error_type="rate_limit_error",
         ),
     )
     submit = AsyncMock(side_effect=capacity_error)
-    clock = [0.0]
+    clock = VirtualClock(monotonic_value=0.0)
+    service._clock = clock
     waited: list[float] = []
 
     async def fake_capacity_wait(**kwargs: object):
         waited.append(cast(float, kwargs["sleep_seconds"]))
-        clock[0] += waited[-1]
+        clock.advance(waited[-1])
         if False:
             yield ""
 
     monkeypatch.setattr(service, "_submit_http_bridge_request", submit)
     monkeypatch.setattr(http_bridge_streaming_module, "_iter_account_capacity_wait_sse", fake_capacity_wait)
-    monkeypatch.setattr(
-        http_bridge_streaming_module,
-        "_service_time",
-        lambda: SimpleNamespace(monotonic=lambda: clock[0]),
-    )
 
     # The real hint parser: "Try again in 300s" against the default 7200s
     # bridge request budget.
@@ -5043,10 +5013,10 @@ async def test_http_bridge_submit_capacity_wait_fails_fast_past_cumulative_silen
 
     assert exc_info.value is capacity_error
     assert exc_info.value.status_code == 429
-    assert exc_info.value.payload["error"]["code"] == "usage_limit_reached"
+    assert exc_info.value.payload["error"]["code"] == "rate_limit_exceeded"
     assert exc_info.value.retry_after_seconds == 300
     assert waited == []
-    assert clock[0] == 0.0
+    assert clock.monotonic() == 0.0
     assert submit.await_count == 1
 
 
@@ -5075,30 +5045,26 @@ async def test_http_bridge_submit_capacity_wait_smooths_over_short_account_switc
     capacity_error = ProxyResponseError(
         429,
         openai_error(
-            "usage_limit_reached",
+            "rate_limit_exceeded",
             "Rate limit exceeded. Try again in 5s",
-            error_type="usage_limit_reached",
+            error_type="rate_limit_error",
         ),
     )
     submit = AsyncMock(side_effect=[capacity_error, None])
     detach = AsyncMock()
-    clock = [0.0]
+    clock = VirtualClock(monotonic_value=0.0)
+    service._clock = clock
     waited: list[float] = []
 
     async def fake_capacity_wait(**kwargs: object):
         waited.append(cast(float, kwargs["sleep_seconds"]))
-        clock[0] += waited[-1]
+        clock.advance(waited[-1])
         if False:
             yield ""
 
     monkeypatch.setattr(service, "_submit_http_bridge_request", submit)
     monkeypatch.setattr(service, "_detach_http_bridge_request", detach)
     monkeypatch.setattr(http_bridge_streaming_module, "_iter_account_capacity_wait_sse", fake_capacity_wait)
-    monkeypatch.setattr(
-        http_bridge_streaming_module,
-        "_service_time",
-        lambda: SimpleNamespace(monotonic=lambda: clock[0]),
-    )
 
     chunks = [
         chunk
@@ -5144,27 +5110,23 @@ async def test_http_bridge_submit_capacity_waits_accumulate_until_cumulative_cap
     capacity_error = ProxyResponseError(
         429,
         openai_error(
-            "usage_limit_reached",
+            "rate_limit_exceeded",
             "Rate limit exceeded. Try again in 10s",
-            error_type="usage_limit_reached",
+            error_type="rate_limit_error",
         ),
     )
     submit = AsyncMock(side_effect=capacity_error)
-    clock = [0.0]
+    clock = VirtualClock(monotonic_value=0.0)
+    service._clock = clock
     slept: list[float] = []
 
-    async def fake_sleep(seconds: float) -> None:
+    async def fake_sleep(seconds: float, result: None = None) -> None:
         slept.append(seconds)
-        clock[0] += seconds
+        clock.advance(seconds)
 
     monkeypatch.setattr(service, "_submit_http_bridge_request", submit)
     monkeypatch.setattr(service, "_detach_http_bridge_request", AsyncMock())
     monkeypatch.setattr(asyncio, "sleep", fake_sleep)
-    monkeypatch.setattr(
-        http_bridge_streaming_module,
-        "_service_time",
-        lambda: SimpleNamespace(monotonic=lambda: clock[0]),
-    )
 
     with pytest.raises(ProxyResponseError) as exc_info:
         async for _ in service._stream_http_bridge_session_events(
@@ -5185,7 +5147,7 @@ async def test_http_bridge_submit_capacity_waits_accumulate_until_cumulative_cap
     assert submit.await_count == 4
     assert exc_info.value is capacity_error
     assert exc_info.value.status_code == 429
-    assert exc_info.value.payload["error"]["code"] == "usage_limit_reached"
+    assert exc_info.value.payload["error"]["code"] == "rate_limit_exceeded"
     assert exc_info.value.retry_after_seconds == 10
 
 
@@ -5223,27 +5185,23 @@ async def test_http_bridge_gate_contention_waits_do_not_consume_silent_hold_allo
     switch_error = ProxyResponseError(
         429,
         openai_error(
-            "usage_limit_reached",
+            "rate_limit_exceeded",
             "Rate limit exceeded. Try again in 5s",
-            error_type="usage_limit_reached",
+            error_type="rate_limit_error",
         ),
     )
     submit = AsyncMock(side_effect=[gate_error, gate_error, gate_error, switch_error, None])
-    clock = [0.0]
+    clock = VirtualClock(monotonic_value=0.0)
+    service._clock = clock
     slept: list[float] = []
 
-    async def fake_sleep(seconds: float) -> None:
+    async def fake_sleep(seconds: float, result: None = None) -> None:
         slept.append(seconds)
-        clock[0] += seconds
+        clock.advance(seconds)
 
     monkeypatch.setattr(service, "_submit_http_bridge_request", submit)
     monkeypatch.setattr(service, "_detach_http_bridge_request", AsyncMock())
     monkeypatch.setattr(asyncio, "sleep", fake_sleep)
-    monkeypatch.setattr(
-        http_bridge_streaming_module,
-        "_service_time",
-        lambda: SimpleNamespace(monotonic=lambda: clock[0]),
-    )
 
     chunks = [
         chunk
@@ -5293,23 +5251,19 @@ async def test_http_bridge_submit_capacity_wait_sleeps_within_remaining_budget(
         ),
     )
     submit = AsyncMock(side_effect=capacity_error)
-    clock = [100.0]
+    clock = VirtualClock(monotonic_value=100.0)
+    service._clock = clock
     waited: list[float] = []
 
     async def fake_capacity_wait(**kwargs: object):
         waited.append(cast(float, kwargs["sleep_seconds"]))
-        clock[0] += waited[-1]
+        clock.advance(waited[-1])
         if False:
             yield ""
 
     monkeypatch.setattr(service, "_submit_http_bridge_request", submit)
     monkeypatch.setattr(http_bridge_streaming_module, "_http_bridge_account_capacity_wait_seconds", lambda _exc: 5.0)
     monkeypatch.setattr(http_bridge_streaming_module, "_iter_account_capacity_wait_sse", fake_capacity_wait)
-    monkeypatch.setattr(
-        http_bridge_streaming_module,
-        "_service_time",
-        lambda: SimpleNamespace(monotonic=lambda: clock[0]),
-    )
 
     with pytest.raises(ProxyResponseError) as exc_info:
         async for _ in service._stream_http_bridge_session_events(
@@ -5923,6 +5877,21 @@ def _install_accepted_replay_harness(
     return handle_stream_error, retry_precreated
 
 
+def _assert_scoped_precreated_retry(
+    retry_precreated: AsyncMock,
+    session: proxy_service._HTTPBridgeSession,
+    request_state: proxy_service._WebSocketRequestState,
+) -> None:
+    """Fork #32: a capacity/usage replay retries only the failing request and
+    carries the triggering upstream error, so a failed replay surfaces that
+    error instead of a generic one."""
+    retry_precreated.assert_awaited_once()
+    assert retry_precreated.await_args is not None
+    assert retry_precreated.await_args.args == (session,)
+    assert retry_precreated.await_args.kwargs["request_state"] is request_state
+    assert retry_precreated.await_args.kwargs["triggering_error"] is not None
+
+
 def _assert_staged_for_single_lifecycle_replay(
     request_state: proxy_service._WebSocketRequestState,
     session: proxy_service._HTTPBridgeSession,
@@ -5967,7 +5936,7 @@ async def test_http_bridge_accepted_capacity_error_waits_then_stages_single_life
     )
 
     _assert_staged_for_single_lifecycle_replay(request_state, session)
-    retry_precreated.assert_awaited_once_with(session, request_state=request_state)
+    _assert_scoped_precreated_retry(retry_precreated, session, request_state)
     handle_stream_error.assert_awaited_once()
     assert handle_stream_error.await_args is not None
     # Reported as the transparent overload code, like the pre-created classifier.
@@ -6029,7 +5998,7 @@ async def test_http_bridge_accepted_propagated_error_stream_capacity_replay_does
         proxy_support_module._reset_propagated_capacity_startup_wait(wait_token)
 
     _assert_staged_for_single_lifecycle_replay(request_state, session)
-    retry_precreated.assert_awaited_once_with(session, request_state=request_state)
+    _assert_scoped_precreated_retry(retry_precreated, session, request_state)
     assert request_wait_event.is_set() is False, "the accepted replay re-armed the request's startup wait"
     assert request_ready_event.is_set() is True
     assert propagated_wait_event.is_set() is False, "the accepted replay re-armed the propagated startup wait"
@@ -6061,7 +6030,7 @@ async def test_http_bridge_accepted_overload_code_stages_single_lifecycle_replay
     )
 
     _assert_staged_for_single_lifecycle_replay(request_state, session)
-    retry_precreated.assert_awaited_once_with(session)
+    _assert_scoped_precreated_retry(retry_precreated, session, request_state)
     handle_stream_error.assert_awaited_once()
     assert handle_stream_error.await_args is not None
     assert handle_stream_error.await_args.args[2] == "server_is_overloaded"
@@ -6138,7 +6107,7 @@ async def test_http_bridge_accepted_anchored_overload_code_stages_single_lifecyc
     # body on its owner.
     assert request_state.previous_response_id == "resp-bridge-anchor"
     assert request_state.request_text == _ACCEPTED_BRIDGE_ANCHORED_REQUEST_TEXT
-    retry_precreated.assert_awaited_once_with(session)
+    _assert_scoped_precreated_retry(retry_precreated, session, request_state)
     handle_stream_error.assert_awaited_once()
     assert handle_stream_error.await_args is not None
     assert handle_stream_error.await_args.args[2] == code
@@ -6258,7 +6227,7 @@ async def test_http_bridge_accepted_proxy_anchored_capacity_message_waits_then_s
 
     _assert_staged_for_single_lifecycle_replay(request_state, session)
     assert request_state.previous_response_id == "resp-bridge-anchor"
-    retry_precreated.assert_awaited_once_with(session, request_state=request_state)
+    _assert_scoped_precreated_retry(retry_precreated, session, request_state)
     assert session.queued_request_count == 1
     assert request_state.event_queue is not None
     keepalive_block = await asyncio.wait_for(request_state.event_queue.get(), timeout=1.0)
@@ -25259,8 +25228,11 @@ async def test_process_http_bridge_upstream_text_invalidates_proxy_injected_anch
         latest_turn_state=None,
         latest_response_id=None,
     )
+    # Upstream's denied-anchor retirement (``_retire_denied_http_bridge_anchor``)
+    # supersedes the fork's #131 eviction: the durable clear is fenced on the
+    # denied id still being the latest response.
     clear_anchor = AsyncMock(return_value=cleared_lookup)
-    monkeypatch.setattr(service._durable_bridge, "clear_live_session_response_anchor", clear_anchor)
+    monkeypatch.setattr(service._durable_bridge, "clear_live_session_response_anchor_if_matches", clear_anchor)
     monkeypatch.setattr(service, "_handle_stream_error", AsyncMock())
 
     caplog.set_level(logging.INFO, logger="app.modules.proxy.service")
@@ -25302,10 +25274,7 @@ async def test_process_http_bridge_upstream_text_invalidates_proxy_injected_anch
     assert clear_anchor.await_args is not None
     assert clear_anchor.await_args.kwargs["session_id"] == "durable-session-1"
     assert clear_anchor.await_args.kwargs["owner_epoch"] == 3
-    assert "event=durable_anchor_invalidated" in caplog.text
-    assert "detail=upstream_previous_response_not_found" in caplog.text
-    assert "event=session_anchor_invalidated" in caplog.text
-    assert "response_id=resp_dead_anchor" in caplog.text
+    assert clear_anchor.await_args.kwargs["response_id"] == "resp_dead_anchor"
 
     assert session.last_completed_response_id is None
     assert session.last_completed_response_account_id is None
@@ -26340,7 +26309,7 @@ async def test_model_capacity_replay_preserves_quota_after_admission_timeout(
     monkeypatch.setattr(session.upstream, "send_text", send_text, raising=False)
     slept: list[float] = []
 
-    async def sleep(seconds: float) -> None:
+    async def sleep(seconds: float, result: None = None) -> None:
         slept.append(seconds)
 
     async def acquire():
@@ -39696,7 +39665,6 @@ async def test_admission_waiters_do_not_accumulate_callbacks_on_shared_inflight_
     assert key not in service._http_bridge_inflight_sessions
 
 
-<<<<<<< 22625a07e
 @pytest.mark.asyncio
 async def test_http_bridge_model_capacity_retry_fails_fast_past_cumulative_silent_hold_cap(
     monkeypatch: pytest.MonkeyPatch,
@@ -39718,28 +39686,27 @@ async def test_http_bridge_model_capacity_retry_fails_fast_past_cumulative_silen
         bridge_request_deadline=7200.0,
         event_queue=asyncio.Queue(),
     )
-    clock = [0.0]
+    clock = VirtualClock(monotonic_value=0.0)
     slept: list[float] = []
 
-    async def fake_sleep(seconds: float) -> None:
+    async def fake_sleep(seconds: float, result: None = None) -> None:
         slept.append(seconds)
-        clock[0] += seconds
+        clock.advance(seconds)
 
-    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
-    monkeypatch.setattr(
-        http_bridge_upstream_events_module,
-        "_service_time",
-        lambda: SimpleNamespace(monotonic=lambda: clock[0]),
-    )
+    scheduler = SimpleNamespace(sleep=fake_sleep)
 
     first = await http_bridge_upstream_events_module._wait_before_http_bridge_model_capacity_retry(
         request_state,
         emit_keepalives=False,
+        scheduler=cast(Any, scheduler),
+        clock=clock,
         error_message="Selected model is at capacity. Please try a different model.",
     )
     second = await http_bridge_upstream_events_module._wait_before_http_bridge_model_capacity_retry(
         request_state,
         emit_keepalives=False,
+        scheduler=cast(Any, scheduler),
+        clock=clock,
         error_message="Selected model is at capacity. Please try a different model.",
     )
 
@@ -39769,23 +39736,20 @@ async def test_http_bridge_model_capacity_retry_keeps_waiting_when_keepalives_vi
         bridge_request_deadline=7200.0,
         event_queue=asyncio.Queue(),
     )
-    clock = [0.0]
+    clock = VirtualClock(monotonic_value=0.0)
 
-    async def fake_sleep(seconds: float) -> None:
-        clock[0] += seconds
+    async def fake_sleep(seconds: float, result: None = None) -> None:
+        clock.advance(seconds)
 
-    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
-    monkeypatch.setattr(
-        http_bridge_upstream_events_module,
-        "_service_time",
-        lambda: SimpleNamespace(monotonic=lambda: clock[0]),
-    )
+    scheduler = SimpleNamespace(sleep=fake_sleep)
 
     for _ in range(3):
         assert (
             await http_bridge_upstream_events_module._wait_before_http_bridge_model_capacity_retry(
                 request_state,
                 emit_keepalives=True,
+                scheduler=cast(Any, scheduler),
+                clock=clock,
                 error_message="Selected model is at capacity. Please try a different model.",
             )
             is True
@@ -39793,8 +39757,8 @@ async def test_http_bridge_model_capacity_retry_keeps_waiting_when_keepalives_vi
 
     assert request_state.silent_capacity_hold.consumed_seconds == 0.0
     assert request_state.capacity_fail_fast_retry_after_seconds is None
-||||||| 84fde5a1e
-=======
+
+
 def _denied_anchor_session(
     *,
     anchor: str | None = "resp_denied",
@@ -47984,7 +47948,7 @@ async def test_http_bridge_precreated_usage_limit_defers_keyed_health_until_sett
     )
 
     handle_stream_error.assert_not_awaited()
-    retry_precreated.assert_awaited_once_with(session)
+    _assert_scoped_precreated_retry(retry_precreated, session, request_state)
     assert len(request_state.deferred_keyed_stream_health) == 1
     penalty = request_state.deferred_keyed_stream_health[0]
     assert penalty.account is session.account
@@ -49806,4 +49770,3 @@ async def test_http_bridge_reader_stamps_the_upstream_terminal_when_it_parses_th
 
     assert observed == {"terminal_at": 112.0, "finalizer_entered_at": 122.0}
     assert request_state.upstream_terminal_at == 112.0
->>>>>>> 72630bbfe

@@ -70,13 +70,8 @@ class OpenAIErrorEnvelope(TypedDict):
 class DashboardErrorDetail(TypedDict):
     code: str
     message: str
-<<<<<<< 22625a07e
-    details: NotRequired[dict[str, object]]
-||||||| 84fde5a1e
-=======
     param: NotRequired[str]
     details: NotRequired[dict[str, JsonValue]]
->>>>>>> 72630bbfe
 
 
 class DashboardErrorEnvelope(TypedDict):
@@ -156,7 +151,6 @@ def openai_error(
     return {"error": detail}
 
 
-<<<<<<< 22625a07e
 def error_retry_after_seconds(error: object, fallback: int | None = None) -> int | None:
     if isinstance(error, dict):
         reset_in = error.get("resets_in_seconds")
@@ -173,20 +167,6 @@ def error_retry_after_seconds(error: object, fallback: int | None = None) -> int
     return fallback
 
 
-def dashboard_error(
-    code: str,
-    message: str,
-    *,
-    details: dict[str, object] | None = None,
-) -> DashboardErrorEnvelope:
-    error: DashboardErrorDetail = {"code": code, "message": message}
-    if details is not None:
-        error["details"] = details
-    return {"error": error}
-||||||| 84fde5a1e
-def dashboard_error(code: str, message: str) -> DashboardErrorEnvelope:
-    return {"error": {"code": code, "message": message}}
-=======
 def dashboard_error(
     code: str,
     message: str,
@@ -227,7 +207,6 @@ def scim_error(status_code: int, detail: str, *, scim_type: str | None = None) -
     if scim_type is not None:
         envelope["scimType"] = scim_type
     return envelope
->>>>>>> 72630bbfe
 
 
 def previous_response_stream_incomplete_error() -> OpenAIErrorEnvelope:

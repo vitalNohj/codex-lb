@@ -16,7 +16,7 @@ import {
 
 const BASE_SETTINGS: DashboardSettings = {
   stickyThreadsEnabled: true,
-  upstreamStreamTransport: "default",
+  upstreamStreamTransport: "auto",
   upstreamProxyRoutingEnabled: false,
   upstreamProxyDefaultPoolId: null,
   preferEarlierResetAccounts: true,

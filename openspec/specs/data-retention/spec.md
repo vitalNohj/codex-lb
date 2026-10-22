@@ -6,15 +6,9 @@ Define opt-in retention of request logs and usage history — dashboard-first co
 ## Requirements
 ### Requirement: Request-log pruning never deletes unfolded rows
 
-<<<<<<< 22625a07e
-Request-log pruning MUST gate on every usage-rollup watermark (the lifetime `folded_through`, the time-axis `hourly_folded_through`, and the conversation satellite's `conversation_folded_through`), combined as their minimum. Pruning MUST run only while the combined fold is current (the minimum watermark within two fold lags of now) and MUST delete only rows with `requested_at` older than the retention cutoff AND at least one fold lag below the minimum watermark, so concurrent summary readers holding a slightly older watermark can never lose rows from a just-folded window and no rollup is ever robbed of raw it has not folded. When no rollup watermark exists, or any fold is catching up (initial backfill, stalled scheduler), request-log pruning MUST be skipped.
+Request-log pruning MUST gate on every usage-rollup watermark — the lifetime `folded_through`, the time-axis `hourly_folded_through`, the conversation satellite's `conversation_folded_through`, and the report history's `reports_folded_through` — combined as their minimum. Pruning MUST run only while the combined fold is current (the minimum watermark within two fold lags of now) and MUST delete only rows with `requested_at` older than the retention cutoff AND at least one fold lag below the minimum watermark, so concurrent summary readers holding a slightly older watermark can never lose rows from a just-folded window and no rollup is ever robbed of raw it has not folded. When no rollup watermark exists, or any fold is catching up (initial backfill, stalled scheduler), request-log pruning MUST be skipped.
 
 Request-log pruning MUST also be skipped while a post-upgrade rollup repair is pending, that is while `account_usage_rollup_state.upgrade_repair_from` is set. The repair refolds hourly and demand buckets from raw rows, starting at the first hour the surviving rows fully cover. A row pruned before the repair reaches its hour would leave that bucket holding pre-repair figures for good. Capping the cutoff at the marker is not enough, because deleting the oldest rows moves the repair's start past the marker. Pruning MUST resume on the first pass after the repair clears the marker.
-||||||| 84fde5a1e
-Request-log pruning MUST gate on every usage-rollup watermark — the lifetime `folded_through`, the time-axis `hourly_folded_through`, and the conversation satellite's `conversation_folded_through` — combined as their minimum. Pruning MUST run only while the combined fold is current (the minimum watermark within two fold lags of now) and MUST delete only rows with `requested_at` older than the retention cutoff AND at least one fold lag below the minimum watermark, so concurrent summary readers holding a slightly older watermark can never lose rows from a just-folded window and no rollup is ever robbed of raw it has not folded. When no rollup watermark exists, or any fold is catching up (initial backfill, stalled scheduler), request-log pruning MUST be skipped.
-=======
-Request-log pruning MUST gate on every usage-rollup watermark — the lifetime `folded_through`, the time-axis `hourly_folded_through`, the conversation satellite's `conversation_folded_through`, and the report history's `reports_folded_through` — combined as their minimum. Pruning MUST run only while the combined fold is current (the minimum watermark within two fold lags of now) and MUST delete only rows with `requested_at` older than the retention cutoff AND at least one fold lag below the minimum watermark, so concurrent summary readers holding a slightly older watermark can never lose rows from a just-folded window and no rollup is ever robbed of raw it has not folded. When no rollup watermark exists, or any fold is catching up (initial backfill, stalled scheduler), request-log pruning MUST be skipped.
->>>>>>> 72630bbfe
 
 #### Scenario: Unfolded rows survive pruning
 
@@ -52,22 +46,19 @@ Request-log pruning MUST gate on every usage-rollup watermark — the lifetime `
 - **WHEN** the retention job runs with request-log retention enabled
 - **THEN** no `request_logs` rows are deleted
 
-<<<<<<< 22625a07e
 #### Scenario: A pending rollup repair suspends pruning
 
 - **GIVEN** current fold watermarks, request-log rows older than the retention cutoff, and `upgrade_repair_from` set
 - **WHEN** the retention job runs with request-log retention enabled
 - **THEN** no `request_logs` rows are deleted
 - **AND** once the repair has cleared `upgrade_repair_from`, the next retention pass prunes those rows
-||||||| 84fde5a1e
-=======
+
 #### Scenario: Report backfill gates pruning
 
 - **GIVEN** the other rollup watermarks are current but `reports_folded_through` is still behind
 - **WHEN** retention runs
 - **THEN** it SHALL leave request logs intact until the report watermark becomes current
 - **AND** report totals SHALL survive subsequent pruning of the folded period
->>>>>>> 72630bbfe
 
 ### Requirement: Usage-history pruning preserves each identity's latest row
 

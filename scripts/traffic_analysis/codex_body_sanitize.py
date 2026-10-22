@@ -565,6 +565,21 @@ class _Arr(_Node):
 
 
 @dataclass(frozen=True, slots=True)
+class _EmptyArr(_Node):
+    """An array preserved only while it is empty, and refused otherwise.
+
+    ``output_text.annotations`` is echoed back as ``[]`` by clients replaying
+    store=false history; a non-empty list can cite account-scoped files, which
+    production's replay predicate refuses too.
+    """
+
+    def apply(self, value: Any, path: str, run: _Run) -> Any:
+        if value != []:
+            raise _refuse(path, "expected an empty array")
+        return []
+
+
+@dataclass(frozen=True, slots=True)
 class _Obj(_Node):
     """An object with a closed key namespace.
 
@@ -791,6 +806,7 @@ _INTERNAL_CHAT_METADATA = _Obj(
 )
 
 _TEXT_PART = _Obj({"type": _Enum(CONTENT_PART_TYPES), "text": _Text()})
+_OUTPUT_TEXT_PART = _Obj({"type": _Enum(CONTENT_PART_TYPES), "text": _Text(), "annotations": _EmptyArr()})
 _IMAGE_PART = _Obj(
     {
         "type": _Enum(CONTENT_PART_TYPES),
@@ -812,7 +828,7 @@ _CONTENT_PART = _Switch(
     "type",
     {
         "input_text": _TEXT_PART,
-        "output_text": _TEXT_PART,
+        "output_text": _OUTPUT_TEXT_PART,
         "text": _TEXT_PART,
         "refusal": _Obj({"type": _Enum(CONTENT_PART_TYPES), "refusal": _Text()}),
         "input_image": _IMAGE_PART,

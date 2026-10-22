@@ -61,7 +61,14 @@ max_items = 5
 # operator must be able to roll back without a deploy, so it needs a dashboard
 # home; the environment leg exists only so an operator locked out of the
 # dashboard can still pin the mode at boot, and it is a fallback, never a seed).
-max = 96
+# Fork (vitalNohj/codex-lb): 96 -> 147 adds the fork-only fields on top of
+# upstream's 96 — the sidecar integrations (Claude/CLIProxyAPI, OpenRouter,
+# OrcaRouter, OpenCode Go, OmniRoute, Ollama: 48 *_SIDECAR_* fields, most of
+# which seed the dashboard settings row on first start),
+# cliproxy_xai_native_responses_enabled (rollback switch for CLIProxyAPI's
+# native xAI /v1/responses path), hourly_rollup_retention_days and
+# proxy_continuity_owner_hold_seconds (#130). Lower it when fields are removed.
+max = 147
 
 [root_files]
 # Complete allowlist of tracked repository-root entries (files and

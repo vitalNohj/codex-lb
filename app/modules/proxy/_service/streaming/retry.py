@@ -7,13 +7,7 @@ import logging
 import math
 import sys
 from dataclasses import replace
-<<<<<<< 22625a07e
-from typing import Any, AsyncGenerator, AsyncIterator, Mapping, NoReturn, TypeVar, cast
-||||||| 84fde5a1e
-from typing import Any, AsyncGenerator, AsyncIterator, Mapping, TypeVar, cast
-=======
-from typing import Any, AsyncGenerator, AsyncIterator, Mapping, cast
->>>>>>> 72630bbfe
+from typing import Any, AsyncGenerator, AsyncIterator, Mapping, NoReturn, cast
 
 import aiohttp
 
@@ -32,11 +26,6 @@ from app.core.clients.proxy import (
     is_confirmed_pre_dispatch_transport_error,
     pop_stream_timeout_overrides,
 )
-<<<<<<< 22625a07e
-from app.core.errors import OpenAIErrorEnvelope, openai_error, response_failed_event
-||||||| 84fde5a1e
-from app.core.errors import openai_error, response_failed_event
-=======
 from app.core.clients.thread_cache_identity import (
     ThreadCacheIdentity,
     cache_scope_payload_overhead_bytes,
@@ -48,13 +37,13 @@ from app.core.clock import REAL_CLOCK, REAL_SCHEDULER, Clock, Scheduler, clock_f
 from app.core.config.dashboard_overrides import with_dashboard_overrides
 from app.core.errors import (
     SYNTHETIC_TRANSPORT_FAILURE_CODES,
+    OpenAIErrorEnvelope,
     openai_error,
     synthetic_transport_failure_event,
 )
 from app.core.errors import (
     synthetic_stream_failure_event as response_failed_event,
 )
->>>>>>> 72630bbfe
 from app.core.openai.requests import ResponsesRequest, extract_input_file_ids
 from app.core.resilience.network_recovery import (
     NetworkRecoveryDecision,
@@ -68,15 +57,11 @@ from app.core.utils.shared_future import _await_task_deferring_cancellation
 from app.core.utils.sse import format_sse_event
 from app.db.models import Account
 from app.modules.api_keys.service import ApiKeyData, ApiKeyUsageReservationData
-<<<<<<< 22625a07e
-from app.modules.proxy._service.api_key_usage import stream_abandoned_after_start
-||||||| 84fde5a1e
-=======
 from app.modules.proxy._load_balancer.overload_backoff import (
     UPSTREAM_OVERLOAD_CODES,
     record_upstream_burst_rejection,
 )
->>>>>>> 72630bbfe
+from app.modules.proxy._service.api_key_usage import stream_abandoned_after_start
 from app.modules.proxy._service.observability import (
     _maybe_log_proxy_request_shape,
     _record_continuity_fail_closed,
@@ -238,7 +223,6 @@ def _resolved_configured_stream_transport(dashboard_settings: Any) -> tuple[str,
     return configured, configured in ("http", "websocket")
 
 
-<<<<<<< 22625a07e
 def _raise_capacity_recovery_fail_fast(
     *,
     exc: BaseException | None = None,
@@ -290,8 +274,8 @@ def _raise_capacity_recovery_fail_fast(
             error_type=error_type or "server_error",
         )
     raise ProxyResponseError(status_code, error_payload, retry_after_seconds=retry_after_seconds) from exc
-||||||| 84fde5a1e
-=======
+
+
 def _http_bridge_allowed_by_transport_policy(
     payload: ResponsesRequest,
     headers: Mapping[str, str],
@@ -314,7 +298,6 @@ def _http_bridge_allowed_by_transport_policy(
         reason = f"smart_{signal or 'single_turn'}" if policy == "smart" else policy
     record_http_bridge_routing(stage="admission", reason=reason)
     return allowed
->>>>>>> 72630bbfe
 
 
 async def _iter_account_capacity_recovery_wait(
@@ -327,13 +310,9 @@ async def _iter_account_capacity_recovery_wait(
     remaining_budget_seconds: float,
     emit_keepalives: bool,
     stage: str,
-<<<<<<< 22625a07e
     silent_capacity_hold: _SilentCapacityHold | None = None,
-||||||| 84fde5a1e
-=======
     scheduler: Scheduler = REAL_SCHEDULER,
     clock: Clock = REAL_CLOCK,
->>>>>>> 72630bbfe
 ) -> AsyncIterator[str]:
     # ``remaining_budget_seconds`` is sampled by the caller through the owner's
     # budget seam (``proxy._remaining_budget_seconds``), so this owner-less
@@ -1281,24 +1260,12 @@ class _StreamingRetryMixin:
                         account_id=account.id,
                         error_message=error.message if error else None,
                         recovery_sleep_seconds=recovery_sleep_seconds,
-<<<<<<< 22625a07e
-                        deadline=deadline,
-                        emit_keepalives=emit_keepalives,
-||||||| 84fde5a1e
-                        deadline=deadline,
-                        emit_keepalives=not propagate_http_errors or not enforce_openai_sdk_contract,
-=======
                         remaining_budget_seconds=proxy._remaining_budget_seconds(deadline),
-                        emit_keepalives=not propagate_http_errors or not enforce_openai_sdk_contract,
->>>>>>> 72630bbfe
+                        emit_keepalives=emit_keepalives,
                         stage="post_refresh_response_create",
-<<<<<<< 22625a07e
                         silent_capacity_hold=silent_capacity_hold,
-||||||| 84fde5a1e
-=======
                         scheduler=scheduler,
                         clock=clock,
->>>>>>> 72630bbfe
                     ):
                         yield wait_event
                     if proxy._remaining_budget_seconds(deadline) <= 0:
@@ -1661,24 +1628,12 @@ class _StreamingRetryMixin:
                                 account_id=capacity_account_id,
                                 error_message=deferred_error.message if deferred_error else None,
                                 recovery_sleep_seconds=recovery_sleep_seconds,
-<<<<<<< 22625a07e
-                                deadline=deadline,
-                                emit_keepalives=emit_keepalives,
-||||||| 84fde5a1e
-                                deadline=deadline,
-                                emit_keepalives=not propagate_http_errors or not enforce_openai_sdk_contract,
-=======
                                 remaining_budget_seconds=proxy._remaining_budget_seconds(deadline),
-                                emit_keepalives=not propagate_http_errors or not enforce_openai_sdk_contract,
->>>>>>> 72630bbfe
+                                emit_keepalives=emit_keepalives,
                                 stage="response_create_no_alternate",
-<<<<<<< 22625a07e
                                 silent_capacity_hold=silent_capacity_hold,
-||||||| 84fde5a1e
-=======
                                 scheduler=scheduler,
                                 clock=clock,
->>>>>>> 72630bbfe
                             ):
                                 yield wait_event
                             if proxy._remaining_budget_seconds(deadline) <= 0:
@@ -1762,24 +1717,12 @@ class _StreamingRetryMixin:
                                 account_id=None,
                                 error_message=selection.error_message,
                                 recovery_sleep_seconds=recovery_sleep_seconds,
-<<<<<<< 22625a07e
-                                deadline=deadline,
-                                emit_keepalives=emit_keepalives,
-||||||| 84fde5a1e
-                                deadline=deadline,
-                                emit_keepalives=not propagate_http_errors or not enforce_openai_sdk_contract,
-=======
                                 remaining_budget_seconds=remaining_budget_seconds,
-                                emit_keepalives=not propagate_http_errors or not enforce_openai_sdk_contract,
->>>>>>> 72630bbfe
+                                emit_keepalives=emit_keepalives,
                                 stage="selection",
-<<<<<<< 22625a07e
                                 silent_capacity_hold=silent_capacity_hold,
-||||||| 84fde5a1e
-=======
                                 scheduler=scheduler,
                                 clock=clock,
->>>>>>> 72630bbfe
                             ):
                                 yield wait_event
                             if proxy._remaining_budget_seconds(deadline) <= 0:
@@ -1930,12 +1873,8 @@ class _StreamingRetryMixin:
                         )
                         return
                     if require_preferred_account and preferred_account_id is not None:
-<<<<<<< 22625a07e
-                        hold_expired = bool(selection.owner_hold_expired)
-||||||| 84fde5a1e
-=======
                         error_code = "previous_response_owner_unavailable"
->>>>>>> 72630bbfe
+                        hold_expired = bool(selection.owner_hold_expired)
                         message = "Previous response owner account is unavailable; retry later."
                         reason = "owner_account_unavailable"
                         upstream_error_code = "no_accounts"
@@ -1954,26 +1893,23 @@ class _StreamingRetryMixin:
                             session_id=headers.get("x-codex-turn-state") or headers.get("session_id"),
                             upstream_error_code=upstream_error_code,
                         )
-<<<<<<< 22625a07e
-                        if hold_expired and propagate_http_errors:
-                            # The bounded transient-drain hold ran to expiry:
-                            # answer 503 + Retry-After with the stable error
-                            # body instead of the instant 502.
-                            raise previous_response_owner_unavailable_error(hold_expired=True)
-                        event = previous_response_owner_unavailable_failed_event(
-||||||| 84fde5a1e
-                        event = response_failed_event(
-                            "previous_response_owner_unavailable",
-                            message,
-=======
-                        event = response_failed_event(
-                            error_code,
-                            message,
->>>>>>> 72630bbfe
-                            response_id=request_id,
-                            hold_expired=hold_expired,
-                            message=None if hold_expired else message,
-                        )
+                        if error_code == "continuity_owner_conflict":
+                            event = response_failed_event(
+                                error_code,
+                                message,
+                                response_id=request_id,
+                            )
+                        else:
+                            if hold_expired and propagate_http_errors:
+                                # The bounded transient-drain hold ran to expiry:
+                                # answer 503 + Retry-After with the stable error
+                                # body instead of the instant 502.
+                                raise previous_response_owner_unavailable_error(hold_expired=True)
+                            event = previous_response_owner_unavailable_failed_event(
+                                response_id=request_id,
+                                hold_expired=hold_expired,
+                                message=None if hold_expired else message,
+                            )
                         yield format_sse_event(event)
                         await proxy._write_request_log(
                             affinity_observation=affinity_observation,
@@ -2731,26 +2667,12 @@ class _StreamingRetryMixin:
                                             account_id=account.id,
                                             error_message=error_message,
                                             recovery_sleep_seconds=recovery_sleep_seconds,
-<<<<<<< 22625a07e
-                                            deadline=deadline,
-                                            emit_keepalives=emit_keepalives,
-||||||| 84fde5a1e
-                                            deadline=deadline,
-                                            emit_keepalives=not propagate_http_errors
-                                            or not enforce_openai_sdk_contract,
-=======
                                             remaining_budget_seconds=remaining_budget_seconds,
-                                            emit_keepalives=not propagate_http_errors
-                                            or not enforce_openai_sdk_contract,
->>>>>>> 72630bbfe
+                                            emit_keepalives=emit_keepalives,
                                             stage="response_create",
-<<<<<<< 22625a07e
                                             silent_capacity_hold=silent_capacity_hold,
-||||||| 84fde5a1e
-=======
                                             scheduler=scheduler,
                                             clock=clock,
->>>>>>> 72630bbfe
                                         ):
                                             yield wait_event
                                         if proxy._remaining_budget_seconds(deadline) <= 0:
@@ -3929,7 +3851,14 @@ class _StreamingRetryMixin:
             ):
 
                 async def _release_reservation_then_drain_backoffs() -> None:
-<<<<<<< 22625a07e
+                    nonlocal settled
+                    if pending_post_refresh_transient_penalties:
+                        # Mid-loop keyed health may already be queued. Prefer
+                        # settle-then-flush so cancel cleanup still applies the
+                        # deferred account penalty after the reservation closes.
+                        settled = await _drain_pending_post_refresh_penalty_on_terminal(settlement)
+                        if settled:
+                            return
                     # A stream the client abandoned after the upstream started
                     # is charged its reservation; anything else never reached
                     # the upstream's billing and is released.
@@ -3939,19 +3868,6 @@ class _StreamingRetryMixin:
                         else proxy._release_unsettled_stream_api_key_usage
                     )
                     released = await settle_unsettled(
-||||||| 84fde5a1e
-                    released = await proxy._release_unsettled_stream_api_key_usage(
-=======
-                    nonlocal settled
-                    if pending_post_refresh_transient_penalties:
-                        # Mid-loop keyed health may already be queued. Prefer
-                        # settle-then-flush so cancel cleanup still applies the
-                        # deferred account penalty after the reservation closes.
-                        settled = await _drain_pending_post_refresh_penalty_on_terminal(settlement)
-                        if settled:
-                            return
-                    released = await proxy._release_unsettled_stream_api_key_usage(
->>>>>>> 72630bbfe
                         api_key=api_key,
                         api_key_reservation=api_key_reservation,
                         request_id=request_id,

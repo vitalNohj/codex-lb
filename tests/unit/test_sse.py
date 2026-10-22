@@ -19,14 +19,10 @@ from app.core.utils.sse import (
     SHUTDOWN_SERVICE_UNAVAILABLE_FRAME,
     SSE_DONE,
     SSE_KEEPALIVE_FRAME,
-<<<<<<< 22625a07e
+    ParsedSseBlock,
     SseDataDecoder,
     SseEventDecoder,
     SseJsonDataDecoder,
-||||||| 84fde5a1e
-=======
-    ParsedSseBlock,
->>>>>>> 72630bbfe
     extract_sse_data,
     format_local_sse_event,
     format_sse_data,
@@ -376,7 +372,6 @@ def test_sse_event_type_from_block_rejects_non_object_data_payloads():
     assert sse_event_type_from_block("event: ping\ndata: \n\n") is None
 
 
-<<<<<<< 22625a07e
 def _decode_in_chunks(stream: bytes, cuts: list[int]) -> list[str]:
     decoder = SseDataDecoder()
     payloads: list[str] = []
@@ -533,8 +528,8 @@ def test_sse_json_data_decoder_yields_objects_and_done_and_skips_the_rest():
 
     assert decoder.feed(stream) == [{"usage": {"prompt_tokens": 1}}, SSE_DONE]
     assert decoder.flush() == []
-||||||| 84fde5a1e
-=======
+
+
 _UNUSUAL_DATA_TEXTS = [
     "",
     "   ",
@@ -675,4 +670,3 @@ def test_sse_block_with_payload_agrees_with_full_parse(payload) -> None:
     block = sse_block_with_payload(plain, parse_sse_data_json(plain))
     assert parse_sse_data_json(block) == parse_sse_data_json(plain)
     assert extract_sse_data(block) == extract_sse_data(plain)
->>>>>>> 72630bbfe

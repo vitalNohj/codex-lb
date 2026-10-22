@@ -1,12 +1,8 @@
 import { z } from "zod";
 
-<<<<<<< 22625a07e
+import { LocalLoginPolicySchema, StrictLocalLoginPolicySchema } from "@/features/auth/schemas";
 import { DEFAULT_DASHBOARD_LAYOUT } from "@/features/dashboard/layout";
 import { ExcludedModelsStateSchema } from "@/features/settings/lib/excluded-models-state";
-||||||| 84fde5a1e
-=======
-import { LocalLoginPolicySchema, StrictLocalLoginPolicySchema } from "@/features/auth/schemas";
->>>>>>> 72630bbfe
 
 const RoutingStrategySchema = z.enum([
   "usage_weighted",
@@ -651,12 +647,9 @@ export const SettingsUpdateRequestSchema = z
     // alias), value = store the override.
     requestLogRetentionOverrideDays: z.number().int().min(0).max(3650).nullable().optional(),
     usageHistoryRetentionOverrideDays: z.number().int().min(0).max(3650).nullable().optional(),
-<<<<<<< 22625a07e
     // Tri-state star map: absent = keep the stored stars, present = replace.
     // The 256-entry cap is the server's; zod records have no size check.
     sidecarFullModelStars: z.record(z.string(), z.string()).optional(),
-||||||| 84fde5a1e
-=======
     // C2-3 resilience toggles: tri-state (omitted = unchanged, null = reset to
     // inherited, boolean = dashboard value).
     softDrainEnabled: z.boolean().nullable().optional(),
@@ -697,7 +690,6 @@ export const SettingsUpdateRequestSchema = z
     // M1 stream/bridge budgets: tri-state like the C2-1 timeouts.
     httpResponsesStreamRequestBudgetSeconds: z.number().positive().max(86400).nullable().optional(),
     httpResponsesSessionBridgeRequestBudgetSeconds: z.number().positive().max(86400).nullable().optional(),
->>>>>>> 72630bbfe
   })
   .superRefine((settings, ctx) => {
     if (
@@ -1359,7 +1351,6 @@ export type DashboardSettings = Omit<
   Partial<OllamaSidecarSettingsFields> &
   Partial<OpenCodeGoSidecarSettingsFields>;
 export type SettingsUpdateRequest = z.infer<typeof SettingsUpdateRequestSchema>;
-<<<<<<< 22625a07e
 export type SidecarModelPrefix = z.infer<typeof SidecarModelPrefixSchema>;
 export type SidecarReasoningEffort = z.infer<typeof SidecarReasoningEffortSchema>;
 export type ClaudeSidecarModelSummary = z.infer<typeof ClaudeSidecarModelSummarySchema>;
@@ -1400,10 +1391,7 @@ export type OpenCodeGoSidecarModelSummary = z.infer<typeof OpenCodeGoSidecarMode
 export type OpenCodeGoSidecarStatusResponse = z.infer<typeof OpenCodeGoSidecarStatusResponseSchema>;
 export type OpenCodeGoSidecarTestResponse = z.infer<typeof OpenCodeGoSidecarTestResponseSchema>;
 export type OpenCodeGoSidecarModelsResponse = z.infer<typeof OpenCodeGoSidecarModelsResponseSchema>;
-||||||| 84fde5a1e
-=======
 export type SettingProvenance = z.infer<typeof SettingProvenanceSchema>;
->>>>>>> 72630bbfe
 export type AdditionalQuotaRoutingPolicy = z.infer<typeof AdditionalQuotaRoutingPolicySchema>;
 export type CustomAliasCatalogEntry = z.infer<typeof CustomAliasCatalogEntrySchema>;
 

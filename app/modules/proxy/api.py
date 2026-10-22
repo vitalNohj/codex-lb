@@ -1,20 +1,11 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import math
 import time
-<<<<<<< 22625a07e
-from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Iterable, Mapping
-from contextlib import AsyncExitStack, asynccontextmanager
-||||||| 84fde5a1e
-from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Iterable, Mapping
-from contextlib import asynccontextmanager
-=======
 from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Callable, Coroutine, Iterable, Iterator, Mapping
 from contextlib import asynccontextmanager, contextmanager
->>>>>>> 72630bbfe
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from functools import partial
@@ -91,35 +82,24 @@ from app.core.clients.usage import (
     ConsumeRateLimitResetCreditResponse as UpstreamConsumeRateLimitResetCreditResponse,
 )
 from app.core.clients.usage import UsageFetchError, consume_rate_limit_reset_credit
-<<<<<<< 22625a07e
-from app.core.config.product_capabilities import omniroute_enabled
-||||||| 84fde5a1e
-=======
 from app.core.clock import REAL_CLOCK, REAL_SCHEDULER, Clock, Scheduler, clock_for, scheduler_for
 from app.core.config.context_window_overrides import (
     effective_context_window_overrides,
     get_model_context_window_overrides_cache,
 )
 from app.core.config.dashboard_overrides import with_dashboard_overrides
->>>>>>> 72630bbfe
+from app.core.config.product_capabilities import omniroute_enabled
 from app.core.config.settings import get_settings
 from app.core.config.settings_cache import get_settings_cache
 from app.core.crypto import TokenEncryptor
 from app.core.errors import (
-    HTTP_BRIDGE_EVENTLESS_TIMEOUT_CODE,
     PREVIOUS_RESPONSE_STREAM_INCOMPLETE_MESSAGE,
     SYNTHETIC_TRANSPORT_FAILURE_MARKER,
     OpenAIErrorEnvelope,
-<<<<<<< 22625a07e
-    error_retry_after_seconds,
-    is_previous_response_not_found_error,
-||||||| 84fde5a1e
-    is_previous_response_not_found_error,
-=======
     OpenAIErrorParam,
+    error_retry_after_seconds,
     is_previous_response_not_found_public_shape,
     normalize_public_error_param,
->>>>>>> 72630bbfe
     openai_error,
     response_failed_event,
     sanitize_public_error_detail,
@@ -221,7 +201,7 @@ from app.core.utils.sse import (
     inject_sse_keepalives,
     parse_sse_data_json,
 )
-from app.core.utils.stream_close import ClosingStreamingResponse, SettlingStream, aclose_stream
+from app.core.utils.stream_close import ClosingStreamingResponse, aclose_stream
 from app.db.models import Account, AccountStatus, ModelSource
 from app.db.session import detach_session_objects, get_background_session
 from app.dependencies import ProxyContext, get_proxy_context, get_proxy_websocket_context
@@ -261,13 +241,9 @@ from app.modules.model_sources.catalog import (
 )
 from app.modules.model_sources.forwarding import (
     ModelSourceForwardingError,
-<<<<<<< 22625a07e
     SourceChatStream,
-    SourceResponsesStream,
-||||||| 84fde5a1e
-=======
     SourceResponsesCompletion,
->>>>>>> 72630bbfe
+    SourceResponsesStream,
     SourceTimings,
     SourceUsage,
     SourceUsageHolder,
@@ -302,12 +278,8 @@ from app.modules.openai_compat.endpoints import is_openai_compat_provider
 from app.modules.proxy import affinity as proxy_affinity_module
 from app.modules.proxy import images_service as images_service_module
 from app.modules.proxy import service as proxy_service_module
-<<<<<<< 22625a07e
 from app.modules.proxy._service.api_key_usage import proxy_error_for_exceeded_limit, proxy_error_for_unpriced_model
-||||||| 84fde5a1e
-=======
 from app.modules.proxy._service.observability import record_http_bridge_routing
->>>>>>> 72630bbfe
 from app.modules.proxy._service.support import (
     _bind_propagated_capacity_startup_ready,
     _bind_propagated_capacity_startup_wait,
@@ -339,7 +311,7 @@ from app.modules.proxy.api_key_pricing import (
     source_price_check,
 )
 from app.modules.proxy.api_key_usage import estimate_api_key_request_usage
-<<<<<<< 22625a07e
+from app.modules.proxy.capability_routing import required_capability_metadata_values
 from app.modules.proxy.claude_sidecar_dispatch import (
     claude_routing_entry,
     claude_sidecar_context_window,
@@ -371,24 +343,16 @@ from app.modules.proxy.custom_alias_catalog import (
     apply_custom_alias_catalog_overrides,
     load_custom_alias_catalog,
 )
+from app.modules.proxy.downstream_delivery import DeliveryTracedStreamingResponse
 from app.modules.proxy.error_status import (
     UNAVAILABLE_SELECTION_ERROR_CODES,
     status_for_error_fields,
 )
-from app.modules.proxy.helpers import _rate_limit_details
-from app.modules.proxy.http_bridge_forwarding import parse_forwarded_request
-||||||| 84fde5a1e
-from app.modules.proxy.helpers import _rate_limit_details
-from app.modules.proxy.http_bridge_forwarding import parse_forwarded_request
-=======
-from app.modules.proxy.capability_routing import required_capability_metadata_values
-from app.modules.proxy.downstream_delivery import DeliveryTracedStreamingResponse
 from app.modules.proxy.helpers import _openai_error_param, _parse_openai_error, _rate_limit_details
 from app.modules.proxy.http_bridge_forwarding import (
     HTTP_BRIDGE_LOCAL_PRE_DISPATCH_REFUSAL_HEADER,
     parse_forwarded_request,
 )
->>>>>>> 72630bbfe
 from app.modules.proxy.images_observability import (
     IMAGE_ROUTE_MODEL_STATE,
     IMAGE_ROUTE_STARTED_AT_STATE,
@@ -495,7 +459,6 @@ from app.modules.proxy.schemas import (
     WarmupSubmittedAccount,
 )
 from app.modules.proxy.selection_errors import USAGE_LIMIT_REACHED
-<<<<<<< 22625a07e
 from app.modules.proxy.sidecar_model_capabilities import sidecar_supports_vision
 from app.modules.proxy.sidecar_model_profiles import apply_sidecar_model_profile_with_suffix_effort
 from app.modules.proxy.sidecar_routing import (
@@ -507,8 +470,6 @@ from app.modules.proxy.sidecar_routing import (
     resolve_sidecar_route,
 )
 from app.modules.proxy.sidecar_upstream_errors import client_disconnected_response, has_usable_sidecar_api_key
-||||||| 84fde5a1e
-=======
 from app.modules.proxy.source_admission import try_claim as try_claim_source_admission
 from app.modules.proxy.source_dispatch import (
     ABANDON_CLIENT_DISCONNECTED_BEFORE_BODY,
@@ -523,7 +484,6 @@ from app.modules.proxy.source_dispatch import (
     open_with_disconnect_watch,
     settlement_stream,
 )
->>>>>>> 72630bbfe
 from app.modules.proxy.types import (
     AdditionalRateLimitData,
     CreditStatusDetailsData,
@@ -543,12 +503,8 @@ from app.modules.usage.updater import UsageUpdater
 
 logger = logging.getLogger(__name__)
 _T = TypeVar("_T")
-<<<<<<< 22625a07e
 _SourceStreamT = TypeVar("_SourceStreamT", SourceChatStream, SourceResponsesStream)
-||||||| 84fde5a1e
-=======
 _SourceStreamChunkT = TypeVar("_SourceStreamChunkT", bytes, str)
->>>>>>> 72630bbfe
 
 _REASONING_SUMMARY_DELTA_TYPES = frozenset({"response.reasoning_summary_text.delta"})
 _REASONING_SUMMARY_DONE_TYPES = frozenset(
@@ -1638,9 +1594,9 @@ def _responses_chat_translation_or_error(
 
 
 def _derive_chat_provider_prompt_cache_key(payload: ResponsesRequest, api_key: ApiKeyData | None) -> bool:
-    """Give a keyless Responses request the Codex path's derived prompt cache key.
+    """Give a keyless Responses request a content-derived prompt cache key.
 
-    The key comes from ``_derive_prompt_cache_key``'s recipe (API key, model
+    The key comes from ``derive_content_prompt_cache_key`` (API key, model
     class, instructions, first user input), so every turn of one
     conversation carries the same key into the chat translation. A request
     with nothing stable to hash keeps no key rather than a random one.
@@ -1649,8 +1605,6 @@ def _derive_chat_provider_prompt_cache_key(payload: ResponsesRequest, api_key: A
 
     if isinstance(payload.prompt_cache_key, str) and payload.prompt_cache_key.strip():
         payload.prompt_cache_key = payload.prompt_cache_key.strip()
-        return False
-    if not get_settings().openai_prompt_cache_key_derivation_enabled:
         return False
     derived = proxy_affinity_module.derive_content_prompt_cache_key(
         model=payload.model,
@@ -1746,7 +1700,6 @@ async def responses(
         error = openai_validation_error(exc)
         return _logged_error_json_response(request, 400, error)
 
-<<<<<<< 22625a07e
     aliased_model = await resolve_request_model_alias(responses_payload.model)
     if aliased_model is not None and aliased_model != responses_payload.model:
         responses_payload.model = aliased_model
@@ -1769,10 +1722,7 @@ async def responses(
     if chat_provider_response is not None:
         return chat_provider_response
 
-||||||| 84fde5a1e
-=======
     backend_non_streaming_requested = responses_payload.stream is False
->>>>>>> 72630bbfe
     raw_source_model = _effective_optional_model_for_api_key(api_key, responses_payload.model)
     (
         prohibit_fast_mode,
@@ -1850,7 +1800,6 @@ async def responses(
             context=context,
         )
 
-<<<<<<< 22625a07e
     apply_enforced_service_tier_model_fallback(
         responses_payload,
         service_tier_was_enforced=service_tier_was_enforced,
@@ -1859,45 +1808,6 @@ async def responses(
     if unknown_model is not None:
         return unknown_model
 
-    response = await _stream_responses(
-        request,
-        responses_payload,
-        context,
-        api_key,
-        codex_session_affinity=True,
-        openai_cache_affinity=True,
-        prefer_http_bridge=True,
-        api_key_policy_already_applied=True,
-        prohibit_fast_mode=prohibit_fast_mode,
-        # The Codex CLI consumes codex.* vendor events and the upstream's
-        # native event ordering, while OpenAI SDK clients pointed at this
-        # compatibility route need the same SSE contract enforcement as /v1.
-        enforce_openai_sdk_contract=openai_sdk_request,
-        native_codex_heartbeat=native_codex_heartbeat,
-    )
-||||||| 84fde5a1e
-    apply_enforced_service_tier_model_fallback(
-        responses_payload,
-        service_tier_was_enforced=service_tier_was_enforced,
-    )
-
-    response = await _stream_responses(
-        request,
-        responses_payload,
-        context,
-        api_key,
-        codex_session_affinity=True,
-        openai_cache_affinity=True,
-        prefer_http_bridge=True,
-        api_key_policy_already_applied=True,
-        prohibit_fast_mode=prohibit_fast_mode,
-        # The Codex CLI consumes codex.* vendor events and the upstream's
-        # native event ordering, while OpenAI SDK clients pointed at this
-        # compatibility route need the same SSE contract enforcement as /v1.
-        enforce_openai_sdk_contract=openai_sdk_request,
-        native_codex_heartbeat=native_codex_heartbeat,
-    )
-=======
     if not backend_non_streaming_requested:
         response = await _stream_responses(
             request,
@@ -1928,7 +1838,6 @@ async def responses(
             preserve_upstream_stream_mode=True,
             prohibit_fast_mode=prohibit_fast_mode,
         )
->>>>>>> 72630bbfe
     return _mark_subscription_prompt_cache_fallback(response, responses_payload)
 
 
@@ -2062,38 +1971,11 @@ async def v1_responses(
     ) = await _apply_api_key_enforcement_with_fast_mode_policy(responses_payload, api_key)
     if prohibit_fast_mode and _is_fast_mode_model_alias(raw_source_model):
         raw_source_model = responses_payload.model
-<<<<<<< 22625a07e
     validate_model_access(
         api_key,
         responses_payload.model,
         routing_entries=await _enabled_sidecar_routing_entries(),
     )
-    # File-referencing Responses requests pin to the subscription account that
-    # registered the upload; that account-scoped invariant applies to /v1
-    # streams too, so such requests must not be source-routed.
-    source_selection = (
-        None
-        if extract_input_file_ids(responses_payload.input)
-        else await _select_responses_model_source(
-            responses_payload.model,
-            api_key,
-            raw_model=raw_source_model,
-            require_streaming=responses_payload.stream is True,
-||||||| 84fde5a1e
-    validate_model_access(api_key, responses_payload.model)
-    # File-referencing Responses requests pin to the subscription account that
-    # registered the upload; that account-scoped invariant applies to /v1
-    # streams too, so such requests must not be source-routed.
-    source_selection = (
-        None
-        if extract_input_file_ids(responses_payload.input)
-        else await _select_responses_model_source(
-            responses_payload.model,
-            api_key,
-            raw_model=raw_source_model,
-            require_streaming=responses_payload.stream is True,
-=======
-    validate_model_access(api_key, responses_payload.model)
     try:
         # Share file-pin exclusions with Codex/WebSocket, but do not treat a
         # terminal compaction_trigger as a source-route exclusion: /v1 has no
@@ -2102,7 +1984,6 @@ async def v1_responses(
         source_route_excluded = responses_source_route_excluded(
             responses_payload,
             exclude_compaction=False,
->>>>>>> 72630bbfe
         )
     except ClientPayloadError as exc:
         error = openai_client_payload_error(exc)
@@ -2158,21 +2039,9 @@ async def v1_responses(
             pre_normalization_effort=pre_normalization_effort,
             context=context,
         )
-<<<<<<< 22625a07e
-    apply_enforced_service_tier_model_fallback(
-        responses_payload,
-        service_tier_was_enforced=service_tier_was_enforced,
-    )
     unknown_model = _unknown_responses_model_response(request, responses_payload.model)
     if unknown_model is not None:
         return unknown_model
-||||||| 84fde5a1e
-    apply_enforced_service_tier_model_fallback(
-        responses_payload,
-        service_tier_was_enforced=service_tier_was_enforced,
-    )
-=======
->>>>>>> 72630bbfe
     if responses_payload.stream:
         response = await _stream_responses(
             request,
@@ -4904,19 +4773,11 @@ async def _build_models_response_body(
     for slug, model in models.items():
         if not is_public_model(model, allowed_models):
             continue
-<<<<<<< 22625a07e
         seen_model_ids.add(slug)
-        items.append(_to_model_list_item(slug, model, created=created))
-
-||||||| 84fde5a1e
-        items.append(_to_model_list_item(slug, model, created=created))
-        seen_slugs.add(slug)
-=======
         items.append(
             _to_model_list_item(slug, model, created=created, context_window_overrides=context_window_overrides)
         )
-        seen_slugs.add(slug)
->>>>>>> 72630bbfe
+
     for model in source_models:
         if model.slug in seen_model_ids:
             continue
@@ -4925,8 +4786,9 @@ async def _build_models_response_body(
                 continue
         elif not is_public_model(model, allowed_models):
             continue
-<<<<<<< 22625a07e
-        items.append(_to_model_list_item(model.slug, model, created=created))
+        items.append(
+            _to_model_list_item(model.slug, model, created=created, context_window_overrides=context_window_overrides)
+        )
         seen_model_ids.add(model.slug)
 
     sidecar_config = await load_sidecar_config()
@@ -5001,7 +4863,9 @@ async def _build_models_response_body(
                         "owned_by": owner_by_model.get(slug) or "anthropic",
                         "api_types": ["chat_completions"],
                         **_advertised_sidecar_fields(
-                            _sidecar_context_window(slug, raw=raw_by_model.get(slug), claude_model=slug),
+                            _sidecar_context_window(
+                                slug, overrides=context_window_overrides, raw=raw_by_model.get(slug), claude_model=slug
+                            ),
                             raw=raw_by_model.get(slug),
                             claude_model=slug,
                         ),
@@ -5036,7 +4900,9 @@ async def _build_models_response_body(
                         "owned_by": owner_by_model.get(base) or "anthropic",
                         "api_types": ["chat_completions"],
                         **_advertised_sidecar_fields(
-                            _sidecar_context_window(alias, raw=raw_by_model.get(base), claude_model=base),
+                            _sidecar_context_window(
+                                alias, overrides=context_window_overrides, raw=raw_by_model.get(base), claude_model=base
+                            ),
                             raw=raw_by_model.get(base),
                             claude_model=base,
                         ),
@@ -5070,7 +4936,9 @@ async def _build_models_response_body(
                         "owned_by": owner_by_model.get(slug) or "openrouter",
                         "api_types": ["chat_completions"],
                         **_advertised_sidecar_fields(
-                            _sidecar_context_window(slug, raw=raw_by_model.get(slug)),
+                            _sidecar_context_window(
+                                slug, overrides=context_window_overrides, raw=raw_by_model.get(slug)
+                            ),
                             raw=raw_by_model.get(slug),
                         ),
                     }
@@ -5142,7 +5010,9 @@ async def _build_models_response_body(
                         "owned_by": owner_by_model.get(slug) or "openai_compat",
                         "api_types": ["chat_completions"],
                         **_advertised_sidecar_fields(
-                            _sidecar_context_window(slug, raw=raw_by_model.get(slug)),
+                            _sidecar_context_window(
+                                slug, overrides=context_window_overrides, raw=raw_by_model.get(slug)
+                            ),
                             raw=raw_by_model.get(slug),
                         ),
                     }
@@ -5173,7 +5043,9 @@ async def _build_models_response_body(
                         "owned_by": owner_by_model.get(slug) or "orcarouter",
                         "api_types": ["chat_completions"],
                         **_advertised_sidecar_fields(
-                            _sidecar_context_window(slug, raw=raw_by_model.get(slug)),
+                            _sidecar_context_window(
+                                slug, overrides=context_window_overrides, raw=raw_by_model.get(slug)
+                            ),
                             raw=raw_by_model.get(slug),
                         ),
                     }
@@ -5215,7 +5087,9 @@ async def _build_models_response_body(
                         "owned_by": owner_by_model.get(slug) or "opencode",
                         "api_types": ["chat_completions"],
                         **_advertised_sidecar_fields(
-                            _sidecar_context_window(slug, raw=raw_by_model.get(slug)),
+                            _sidecar_context_window(
+                                slug, overrides=context_window_overrides, raw=raw_by_model.get(slug)
+                            ),
                             raw=raw_by_model.get(slug),
                         ),
                     }
@@ -5242,7 +5116,9 @@ async def _build_models_response_body(
                         "owned_by": "omniroute",
                         "api_types": ["chat_completions"],
                         **_advertised_sidecar_fields(
-                            _sidecar_context_window(slug, raw=raw_by_model.get(slug)),
+                            _sidecar_context_window(
+                                slug, overrides=context_window_overrides, raw=raw_by_model.get(slug)
+                            ),
                             raw=raw_by_model.get(slug),
                         ),
                     }
@@ -5270,7 +5146,9 @@ async def _build_models_response_body(
                         "owned_by": owner_by_model.get(slug) or "ollama",
                         "api_types": ["chat_completions"],
                         **_advertised_sidecar_fields(
-                            _sidecar_context_window(slug, raw=raw_by_model.get(slug)),
+                            _sidecar_context_window(
+                                slug, overrides=context_window_overrides, raw=raw_by_model.get(slug)
+                            ),
                             raw=raw_by_model.get(slug),
                         ),
                     }
@@ -5308,19 +5186,12 @@ async def _build_models_response_body(
                 ),
                 default_entry_fields=_sidecar_model_list_fields,
             )
-            serialized_items[listed:] = _with_alias_context_window_overrides(serialized_items[listed:])
+            serialized_items[listed:] = _with_alias_context_window_overrides(
+                serialized_items[listed:], context_window_overrides
+            )
         if catalog:
             serialized_items = apply_custom_alias_catalog_overrides(serialized_items, catalog)
         items = [ModelListItem.model_validate(entry) for entry in serialized_items]
-||||||| 84fde5a1e
-        items.append(_to_model_list_item(model.slug, model, created=created))
-        seen_slugs.add(model.slug)
-=======
-        items.append(
-            _to_model_list_item(model.slug, model, created=created, context_window_overrides=context_window_overrides)
-        )
-        seen_slugs.add(model.slug)
->>>>>>> 72630bbfe
     return JSONResponse(content=_dump_v1_models_response(ModelListResponse(data=items)))
 
 
@@ -5398,7 +5269,6 @@ def _canonical_model_slug(model: str) -> str:
     return resolve_model_alias(model) or model
 
 
-<<<<<<< 22625a07e
 def _model_visible_for_api_key(model: str, allowed_models: set[str] | None) -> bool:
     if allowed_models is None:
         return True
@@ -5408,17 +5278,10 @@ def _model_visible_for_api_key(model: str, allowed_models: set[str] | None) -> b
     return canonical in allowed_models if canonical is not None else False
 
 
-def _to_model_list_item(slug: str, model: UpstreamModel, *, created: int) -> ModelListItem:
-    context_window = _resolved_context_window(model)
-||||||| 84fde5a1e
-def _to_model_list_item(slug: str, model: UpstreamModel, *, created: int) -> ModelListItem:
-    context_window = _resolved_context_window(model)
-=======
 def _to_model_list_item(
     slug: str, model: UpstreamModel, *, created: int, context_window_overrides: Mapping[str, int]
 ) -> ModelListItem:
     context_window = _resolved_context_window(model, context_window_overrides)
->>>>>>> 72630bbfe
     return ModelListItem.model_validate(
         {
             "id": slug,
@@ -5659,17 +5522,20 @@ def _catalog_context_window(raw: Mapping[str, JsonValue] | None) -> int | None:
 def _sidecar_context_window(
     slug: str,
     *,
+    overrides: Mapping[str, int],
     raw: Mapping[str, JsonValue] | None = None,
     claude_model: str | None = None,
 ) -> int:
     """The single context window ``/v1/models`` advertises for a sidecar model.
 
-    In order: the operator's ``model_context_window_overrides`` entry for the
-    advertised id; for a Claude sidecar model, the published window dispatch
-    already enforces (``claude_model`` is the upstream id a strip-prefix alias
-    names); the provider catalog's own entry; the 200k default.
+    In order: the operator's context window override for the advertised id
+    (``overrides`` is ``_effective_context_window_overrides()``: the dashboard
+    row, else the ``CODEX_LB_MODEL_CONTEXT_WINDOW_OVERRIDES`` entry); for a
+    Claude sidecar model, the published window dispatch already enforces
+    (``claude_model`` is the upstream id a strip-prefix alias names); the
+    provider catalog's own entry; the 200k default.
     """
-    override = get_settings().model_context_window_overrides.get(slug)
+    override = overrides.get(slug)
     if override is not None:
         return override
     if claude_model is not None:
@@ -5680,14 +5546,17 @@ def _sidecar_context_window(
     return window if window is not None else _SIDECAR_DEFAULT_CONTEXT_WINDOW
 
 
-def _with_alias_context_window_overrides(alias_entries: list[dict[str, JsonValue]]) -> list[dict[str, JsonValue]]:
+def _with_alias_context_window_overrides(
+    alias_entries: list[dict[str, JsonValue]],
+    overrides: Mapping[str, int],
+) -> list[dict[str, JsonValue]]:
     """Alias rows copy their target's window; an override keyed on the alias id wins.
 
-    The same rule as every other ``/v1/models`` entry: the operator's
-    ``model_context_window_overrides`` entry for the advertised id. The alias's
-    own dashboard catalog entry, applied afterwards, still has the final word.
+    The same rule as every other ``/v1/models`` entry: the operator's context
+    window override for the advertised id (``_effective_context_window_overrides``).
+    The alias's own dashboard catalog entry, applied afterwards, still has the
+    final word.
     """
-    overrides = get_settings().model_context_window_overrides
     if not overrides:
         return alias_entries
     patched: list[dict[str, JsonValue]] = []
@@ -6207,18 +6076,12 @@ async def v1_chat_completions(
     )
     if prohibit_fast_mode and _is_fast_mode_model_alias(effective_model):
         effective_model = responses_payload.model
-<<<<<<< 22625a07e
     validate_model_access(
         api_key,
         responses_payload.model,
         routing_entries=await _enabled_sidecar_routing_entries(),
     )
-||||||| 84fde5a1e
-    validate_model_access(api_key, responses_payload.model)
-=======
-    validate_model_access(api_key, responses_payload.model)
     source_route_attempted = not responses_shaped_payload and payload.messages is not None
->>>>>>> 72630bbfe
     source_selection = (
         await _select_chat_model_source(
             responses_payload.model,
@@ -6882,8 +6745,7 @@ async def _open_source_stream_for_client(request: Request, opening: Awaitable[_S
     """
 
     async def _close(stream: _SourceStreamT) -> None:
-        if stream.upstream is not None:
-            await stream.upstream.aclose()
+        await stream.aclose()
 
     return await await_unless_client_disconnects(request.receive, opening, discard=_close)
 
@@ -6926,35 +6788,6 @@ async def _abandon_source_stream_setup(
     )
 
 
-async def _abandon_unstarted_source_stream(
-    upstream: AsyncExitStack | None,
-    request: Request,
-    *,
-    source: ModelSource,
-    api_key: ApiKeyData | None,
-    model: str,
-    reservation: ApiKeyUsageReservationData | None,
-) -> None:
-    """Close the upstream of a source stream whose body never started, then release and log.
-
-    The body's own ``finally`` would have closed it, but a body closed before
-    it starts never runs its ``finally``.
-    """
-
-    try:
-        if upstream is not None:
-            await _await_cleanup_deferring_cancellation(upstream.aclose())
-    finally:
-        await _abandon_source_stream_setup(
-            request,
-            source=source,
-            api_key=api_key,
-            model=model,
-            reservation=reservation,
-            error_message="client disconnected before the response started",
-        )
-
-
 async def _source_responses_response(
     request: Request,
     payload: ResponsesRequest,
@@ -6986,20 +6819,6 @@ async def _source_responses_response(
         source,
         pre_normalization_effort=pre_normalization_effort,
     )
-<<<<<<< 22625a07e
-    reservation = await _enforce_request_limits(
-        api_key,
-        request_model=payload.model,
-        request_service_tier=payload.service_tier,
-        request_usage_budget=estimate_api_key_request_usage(payload),
-        model_is_priced=source_price_check(source, payload.model),
-||||||| 84fde5a1e
-    reservation = await _enforce_request_limits(
-        api_key,
-        request_model=payload.model,
-        request_service_tier=payload.service_tier,
-        request_usage_budget=estimate_api_key_request_usage(payload),
-=======
     claims = try_claim_source_admission(source)
     if claims is None:
         return _logged_error_json_response(
@@ -7018,6 +6837,7 @@ async def _source_responses_response(
             request_model=payload.model,
             request_service_tier=payload.service_tier,
             request_usage_budget=admission_budget,
+            model_is_priced=source_price_check(source, payload.model),
         )
         owner = SourceDispatch(
             request=request,
@@ -7089,7 +6909,6 @@ async def _open_owned_source_stream(owner: SourceDispatch, source_payload: dict[
         source_payload,
         scheduler=owner.scheduler,
         clock=owner.clock,
->>>>>>> 72630bbfe
     )
     owner.stream = stream
 
@@ -7143,119 +6962,6 @@ def _shape_source_responses_payload(
     )
     return source_payload
 
-<<<<<<< 22625a07e
-    if payload.stream:
-        try:
-            stream = await _open_source_stream_for_client(request, stream_source_responses(source, source_payload))
-        except (ClientDisconnected, asyncio.CancelledError) as exc:
-            await _abandon_source_stream_setup(
-                request, source=source, api_key=api_key, model=payload.model, reservation=reservation
-            )
-            if isinstance(exc, asyncio.CancelledError):
-                raise
-            return client_disconnected_response()
-        except ModelSourceForwardingError as exc:
-            await _release_reservation(reservation)
-            await _log_source_chat_completion(
-                request,
-                source=source,
-                api_key=api_key,
-                model=payload.model,
-                status="error",
-                error_code=_source_error_code(exc.payload),
-                error_message=_source_error_message(exc.payload),
-                upstream_status_code=exc.upstream_status_code,
-            )
-            return _logged_error_json_response(request, exc.status_code, exc.payload, headers=rate_limit_headers)
-        if _reservation_requires_usage(reservation):
-            return await _buffered_limited_source_chat_stream_response(
-                request,
-                source=source,
-                api_key=api_key,
-                model=payload.model,
-                reservation=reservation,
-                stream=stream.body,
-                usage_holder=stream.usage_holder,
-                rate_limit_headers=rate_limit_headers,
-            )
-        body = SettlingStream(
-            _source_chat_stream_with_settlement(
-                stream.body,
-                usage_holder=stream.usage_holder,
-                request=request,
-                source=source,
-                api_key=api_key,
-                model=payload.model,
-                reservation=reservation,
-            ),
-            abandon=partial(
-                _abandon_unstarted_source_stream,
-                stream.upstream,
-                request,
-                source=source,
-                api_key=api_key,
-                model=payload.model,
-                reservation=reservation,
-            ),
-        )
-        return ClosingStreamingResponse(
-            body,
-            media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache, no-transform",
-                "X-Accel-Buffering": "no",
-                **rate_limit_headers,
-            },
-            settling=body,
-        )
-||||||| 84fde5a1e
-    if payload.stream:
-        try:
-            stream = await stream_source_responses(source, source_payload)
-        except ModelSourceForwardingError as exc:
-            await _release_reservation(reservation)
-            await _log_source_chat_completion(
-                request,
-                source=source,
-                api_key=api_key,
-                model=payload.model,
-                status="error",
-                error_code=_source_error_code(exc.payload),
-                error_message=_source_error_message(exc.payload),
-                upstream_status_code=exc.upstream_status_code,
-            )
-            return _logged_error_json_response(request, exc.status_code, exc.payload, headers=rate_limit_headers)
-        if _reservation_requires_usage(reservation):
-            return await _buffered_limited_source_chat_stream_response(
-                request,
-                source=source,
-                api_key=api_key,
-                model=payload.model,
-                reservation=reservation,
-                stream=stream.body,
-                usage_holder=stream.usage_holder,
-                rate_limit_headers=rate_limit_headers,
-            )
-        body = _source_chat_stream_with_settlement(
-            stream.body,
-            usage_holder=stream.usage_holder,
-            request=request,
-            source=source,
-            api_key=api_key,
-            model=payload.model,
-            reservation=reservation,
-        )
-        return StreamingResponse(
-            body,
-            media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache, no-transform",
-                "X-Accel-Buffering": "no",
-                **rate_limit_headers,
-            },
-        )
-=======
->>>>>>> 72630bbfe
 
 async def _finish_non_stream_source_dispatch(
     request: Request,
@@ -7556,67 +7262,9 @@ async def _source_chat_completion_response(
                 error_message=_source_error_message(exc.payload),
                 upstream_status_code=exc.upstream_status_code,
             )
-<<<<<<< 22625a07e
-            return _logged_error_json_response(request, exc.status_code, exc.payload, headers=rate_limit_headers)
-||||||| 84fde5a1e
-            return _logged_error_json_response(request, exc.status_code, exc.payload, headers=rate_limit_headers)
-        except asyncio.CancelledError:
-            release_exc: BaseException | None = None
-            if reservation is not None:
-                try:
-                    await _release_reservation_deferring_cancellation(reservation)
-                except BaseException as exc:
-                    release_exc = exc
-            await _await_cleanup_deferring_cancellation(
-                _log_source_chat_completion(
-                    request,
-                    source=source,
-                    api_key=api_key,
-                    model=model,
-                    status="cancelled",
-                    error_code="client_disconnected",
-                    error_message="client disconnected during source stream setup",
-                )
-            )
-            if release_exc is not None:
-                logger.warning(
-                    "Failed to release source stream setup reservation after client disconnect source_id=%s model=%s",
-                    source.id,
-                    model,
-                    exc_info=release_exc,
-                )
-            raise
-=======
             return _logged_error_json_response(
                 request, exc.status_code, exc.payload, headers=_source_error_response_headers(rate_limit_headers, exc)
             )
-        except asyncio.CancelledError:
-            release_exc: BaseException | None = None
-            if reservation is not None:
-                try:
-                    await _release_reservation_deferring_cancellation(reservation)
-                except BaseException as exc:
-                    release_exc = exc
-            await _await_cleanup_deferring_cancellation(
-                _log_source_chat_completion(
-                    request,
-                    source=source,
-                    api_key=api_key,
-                    model=model,
-                    status="cancelled",
-                    error_code="client_disconnected",
-                    error_message="client disconnected during source stream setup",
-                )
-            )
-            if release_exc is not None:
-                logger.warning(
-                    "Failed to release source stream setup reservation after client disconnect source_id=%s model=%s",
-                    source.id,
-                    model,
-                    exc_info=release_exc,
-                )
-            raise
->>>>>>> 72630bbfe
         except BaseException:
             if reservation is not None:
                 await _release_reservation_deferring_cancellation(reservation)
@@ -7633,36 +7281,6 @@ async def _source_chat_completion_response(
                 upstream_status_code=stream.upstream_status_code,
                 rate_limit_headers=rate_limit_headers,
             )
-<<<<<<< 22625a07e
-        body = SettlingStream(
-            _source_chat_stream_with_settlement(
-                stream.body,
-                usage_holder=stream.usage_holder,
-                request=request,
-                source=source,
-                api_key=api_key,
-                model=model,
-                reservation=reservation,
-            ),
-            abandon=partial(
-                _abandon_unstarted_source_stream,
-                stream.upstream,
-                request,
-                source=source,
-                api_key=api_key,
-                model=model,
-                reservation=reservation,
-            ),
-||||||| 84fde5a1e
-        body = _source_chat_stream_with_settlement(
-            stream.body,
-            usage_holder=stream.usage_holder,
-            request=request,
-            source=source,
-            api_key=api_key,
-            model=model,
-            reservation=reservation,
-=======
         # The settlement generator owns the outcome once Starlette iterates the
         # body; the transport owner covers the one await before that (the
         # response start), where a departing client would otherwise leave the
@@ -7689,19 +7307,11 @@ async def _source_chat_completion_response(
             model=model,
             reservation=reservation,
             owner=owner,
->>>>>>> 72630bbfe
         )
-<<<<<<< 22625a07e
-        return ClosingStreamingResponse(
-||||||| 84fde5a1e
-        return StreamingResponse(
-=======
         return SourceStreamingResponse(
->>>>>>> 72630bbfe
             body,
             owner=owner,
             headers={"Cache-Control": "no-cache", **rate_limit_headers},
-            settling=body,
         )
 
     try:
@@ -8678,7 +8288,6 @@ async def _stream_responses(
         startup_error_code = (
             _startup_error_details(startup_error)[0] if isinstance(startup_error, ProxyResponseError) else None
         )
-<<<<<<< 22625a07e
         if cursor_compat_client and _is_context_length_startup_error(startup_error):
             logger.info(
                 "cursor_context_limit_fallback source=responses_startup model=%s",
@@ -8688,24 +8297,9 @@ async def _stream_responses(
                 payload.model,
                 headers={**turn_state_headers, **rate_limit_headers},
             )
-        startup_recovery_allowed = (
-            isinstance(startup_error, ProxyResponseError)
-            and bridge_recovery_eligible
-            and get_settings().http_responses_session_bridge_ambiguous_continuation_recovery_mode
-            == "server_indefinite_recovery"
-            and getattr(startup_error, "http_bridge_durable_recovery_eligible", False)
-||||||| 84fde5a1e
-        startup_recovery_allowed = (
-            isinstance(startup_error, ProxyResponseError)
-            and bridge_recovery_eligible
-            and get_settings().http_responses_session_bridge_ambiguous_continuation_recovery_mode
-            == "server_indefinite_recovery"
-            and getattr(startup_error, "http_bridge_durable_recovery_eligible", False)
-=======
         native_transport_startup_failure = (
             preserve_native_failure_lifecycle
             and isinstance(startup_error, ProxyResponseError)
->>>>>>> 72630bbfe
             and startup_error_code
             in {"stream_incomplete", "stream_idle_timeout", "upstream_request_timeout", "upstream_unavailable"}
             # A refusal the proxy raised itself before any upstream frame left
@@ -9014,25 +8608,13 @@ async def _collect_responses(
     if isinstance(response_payload, OpenAIResponsePayload):
         if response_payload.status == "failed":
             error_payload = _error_envelope_from_response(response_payload.error)
-<<<<<<< 22625a07e
             if cursor_compat_client and _is_context_length_error_envelope(error_payload):
                 return _cursor_context_limit_responses_response(
                     payload.model,
                     source="responses_collect_failed",
                     headers={**turn_state_headers, **captured_turn_state_headers, **rate_limit_headers},
                 )
-            status_code, error_payload = _mask_previous_response_not_found_error(
-                error_payload,
-                allow_client_full_history_once=False,
-            )
-||||||| 84fde5a1e
-            status_code, error_payload = _mask_previous_response_not_found_error(
-                error_payload,
-                allow_client_full_history_once=False,
-            )
-=======
             status_code, error_payload = _mask_previous_response_not_found_error(error_payload)
->>>>>>> 72630bbfe
             return _logged_error_json_response(
                 request,
                 status_code,
@@ -9043,25 +8625,13 @@ async def _collect_responses(
             content=response_payload.model_dump(mode="json", exclude_none=True),
             headers={**turn_state_headers, **captured_turn_state_headers, **rate_limit_headers},
         )
-<<<<<<< 22625a07e
     if cursor_compat_client and _is_context_length_error_envelope(response_payload):
         return _cursor_context_limit_responses_response(
             payload.model,
             source="responses_collect_envelope",
             headers={**turn_state_headers, **captured_turn_state_headers, **rate_limit_headers},
         )
-    status_code, response_payload = _mask_previous_response_not_found_error(
-        response_payload,
-        allow_client_full_history_once=False,
-    )
-||||||| 84fde5a1e
-    status_code, response_payload = _mask_previous_response_not_found_error(
-        response_payload,
-        allow_client_full_history_once=False,
-    )
-=======
     status_code, response_payload = _mask_previous_response_not_found_error(response_payload)
->>>>>>> 72630bbfe
     return _logged_error_json_response(
         request,
         status_code,
@@ -9576,22 +9146,11 @@ async def _force_refresh_codex_usage_identity_account(request: Request) -> None:
             accounts_repo,
             AdditionalUsageRepository(session),
         )
-<<<<<<< 22625a07e
         usage_written = await updater.force_refresh(
             account,
-            ignore_refresh_disabled=True,
             access_token_override=access_token,
             ignore_persisted_cooldown=True,
         )
-||||||| 84fde5a1e
-        usage_written = await updater.force_refresh(
-            account,
-            ignore_refresh_disabled=True,
-            access_token_override=access_token,
-        )
-=======
-        usage_written = await updater.force_refresh(account, access_token_override=access_token)
->>>>>>> 72630bbfe
         if usage_written:
             get_account_selection_cache().invalidate()
 
@@ -10034,7 +9593,10 @@ async def _prepend_first_task(first_task: asyncio.Task[str], stream: AsyncIterat
         # retrieved here (the probe's done-callback also settles it).
         if not first_task.done():
             first_task.cancel()
-<<<<<<< 22625a07e
+            try:
+                await _shared_await_task_deferring_cancellation(first_task)
+            except BaseException:
+                pass
     try:
         yield first
         async for line in stream:
@@ -10042,19 +9604,6 @@ async def _prepend_first_task(first_task: asyncio.Task[str], stream: AsyncIterat
     finally:
         # Same reservation-ownership reason as ``_prepend_items``.
         await aclose_stream(stream)
-||||||| 84fde5a1e
-    yield first
-    async for line in stream:
-        yield line
-=======
-            try:
-                await _shared_await_task_deferring_cancellation(first_task)
-            except BaseException:
-                pass
-    yield first
-    async for line in stream:
-        yield line
->>>>>>> 72630bbfe
 
 
 async def _prepend_initial_sse_heartbeat(
@@ -10139,7 +9688,6 @@ async def _close_responses_stream_best_effort(
         logger.warning("Failed to close Responses %s stream", action, exc_info=True)
 
 
-<<<<<<< 22625a07e
 async def _stream_proxy_errors_as_response_failed(stream: AsyncIterator[str]) -> AsyncIterator[str]:
     inner = _stream_response_error_events(stream, owns_reservation=False, reservation=None)
     try:
@@ -10160,21 +9708,6 @@ async def _stream_proxy_errors_as_response_failed(stream: AsyncIterator[str]) ->
             await aclose_stream(inner)
         finally:
             await aclose_stream(stream)
-||||||| 84fde5a1e
-async def _stream_proxy_errors_as_response_failed(stream: AsyncIterator[str]) -> AsyncIterator[str]:
-    async for line in _stream_response_error_events(stream, owns_reservation=False, reservation=None):
-        yield line
-=======
-async def _stream_proxy_errors_as_response_failed(
-    stream: AsyncIterator[str],
-) -> AsyncIterator[str]:
-    async for line in _stream_response_error_events(
-        stream,
-        owns_reservation=False,
-        reservation=None,
-    ):
-        yield line
->>>>>>> 72630bbfe
 
 
 async def _stream_response_error_events(
@@ -12187,54 +11720,10 @@ def _mask_previous_response_not_found_error(
 
 
 def _status_for_error(error_value: OpenAIError | None) -> int:
-<<<<<<< 22625a07e
     return status_for_error_fields(
         code=error_value.code if error_value else None,
         error_type=error_value.type if error_value else None,
     )
-||||||| 84fde5a1e
-    if error_value and error_value.code == "previous_response_not_found":
-        return 502
-    if error_value and error_value.code in _UNAVAILABLE_SELECTION_ERROR_CODES:
-        return 503
-    if error_value and error_value.code in {"rate_limit_exceeded", "usage_limit_reached", "insufficient_quota"}:
-        return 429
-    if error_value and error_value.code in {"invalid_api_key", "invalid_authentication", "token_invalidated"}:
-        return 401
-    if error_value and error_value.code == "invalid_request_error":
-        return 400
-    if error_value and error_value.type == "authentication_error":
-        return 401
-    if error_value and error_value.type == "invalid_request_error":
-        return 400
-    if error_value and error_value.type in {"rate_limit_error", "usage_limit_reached", "insufficient_quota"}:
-        return 429
-    return 502
-=======
-    if error_value and error_value.code == "previous_response_not_found":
-        return 502
-    if error_value and error_value.code == HTTP_BRIDGE_EVENTLESS_TIMEOUT_CODE:
-        # The bridge never matched a response.created event upstream, so this
-        # is our availability problem: 503, not a 502 that claims the upstream
-        # returned a bad response. Retry safety depends on whether the bridge
-        # observed unmatched upstream liveness before timing out.
-        return 503
-    if error_value and error_value.code in _UNAVAILABLE_SELECTION_ERROR_CODES:
-        return 503
-    if error_value and error_value.code in {"rate_limit_exceeded", "usage_limit_reached", "insufficient_quota"}:
-        return 429
-    if error_value and error_value.code in {"invalid_api_key", "invalid_authentication", "token_invalidated"}:
-        return 401
-    if error_value and error_value.code == "invalid_request_error":
-        return 400
-    if error_value and error_value.type == "authentication_error":
-        return 401
-    if error_value and error_value.type == "invalid_request_error":
-        return 400
-    if error_value and error_value.type in {"rate_limit_error", "usage_limit_reached", "insufficient_quota"}:
-        return 429
-    return 502
->>>>>>> 72630bbfe
 
 
 def _status_for_image_error_envelope(envelope: object) -> int:

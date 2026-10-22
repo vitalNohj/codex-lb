@@ -1458,14 +1458,10 @@ async def _select_with_stickiness(
     allow_usage_exhaustion_error: bool = True,
     usage_exhaustion_states: Iterable[AccountState] | None = None,
     sticky_refresh_skip_deadline: datetime | None = None,
-<<<<<<< 22625a07e
     sidecar_account_ids: Collection[str] | None = None,
-||||||| 84fde5a1e
-=======
     overload_backoff_runtime: Mapping[str, RuntimeState] | None = None,
     clock: Clock,
     redact_sensitive_details: bool = False,
->>>>>>> 72630bbfe
 ) -> _StickySelectionOutcome:
     if not sticky_key or not sticky_repo:
         return _StickySelectionOutcome(
@@ -1943,19 +1939,6 @@ async def _select_with_stickiness(
         and overload_backoff_runtime is not None
         and overload_isolation_active(overload_backoff_runtime.get(existing), clock.time())
     )
-<<<<<<< 22625a07e
-    chosen_id = chosen.account.account_id if chosen.account is not None else None
-    sidecar_ttl_persist = (
-        chosen_id is not None
-        and _is_sidecar_pool_account(chosen_id, sidecar_account_ids)
-        and sticky_kind in _BOUNDED_SIDECAR_STICKY_KINDS
-    )
-    if persist_fallback and chosen_id is not None and (chosen_id in account_map or sidecar_ttl_persist):
-        return finish_selection(chosen, persist_account_id=chosen_id)
-||||||| 84fde5a1e
-    if persist_fallback and chosen.account is not None and chosen.account.account_id in account_map:
-        return finish_selection(chosen, persist_account_id=chosen.account.account_id)
-=======
     if owner_isolated_off_pool and isinstance(existing, str):
         existing_owner_state = next(
             (state for state in usage_exhaustion_state_list if state.account_id == existing),
@@ -2065,9 +2048,14 @@ async def _select_with_stickiness(
             refresh_skip_deadline=sticky_refresh_skip_deadline,
         )
     chosen_pool = fallback_candidates if fallback_candidates is not states else None
-    if persist_fallback and chosen.account is not None and chosen.account.account_id in account_map:
-        return finish_selection(chosen, persist_account_id=chosen.account.account_id, effective_states=chosen_pool)
->>>>>>> 72630bbfe
+    chosen_id = chosen.account.account_id if chosen.account is not None else None
+    sidecar_ttl_persist = (
+        chosen_id is not None
+        and _is_sidecar_pool_account(chosen_id, sidecar_account_ids)
+        and sticky_kind in _BOUNDED_SIDECAR_STICKY_KINDS
+    )
+    if persist_fallback and chosen_id is not None and (chosen_id in account_map or sidecar_ttl_persist):
+        return finish_selection(chosen, persist_account_id=chosen_id, effective_states=chosen_pool)
     if preserve_existing_mapping_on_fallback and chosen.account is not None and existing is not None:
         # Spillover is deliberately request-local. The alternate may create
         # its own hard response/file/bridge owner, but local cap pressure

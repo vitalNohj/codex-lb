@@ -57,7 +57,6 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="Confirm that Codex/Codex CLI is closed and allow a non-interactive write.",
     )
 
-<<<<<<< 22625a07e
     model_prices = subparsers.add_parser(
         "model-prices",
         help="Inspect and refresh persisted external-integration model prices.",
@@ -71,8 +70,8 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
             "rates, and report unresolved or ambiguous records. Idempotent; not scheduled."
         ),
         formatter_class=_CliHelpFormatter,
-||||||| 84fde5a1e
-=======
+    )
+
     admin = subparsers.add_parser(
         "admin",
         help="Host recovery commands that act on the database directly (see docs/sso.md).",
@@ -120,7 +119,6 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--yes",
         action="store_true",
         help="Confirm the reset and allow a non-interactive run.",
->>>>>>> 72630bbfe
     )
 
     parser.add_argument("--host", default=os.getenv("HOST", "127.0.0.1"))
@@ -163,18 +161,14 @@ def main(argv: Sequence[str] | None = None) -> None:
             return
         raise SystemExit("codex-sessions requires a subcommand")
 
-<<<<<<< 22625a07e
     if args.command == "model-prices":
         if args.model_prices_command == "refresh":
             _run_model_prices_refresh()
             return
         raise SystemExit("model-prices requires a subcommand")
-||||||| 84fde5a1e
-=======
     if args.command == "admin":
         _run_admin_command(args)
         return
->>>>>>> 72630bbfe
 
     if bool(args.ssl_certfile) ^ bool(args.ssl_keyfile):
         raise SystemExit("Both --ssl-certfile and --ssl-keyfile must be provided together.")

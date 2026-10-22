@@ -6,7 +6,6 @@ import { describe, expect, it } from "vitest";
 
 import { useDashboard, useDashboardProjections } from "@/features/dashboard/hooks/use-dashboard";
 import { server } from "@/test/mocks/server";
-import { useDashboardPreferencesStore } from "@/hooks/use-dashboard-preferences";
 
 function createTestQueryClient(): QueryClient {
   return new QueryClient({
@@ -26,14 +25,7 @@ function createWrapper(queryClient: QueryClient) {
 }
 
 describe("useDashboard", () => {
-<<<<<<< 22625a07e
   it("loads dashboard overview via MSW without background polling", async () => {
-||||||| 84fde5a1e
-  it("loads dashboard overview via MSW and configures 30s refetch", async () => {
-=======
-  it("loads dashboard overview via MSW and configures the selected refetch cadence", async () => {
-    useDashboardPreferencesStore.setState({ refreshSeconds: 15 });
->>>>>>> 72630bbfe
     const queryClient = createTestQueryClient();
     const { result } = renderHook(() => useDashboard("30d"), {
       wrapper: createWrapper(queryClient),
@@ -45,21 +37,11 @@ describe("useDashboard", () => {
     expect(result.current.data?.accounts.length).toBeGreaterThan(0);
 
     const query = queryClient.getQueryCache().find({ queryKey: ["dashboard", "overview", "30d"] });
-<<<<<<< 22625a07e
     const options = query?.options as
       | { refetchInterval?: unknown; refetchOnWindowFocus?: unknown }
       | undefined;
     expect(options?.refetchInterval).toBeUndefined();
     expect(options?.refetchOnWindowFocus).toBe(false);
-||||||| 84fde5a1e
-    const refetchInterval = (query?.options as { refetchInterval?: unknown } | undefined)
-      ?.refetchInterval;
-    expect(refetchInterval).toBe(30_000);
-=======
-    const refetchInterval = (query?.options as { refetchInterval?: unknown } | undefined)
-      ?.refetchInterval;
-    expect(refetchInterval).toBe(15_000);
->>>>>>> 72630bbfe
   });
 
   it("passes timeframe to the overview endpoint", async () => {
@@ -101,8 +83,7 @@ describe("useDashboard", () => {
     expect(requestedTimeframe).toBe("1d");
   });
 
-  it("applies the selected cadence to projection polling", () => {
-    useDashboardPreferencesStore.setState({ refreshSeconds: 5 });
+  it("does not poll dashboard projections in the background", () => {
     const queryClient = createTestQueryClient();
 
     renderHook(() => useDashboardProjections(false), {
@@ -110,9 +91,11 @@ describe("useDashboard", () => {
     });
 
     const query = queryClient.getQueryCache().find({ queryKey: ["dashboard", "projections"] });
-    const refetchInterval = (query?.options as { refetchInterval?: unknown } | undefined)
-      ?.refetchInterval;
-    expect(refetchInterval).toBe(5_000);
+    const options = query?.options as
+      | { refetchInterval?: unknown; refetchOnWindowFocus?: unknown }
+      | undefined;
+    expect(options?.refetchInterval).toBeUndefined();
+    expect(options?.refetchOnWindowFocus).toBe(false);
   });
 
   it("exposes error state on request failure", async () => {

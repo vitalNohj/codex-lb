@@ -1782,11 +1782,6 @@ export const handlers = [
     );
   }),
 
-<<<<<<< 22625a07e
-  http.put("*/api/settings", async ({ request }) => {
-||||||| 84fde5a1e
-  http.put("/api/settings", async ({ request }) => {
-=======
   http.get("/api/settings/model-context-window-overrides", () => {
     return HttpResponse.json(state.modelContextWindowOverrides);
   }),
@@ -1840,8 +1835,7 @@ export const handlers = [
     return HttpResponse.json(state.modelContextWindowOverrides);
   }),
 
-  http.put("/api/settings", async ({ request }) => {
->>>>>>> 72630bbfe
+  http.put("*/api/settings", async ({ request }) => {
     const payload = await parseJsonBody(request, SettingsPayloadSchema);
     if (!payload) {
       return HttpResponse.json(state.settings);
@@ -2367,7 +2361,6 @@ export const handlers = [
     return HttpResponse.json({ status: "ok" });
   }),
 
-<<<<<<< 22625a07e
   http.get("*/api/claude-sidecar/status", () => {
     return HttpResponse.json({
       enabled: true,
@@ -2727,8 +2720,8 @@ export const handlers = [
       lastCheckedAt: "2026-01-01T00:00:00Z",
       models: ollamaSidecarModels,
     });
-||||||| 84fde5a1e
-=======
+  }),
+
   http.post("/api/dashboard-auth/logout-all", () => {
     state.authSession = createDashboardAuthSession({
       ...state.authSession,
@@ -3188,7 +3181,6 @@ export const handlers = [
 
   http.get("/api/dashboard-roles/permissions", () => {
     return HttpResponse.json(createPermissionDescriptors());
->>>>>>> 72630bbfe
   }),
 
   http.get("/api/models", () => {

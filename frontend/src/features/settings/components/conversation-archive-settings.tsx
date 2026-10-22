@@ -5,13 +5,12 @@ import { useTranslation } from "react-i18next";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { Switch } from "@/components/ui/switch";
 import { InheritBadge } from "@/features/settings/components/inherit-badge";
-import { buildSettingsUpdateRequest } from "@/features/settings/payload";
 import type { DashboardSettings, SettingsUpdateRequest } from "@/features/settings/schemas";
 
 export type ConversationArchiveSettingsProps = {
   settings: DashboardSettings;
   busy: boolean;
-  onSave: (payload: SettingsUpdateRequest) => Promise<void>;
+  onSave: (patch: Partial<SettingsUpdateRequest>) => Promise<DashboardSettings | void>;
 };
 
 /** Backend setting name: dashboard column, env alias and provenance key. */
@@ -38,7 +37,7 @@ export function ConversationArchiveSettings({ settings, busy, onSave }: Conversa
   const resetWouldEnable = !enabled && provenance?.source === "dashboard" && provenance.envValue === true;
 
   const store = (value: boolean) =>
-    void onSave(buildSettingsUpdateRequest(settings, { conversationArchiveEnabled: value }));
+    void onSave({ conversationArchiveEnabled: value });
 
   const handleCheckedChange = (checked: boolean) => {
     if (checked) {

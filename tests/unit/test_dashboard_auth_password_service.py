@@ -3,25 +3,13 @@ from __future__ import annotations
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
-<<<<<<< 22625a07e
-from unittest.mock import Mock
-||||||| 84fde5a1e
-=======
 from typing import Any
->>>>>>> 72630bbfe
 
 import bcrypt
 import pytest
 
-<<<<<<< 22625a07e
-from app.core.audit.service import AuditService
-from app.core.auth.dashboard_access import DashboardPermission, DashboardRole
-||||||| 84fde5a1e
-from app.core.auth.dashboard_access import DashboardPermission, DashboardRole
-=======
 from app.core.audit.service import AuditActor, AuditSeverity, AuditTarget
 from app.core.auth.dashboard_access import PRESET_ROLE_IDS, DashboardPermission, DashboardRole, PresetRoleSlug
->>>>>>> 72630bbfe
 from app.core.auth.dashboard_mode import DashboardAuthMode
 from app.core.auth.providers import DEFAULT_PROVIDER_KEY, PasswordProvider
 from app.core.auth.providers.registry import ActiveProvider
@@ -49,24 +37,6 @@ from app.modules.dashboard_users.repository import DashboardUserCounts, LocalAut
 pytestmark = pytest.mark.unit
 
 
-<<<<<<< 22625a07e
-@pytest.fixture(autouse=True)
-def _stub_audit_log(monkeypatch: pytest.MonkeyPatch) -> Mock:
-    """Keep the login paths from scheduling real audit-log writes.
-
-    ``verify_password`` / ``verify_guest_password`` / ``verify_totp`` call
-    ``AuditService.log_async``, which is fire-and-forget: it spawns an
-    ``audit-log-login_*`` task that writes through the real database session.
-    These tests return synchronously right after the call, before the loop
-    ever steps that task, so it stays pending on the shared session loop and
-    trips later suites that assert the audit registry is empty
-    (tests/unit/test_otel.py lifespan drain test, issue #2209).
-    """
-    log_async = Mock()
-    monkeypatch.setattr(AuditService, "log_async", log_async)
-    return log_async
-||||||| 84fde5a1e
-=======
 @dataclass(slots=True, frozen=True)
 class _AuditCall:
     action: str
@@ -106,7 +76,6 @@ def _user_actor(user: DashboardUser, auth_method: str) -> AuditActor:
 
 def _calls(events: list[_AuditCall], action: str) -> list[_AuditCall]:
     return [call for call in events if call.action == action]
->>>>>>> 72630bbfe
 
 
 @dataclass(slots=True)

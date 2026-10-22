@@ -1117,26 +1117,6 @@ The proxy MUST configure direct and routed upstream Responses WebSocket transpor
 - **AND** connections accepted before the change keep the value they were bound with
 
 ### Requirement: Upstream websocket drops penalize affected accounts
-<<<<<<< 22625a07e
-When an upstream websocket closes while one or more streamed response requests are pending and have not reached a terminal event, the proxy MUST record a transient upstream error for the account before signaling failure for those pending requests, except when the close carries a classified process-wide network failure or upstream WebSocket liveness timeout, is a clean close (`close_code = 1000`) before any `response.*` event, or carries the classified per-socket `upstream_keepalive_timeout` transport error. Clean pre-response closes, keepalive timeouts, process-wide network failures, and liveness timeouts MUST remain account-neutral and use their classified error and bounded retry or retry-circuit handling. For other closes, the proxy MUST surface `stream_incomplete` to affected pending requests except when a direct Responses WebSocket request has already successfully emitted a finite integer `sequence_number`. For that sequenced direct-WebSocket case, the proxy MUST record the request outcome as `stream_incomplete` without emitting a synthetic terminal frame under the active response id, then MUST close the downstream WebSocket with code 1011.
-||||||| 84fde5a1e
-When an upstream websocket closes while one or more streamed response requests
-are pending and have not reached a terminal event, the proxy MUST record a
-transient upstream error for the account before signaling failure for those
-pending requests, except when the close carries a classified process-wide
-network failure or upstream WebSocket liveness timeout, is a clean close
-(`close_code = 1000`) before any `response.*` event, or carries the classified
-per-socket `upstream_keepalive_timeout` transport error. Clean pre-response
-closes, keepalive timeouts, process-wide network failures, and liveness
-timeouts MUST remain account-neutral and use their classified error and bounded
-retry or retry-circuit handling. For other closes, the proxy MUST surface
-`stream_incomplete` to affected pending requests except when a direct Responses
-WebSocket request has already successfully emitted a finite integer
-`sequence_number`. For that sequenced direct-WebSocket case, the proxy MUST
-record the request outcome as `stream_incomplete` without emitting a synthetic
-terminal frame under the active response id, then MUST close the downstream
-WebSocket with code 1011.
-=======
 
 When an upstream websocket closes while one or more streamed response requests
 are pending and have not reached a terminal event, the proxy MUST record a
@@ -1156,7 +1136,6 @@ terminal frame under the active response id, then MUST close the downstream
 WebSocket with code 1011, unless the request satisfies the verified
 no-generation prewarm recovery contract defined in "Direct WebSocket replay
 never mixes numeric response sequences" and its one-shot replay succeeds.
->>>>>>> 72630bbfe
 
 #### Scenario: websocket closes before pending responses complete
 - **GIVEN** a streamed response request is pending on an upstream websocket
@@ -4521,7 +4500,6 @@ When the service prepares a Responses `response.create` request for the upstream
 - **AND** the error envelope param is `input`
 - **AND** the service MUST NOT connect the upstream websocket for that request
 
-<<<<<<< 22625a07e
 ### Requirement: Capacity recovery preserves terminal errors and bounds silent waits
 
 For HTTP Responses requests, capacity recovery waits that emit no downstream bytes MUST share a cumulative 30-second allowance per request, independent of the total request budget. This applies to HTTP bridge capacity waits, pre-created model-capacity replay waits, and direct HTTP streaming recovery. If the next wait exceeds the remaining allowance, the proxy MUST decline the wait and surface the capacity error. Short waits that fit MAY still recover in place. Waits emitting keepalives MUST NOT consume this allowance. Per-session `response_create_gate_timeout` contention is exempt from both the allowance and its accounting.
@@ -4566,8 +4544,6 @@ Regression coverage: `tests/integration/test_responses_quota_propagation.py`, `t
 
 - **WHEN** replay is exhausted by a transport drop that captured no specific upstream error
 - **THEN** the terminal error is `stream_incomplete` with HTTP status 502
-||||||| 84fde5a1e
-=======
 #### Scenario: Inline images nested in historical tool-call outputs are slimmed
 - **GIVEN** an oversized `response.create` whose historical `input` contains a
   `custom_tool_call_output` (or `function_call_output` /
@@ -4585,7 +4561,6 @@ Regression coverage: `tests/integration/test_responses_quota_propagation.py`, `t
 - **WHEN** the size guard triggers historical slimming
 - **THEN** the string output is replaced with the tool-output omission notice,
   matching the existing `function_call_output` behavior
->>>>>>> 72630bbfe
 
 ### Requirement: Streaming Responses requests use a bounded retry budget
 When a streaming `/v1/responses` request encounters upstream instability, the proxy MUST enforce a configurable total request budget across selection, token refresh, account-capacity recovery waits, and upstream stream attempts. Each upstream stream attempt MUST clamp its connect timeout, idle timeout, and total request timeout to the remaining request budget.
@@ -5660,20 +5635,11 @@ When upstream returns a temporary model-capacity failure whose message says that
 
 ### Requirement: HTTP bridge model-capacity retry waits preserve stream contracts
 
-<<<<<<< 22625a07e
-The proxy MUST wait before replaying a pre-created HTTP bridge request with a selected-model capacity failure only
-when the failure happened before any downstream-visible response event, the request is still replayable as a fresh
-request, and the [capacity recovery limits](#requirement-capacity-recovery-preserves-terminal-errors-and-bounds-silent-waits) permit waiting.
-||||||| 84fde5a1e
-The proxy MUST wait before replaying a pre-created HTTP bridge request with a selected-model capacity failure only
-when the failure happened before any downstream-visible response event and the request is still replayable as a fresh
-request.
-=======
 The proxy MUST wait before replaying an HTTP bridge request with a selected-model capacity failure only when the
-failure happened before any downstream-visible model output and the request is still replayable as a fresh request.
+failure happened before any downstream-visible model output, the request is still replayable as a fresh request,
+and the [capacity recovery limits](#requirement-capacity-recovery-preserves-terminal-errors-and-bounds-silent-waits) permit waiting.
 An already-forwarded `response.created` or `response.in_progress` does not disqualify the replay; the replay's
 duplicate lifecycle prelude MUST be suppressed so the client observes exactly one `response.created`.
->>>>>>> 72630bbfe
 
 #### Scenario: Public propagated-error streams do not receive pre-retry keepalives
 
@@ -6667,18 +6633,11 @@ retention derived from those windows already has.
 
 #### Scenario: Dashboard window applies without a restart
 
-<<<<<<< 22625a07e
-Before dispatching a server-owned retry for a nonterminal operation, the system MUST atomically clear any partial event spool under the durable owner fence.
-||||||| 84fde5a1e
-Before dispatching a server-owned retry for a nonterminal operation, the system
-MUST atomically clear any partial event spool under the durable owner fence.
-=======
 - **GIVEN** the environment alias sets a seven-day window and an operator
   stores a shorter window in the dashboard
 - **WHEN** the next leader-gated retention pass runs
 - **THEN** it cuts at the dashboard window, not the environment alias
 - **AND** no replica was restarted
->>>>>>> 72630bbfe
 
 #### Scenario: A window already below the floor is reported at startup
 
@@ -6796,68 +6755,6 @@ predicate MUST be rechecked in the deletion transaction.
 - **WHEN** a stale operation belongs to a session with a live lease
 - **THEN** retention leaves it intact
 
-<<<<<<< 22625a07e
-### Requirement: Anchored indefinite recovery gate
-
-The server-indefinite recovery loop MUST be installed only for an eventless
-anchored continuation with a durable parent operation. Fresh first-turn
-requests and streams that already emitted downstream response events MUST
-terminate normally rather than being resent indefinitely.
-
-#### Scenario: Fresh request is not held indefinitely
-
-- **WHEN** a first-turn request loses its upstream connection
-- **THEN** the proxy returns its normal error path without an indefinite loop
-
-### Requirement: Retry reservation terminalization
-
-If reacquiring API-key usage limits for a recovery attempt fails, the proxy MUST settle the prior reservation and emit a terminal `response.failed` SSE event instead of aborting the already-started stream.
-
-#### Scenario: Quota failure produces terminal SSE
-
-- **WHEN** a recovery retry cannot reacquire its usage reservation
-- **THEN** the client receives `response.failed` and the prior reservation is settled
-
-#### Scenario: Unexpected admission failure produces terminal SSE
-
-- **WHEN** recovery admission raises an unexpected infrastructure error before
-  a replacement stream starts
-- **THEN** the client receives `response.failed` and the prior reservation is
-  settled instead of receiving a truncated stream
-
-||||||| 84fde5a1e
-### Requirement: Anchored indefinite recovery gate
-
-The server-indefinite recovery loop MUST be installed only for an eventless
-anchored continuation with a durable parent operation. Fresh first-turn
-requests and streams that already emitted downstream response events MUST
-terminate normally rather than being resent indefinitely.
-
-#### Scenario: Fresh request is not held indefinitely
-
-- **WHEN** a first-turn request loses its upstream connection
-- **THEN** the proxy returns its normal error path without an indefinite loop
-
-### Requirement: Retry reservation terminalization
-
-If reacquiring API-key usage limits for a recovery attempt fails, the proxy
-MUST settle the prior reservation and emit a terminal `response.failed` SSE
-event instead of aborting the already-started stream.
-
-#### Scenario: Quota failure produces terminal SSE
-
-- **WHEN** a recovery retry cannot reacquire its usage reservation
-- **THEN** the client receives `response.failed` and the prior reservation is settled
-
-#### Scenario: Unexpected admission failure produces terminal SSE
-
-- **WHEN** recovery admission raises an unexpected infrastructure error before
-  a replacement stream starts
-- **THEN** the client receives `response.failed` and the prior reservation is
-  settled instead of receiving a truncated stream
-
-=======
->>>>>>> 72630bbfe
 ### Requirement: Failure spool/state ordering
 
 For an explicit deterministic failure, the proxy MUST persist the terminal SSE

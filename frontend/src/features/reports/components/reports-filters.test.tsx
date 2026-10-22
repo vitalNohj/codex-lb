@@ -342,13 +342,7 @@ describe("ReportsFilters", () => {
       />,
     );
 
-<<<<<<< 22625a07e
-    expect(screen.getByRole("button", { name: "Charts (6)" })).toBeInTheDocument();
-||||||| 84fde5a1e
-    expect(screen.getByRole("button", { name: "Charts (5)" })).toBeInTheDocument();
-=======
     expect(screen.getByRole("button", { name: ALL_CHARTS_BUTTON })).toBeInTheDocument();
->>>>>>> 72630bbfe
   });
 
   it("places the chart selector before the start date", () => {
@@ -370,13 +364,7 @@ describe("ReportsFilters", () => {
       />,
     );
 
-<<<<<<< 22625a07e
-    const chartButton = screen.getByRole("button", { name: "Charts (6)" });
-||||||| 84fde5a1e
-    const chartButton = screen.getByRole("button", { name: "Charts (5)" });
-=======
     const chartButton = screen.getByRole("button", { name: ALL_CHARTS_BUTTON });
->>>>>>> 72630bbfe
     const startDate = container.querySelector('input[name="report-start-date"]');
 
     expect(startDate).not.toBeNull();
@@ -405,26 +393,14 @@ describe("ReportsFilters", () => {
       />,
     );
 
-<<<<<<< 22625a07e
-    await user.click(screen.getByRole("button", { name: "Charts (6)" }));
-||||||| 84fde5a1e
-    await user.click(screen.getByRole("button", { name: "Charts (5)" }));
-=======
     await user.click(screen.getByRole("button", { name: ALL_CHARTS_BUTTON }));
->>>>>>> 72630bbfe
 
     expect(screen.getAllByRole("menuitemcheckbox").map((item) => item.textContent)).toEqual(
       ALL_CHART_LABELS,
     );
   });
 
-<<<<<<< 22625a07e
-  it("returns the other five chart IDs when Queue Wait is toggled off", async () => {
-||||||| 84fde5a1e
-  it("returns the other four chart IDs when Queue Wait is toggled off", async () => {
-=======
   it("returns the remaining chart IDs when Queue Wait is toggled off", async () => {
->>>>>>> 72630bbfe
     const user = userEvent.setup();
     const onVisibleChartIdsChange = vi.fn();
     render(
@@ -445,13 +421,7 @@ describe("ReportsFilters", () => {
       />,
     );
 
-<<<<<<< 22625a07e
-    await user.click(screen.getByRole("button", { name: "Charts (6)" }));
-||||||| 84fde5a1e
-    await user.click(screen.getByRole("button", { name: "Charts (5)" }));
-=======
     await user.click(screen.getByRole("button", { name: ALL_CHARTS_BUTTON }));
->>>>>>> 72630bbfe
     await user.click(screen.getByRole("menuitemcheckbox", { name: "Queue Wait" }));
 
     expect(onVisibleChartIdsChange).toHaveBeenCalledWith(

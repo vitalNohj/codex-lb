@@ -2,6 +2,7 @@ import type { PropsWithChildren } from "react";
 import { useTranslation } from "react-i18next";
 
 import { CodexLogo } from "@/components/brand/codex-logo";
+import { ForkMark } from "@/components/brand/fork-mark";
 import { cn } from "@/lib/utils";
 
 export type AuthScreenFrameProps = PropsWithChildren<{
@@ -27,10 +28,18 @@ export function AuthScreenFrame({ title, subtitle, className, children }: AuthSc
           <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-primary/10 shadow-sm ring-2 ring-primary/10 ring-offset-2 ring-offset-background">
             <CodexLogo size={28} className="text-primary" />
           </div>
-          <div>
-            <h1 className="text-xl font-semibold tracking-tight">{title ?? t("auth.appTitle")}</h1>
-            <p className="mt-0.5 text-sm text-muted-foreground">{subtitle ?? t("auth.appSubtitle")}</p>
-          </div>
+          {title === undefined && subtitle === undefined ? (
+            // Fork lockup: the wordmark followed by the "fork" tag.
+            <div className="flex items-center justify-center gap-2">
+              <h1 className="text-xl font-semibold tracking-tight">{t("auth.appTitle")}</h1>
+              <ForkMark className="text-xs">{t("auth.appSubtitle")}</ForkMark>
+            </div>
+          ) : (
+            <div>
+              <h1 className="text-xl font-semibold tracking-tight">{title ?? t("auth.appTitle")}</h1>
+              <p className="mt-0.5 text-sm text-muted-foreground">{subtitle ?? t("auth.appSubtitle")}</p>
+            </div>
+          )}
         </div>
         {children}
       </div>

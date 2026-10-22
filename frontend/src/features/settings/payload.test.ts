@@ -30,7 +30,7 @@ describe("buildSettingsUpdateRequest", () => {
   it("keeps a dashboard layout patch limited to the flags the caller set", () => {
     const settings = DashboardSettingsSchema.parse({
       stickyThreadsEnabled: true,
-      upstreamStreamTransport: "default",
+      upstreamStreamTransport: "auto",
       preferEarlierResetAccounts: false,
       routingStrategy: "round_robin",
       openaiCacheAffinityMaxAgeSeconds: 300,
@@ -193,7 +193,7 @@ describe("buildSettingsUpdateRequest", () => {
   it("preserves Claude sidecar plan and collector settings", () => {
     const settings = DashboardSettingsSchema.parse({
       stickyThreadsEnabled: true,
-      upstreamStreamTransport: "default",
+      upstreamStreamTransport: "auto",
       preferEarlierResetAccounts: false,
       routingStrategy: "round_robin",
       openaiCacheAffinityMaxAgeSeconds: 300,
@@ -230,7 +230,7 @@ describe("buildSettingsUpdateRequest", () => {
   it("preserves OrcaRouter sidecar settings when saving unrelated fields", () => {
     const settings = DashboardSettingsSchema.parse({
       stickyThreadsEnabled: true,
-      upstreamStreamTransport: "default",
+      upstreamStreamTransport: "auto",
       preferEarlierResetAccounts: false,
       routingStrategy: "round_robin",
       openaiCacheAffinityMaxAgeSeconds: 300,
@@ -259,7 +259,7 @@ describe("buildSettingsUpdateRequest", () => {
   it("preserves OpenAI-compat endpoints when saving unrelated fields", () => {
     const settings = DashboardSettingsSchema.parse({
       stickyThreadsEnabled: true,
-      upstreamStreamTransport: "default",
+      upstreamStreamTransport: "auto",
       preferEarlierResetAccounts: false,
       routingStrategy: "round_robin",
       openaiCacheAffinityMaxAgeSeconds: 300,
@@ -300,7 +300,7 @@ describe("buildSettingsUpdateRequest", () => {
   it("preserves Ollama sidecar settings when saving unrelated fields", () => {
     const settings = DashboardSettingsSchema.parse({
       stickyThreadsEnabled: true,
-      upstreamStreamTransport: "default",
+      upstreamStreamTransport: "auto",
       preferEarlierResetAccounts: false,
       routingStrategy: "round_robin",
       openaiCacheAffinityMaxAgeSeconds: 300,
@@ -439,11 +439,10 @@ describe("buildSettingsUpdateRequest", () => {
     });
   });
 
-<<<<<<< 22625a07e
   describe("OpenCode Go secrets", () => {
     const settings = DashboardSettingsSchema.parse({
       stickyThreadsEnabled: true,
-      upstreamStreamTransport: "default",
+      upstreamStreamTransport: "auto",
       preferEarlierResetAccounts: false,
       routingStrategy: "round_robin",
       openaiCacheAffinityMaxAgeSeconds: 300,
@@ -489,8 +488,8 @@ describe("buildSettingsUpdateRequest", () => {
       expect(settings.opencodeGoSidecarApiKeyConfigured).toBe(true);
       expect("opencodeGoSidecarApiKey" in settings).toBe(false);
     });
-||||||| 84fde5a1e
-=======
+  });
+
   it("preserves explicit null capacity clears in the update payload", () => {
     const settings = createDashboardSettings();
     const payload = buildSettingsUpdateRequest(settings, {
@@ -526,6 +525,5 @@ describe("buildSettingsUpdateRequest local login policy", () => {
     });
 
     expect(payload.localLoginPolicy).toBe("break_glass_only");
->>>>>>> 72630bbfe
   });
 });

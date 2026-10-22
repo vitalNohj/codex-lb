@@ -1,5 +1,4 @@
-<<<<<<< 22625a07e
-import { Suspense, lazy, useEffect, useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import {
   Activity,
   ArrowRightLeft,
@@ -12,13 +11,6 @@ import {
   SlidersHorizontal,
   type LucideIcon,
 } from "lucide-react";
-||||||| 84fde5a1e
-import { Suspense, lazy } from "react";
-import { Settings } from "lucide-react";
-=======
-import { useState } from "react";
-import { Settings } from "lucide-react";
->>>>>>> 72630bbfe
 import { useTranslation } from "react-i18next";
 import { useLocation } from "react-router-dom";
 
@@ -33,28 +25,14 @@ import { QuotaPlannerSection } from "@/features/quota-planner/components/quota-p
 import { shouldExpandAdvancedSettings } from "@/features/settings/advanced-settings-deeplink";
 import { AccessCard } from "@/features/settings/components/access/access-card";
 import { AdvancedSettingsGroup } from "@/features/settings/components/advanced-settings-group";
-<<<<<<< 22625a07e
 import { AliasSettings } from "@/features/settings/components/alias-settings";
-||||||| 84fde5a1e
-=======
 import { OrganisationSettingsGroup } from "@/features/settings/components/organisation/organisation-group";
->>>>>>> 72630bbfe
 import { AppearanceSettings } from "@/features/settings/components/appearance-settings";
-<<<<<<< 22625a07e
 import { DashboardLayoutSettings } from "@/features/settings/components/dashboard-layout-settings";
-||||||| 84fde5a1e
-=======
 import { ConversationArchiveSettings } from "@/features/settings/components/conversation-archive-settings";
->>>>>>> 72630bbfe
 import { DataRetentionSettings } from "@/features/settings/components/data-retention-settings";
-<<<<<<< 22625a07e
 import { FreeModelDiscoveryPanel } from "@/features/settings/components/free-model-discovery-panel";
 import { SidecarIntegrationsCard } from "@/features/settings/components/sidecar-integrations";
-import { GuestAccessSettings } from "@/features/settings/components/guest-access-settings";
-||||||| 84fde5a1e
-import { GuestAccessSettings } from "@/features/settings/components/guest-access-settings";
-=======
->>>>>>> 72630bbfe
 import { ImportSettings } from "@/features/settings/components/import-settings";
 import { ModelCatalogueSettings } from "@/features/settings/components/model-catalogue-settings";
 import { ResetCreditSettings } from "@/features/settings/components/reset-credit-settings";
@@ -374,100 +352,24 @@ export function SettingsPage() {
               </div>
             ) : null}
 
-<<<<<<< 22625a07e
             <SectionGroup id="external-integrations-group" title="Integrations">
               <SidecarIntegrationsCard
-||||||| 84fde5a1e
-          {authMode === "disabled" ? (
-            <div className="rounded-lg border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-xs font-medium text-foreground">
-              {t("settings.page.disabledNotice")}
-            </div>
-          ) : null}
-
-          <div className="space-y-4">
-            <AppearanceSettings />
-            <ImportSettings settings={settings} busy={controlsDisabled} onSave={handleSave} />
-            <ResetCreditSettings settings={settings} busy={controlsDisabled} onSave={handleSave} />
-            {canWrite ? (
-              <GuestAccessSettings
-=======
-          {authMode === "disabled" ? (
-            <div className="rounded-lg border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-xs font-medium text-foreground">
-              {t("settings.page.disabledNotice")}
-            </div>
-          ) : null}
-
-          <div className="space-y-4">
-            <AppearanceSettings />
-            <ImportSettings settings={settings} busy={controlsDisabled} onSave={handleSave} />
-            <ResetCreditSettings settings={settings} busy={controlsDisabled} onSave={handleSave} />
-            {/* Guest access, password, session and TOTP live inside the Access
-                card. It mounts for `write` holders and for any fully signed-in
-                account (its own password/TOTP); guests never saw it and still do not. */}
-            {canWrite || personalSignIn ? (
-              <AccessCard
->>>>>>> 72630bbfe
                 settings={settings}
                 busy={busy}
                 onSave={handleSave}
                 locationHash={location.hash}
               />
-<<<<<<< 22625a07e
               <FreeModelDiscoveryPanel settings={settings} />
             </SectionGroup>
-||||||| 84fde5a1e
-            ) : null}
-            {canWrite ? <PasswordSettings disabled={busy} /> : null}
-            {canWrite && passwordManagementEnabled ? (
-              <SessionSettings settings={settings} busy={busy} onSave={handleSave} />
-            ) : null}
-            {canWrite && passwordManagementEnabled && passwordSessionActive ? (
-              <Suspense fallback={null}>
-                <TotpSettings settings={settings} disabled={busy} onSave={handleSave} />
-              </Suspense>
-            ) : null}
-=======
-            ) : null}
->>>>>>> 72630bbfe
 
-<<<<<<< 22625a07e
             <SectionGroup id="alias-settings" title="Model aliasing">
               <AliasSettings settings={settings} busy={controlsDisabled} onSave={handleSave} />
             </SectionGroup>
-||||||| 84fde5a1e
-            <ApiKeysSection
-              apiKeyAuthEnabled={settings.apiKeyAuthEnabled}
-              hideUpstreamQuotaFromApiKeys={settings.hideUpstreamQuotaFromApiKeys}
-              disabled={controlsDisabled}
-              onApiKeyAuthEnabledChange={(enabled) =>
-                void handleSave(buildSettingsUpdateRequest(settings, { apiKeyAuthEnabled: enabled }))
-              }
-              onHideUpstreamQuotaFromApiKeysChange={(enabled) =>
-                void handleSave(buildSettingsUpdateRequest(settings, { hideUpstreamQuotaFromApiKeys: enabled }))
-              }
-            />
-=======
-            {canWrite ? (
-              <ApiKeysSection
-                apiKeyAuthEnabled={settings.apiKeyAuthEnabled}
-                hideUpstreamQuotaFromApiKeys={settings.hideUpstreamQuotaFromApiKeys}
-                disabled={controlsDisabled}
-                policyControlsDisabled={controlsDisabled || !canWriteSecurity}
-                onApiKeyAuthEnabledChange={(enabled) =>
-                  void handleSave(buildSettingsUpdateRequest(settings, { apiKeyAuthEnabled: enabled }))
-                }
-                onHideUpstreamQuotaFromApiKeysChange={(enabled) =>
-                  void handleSave(buildSettingsUpdateRequest(settings, { hideUpstreamQuotaFromApiKeys: enabled }))
-                }
-              />
-            ) : null}
->>>>>>> 72630bbfe
 
             <SectionGroup id="appearance-settings" title="Appearance">
               <AppearanceSettings />
             </SectionGroup>
 
-<<<<<<< 22625a07e
             <SectionGroup id="dashboard-settings" title="Dashboard">
               <DashboardLayoutSettings settings={settings} busy={controlsDisabled} onSave={handleSave} />
             </SectionGroup>
@@ -477,192 +379,35 @@ export function SettingsPage() {
               <ResetCreditSettings settings={settings} busy={controlsDisabled} onSave={handleSave} />
             </SectionGroup>
 
-            {canWrite ? (
+            {/* Guest access, password, session and TOTP live inside the Access
+                card. It mounts for `write` holders and for any fully signed-in
+                account (its own password/TOTP); guests never saw it and still do not. */}
+            {canWrite || personalSignIn ? (
               <SectionGroup id="security-settings" title="Security">
-                <GuestAccessSettings
+                <AccessCard
                   settings={settings}
                   busy={busy}
                   onSave={handleSave}
                   onRefresh={() => settingsQuery.refetch()}
-||||||| 84fde5a1e
-            <AdvancedSettingsGroup
-              key={expandAdvanced ? `open:${advancedScrollToId ?? ""}` : "closed"}
-              defaultOpen={expandAdvanced}
-              scrollToId={advancedScrollToId}
-              waitForQueryKeys={FIREWALL_LAYOUT_QUERY_KEYS}
-            >
-              <RoutingSettings
-                key={[
-                  settings.openaiCacheAffinityMaxAgeSeconds,
-                  settings.warmupModel,
-                  settings.limitWarmupModel,
-                  settings.limitWarmupPrompt,
-                  settings.limitWarmupExhaustedThresholdPercent,
-                  settings.limitWarmupIdleThresholdPercent,
-                  settings.limitWarmupCooldownSeconds,
-                  settings.limitWarmupStaggeredIdleEnabled,
-                  settings.proxyAccountResponseCreateLimit,
-                  settings.proxyAccountStreamLimit,
-                  settings.proxyAccountStreamRecoveryReserve,
-                  settings.proxyApiKeyFairShareCongestionThresholdPct,
-                ].join(":")}
-                settings={settings}
-                accounts={accountsQuery.data ?? []}
-                accountsLoading={accountsQuery.isLoading}
-                busy={controlsDisabled}
-                onSave={handleSave}
-              />
-              {upstreamProxyQuery.data ? (
-                <UpstreamProxySettings
-                  admin={upstreamProxyQuery.data}
-                  busy={controlsDisabled}
-                  onSaveSettings={handleSave}
-                  onCreateEndpoint={(payload) => createEndpointMutation.mutateAsync(payload)}
-                  onTestEndpoint={(endpointId) => testEndpointMutation.mutateAsync(endpointId)}
-                  onCreatePool={(payload) => createPoolMutation.mutateAsync(payload)}
-                  onAddPoolMember={(poolId, payload) =>
-                    addPoolMemberMutation.mutateAsync({ poolId, payload })
-                  }
-=======
-            <AdvancedSettingsGroup
-              key={expandAdvanced ? `open:${advancedScrollToId ?? ""}` : "closed"}
-              defaultOpen={expandAdvanced}
-              scrollToId={advancedScrollToId}
-              waitForQueryKeys={FIREWALL_LAYOUT_QUERY_KEYS}
-            >
-              <RoutingSettings
-                key={[
-                  settings.openaiCacheAffinityMaxAgeSeconds,
-                  settings.warmupModel,
-                  settings.limitWarmupModel,
-                  settings.limitWarmupPrompt,
-                  settings.limitWarmupExhaustedThresholdPercent,
-                  settings.limitWarmupIdleThresholdPercent,
-                  settings.limitWarmupCooldownSeconds,
-                  settings.limitWarmupStaggeredIdleEnabled,
-                   settings.proxyAccountResponseCreateLimit,
-                   settings.proxyAccountResponseCreateLimitOverride,
-                   settings.proxyAccountStreamLimit,
-                   settings.proxyAccountStreamLimitOverride,
-                   settings.proxyAccountStreamRecoveryReserve,
-                   settings.proxyAccountStreamRecoveryReserveOverride,
-                   settings.proxyApiKeyFairShareCongestionThresholdPct,
-                   settings.proxyApiKeyFairShareCongestionThresholdPctOverride,
-                   settings.proxyOverloadIsolationSeconds,
-                   settings.proxyAccountErrorRateWeightingEnabled,
-                   settings.proxyAccountInflightPenaltyPct,
-                   settings.proxyAccountLeaseTokenWeight,
-                   settings.proxyAccountLeaseTtlSeconds,
-                   ...ROUTING_OVERLOAD_PROVENANCE_KEYS.map((name) => settings.provenance?.[name]?.source ?? ""),
-                ].join(":")}
-                settings={settings}
-                accounts={accountsQuery.data ?? []}
-                accountsLoading={accountsQuery.isLoading}
-                busy={controlsDisabled}
-                onSave={handleSave}
-              />
-              <ResilienceSettings settings={settings} busy={controlsDisabled} onSave={handleSave} />
-              <SessionBridgeSettings settings={settings} busy={controlsDisabled} onSave={handleSave} />
-              <BackgroundJobsSettings settings={settings} busy={controlsDisabled} onSave={handleSave} />
-              {canWrite && upstreamProxyQuery.data ? (
-                <UpstreamProxySettings
-                  admin={upstreamProxyQuery.data}
-                  busy={controlsDisabled}
-                  canCreateEndpoint={canWriteSecurity}
-                  onSaveSettings={handleSave}
-                  onCreateEndpoint={(payload) => createEndpointMutation.mutateAsync(payload)}
-                  onTestEndpoint={(endpointId) => testEndpointMutation.mutateAsync(endpointId)}
-                  onCreatePool={(payload) => createPoolMutation.mutateAsync(payload)}
-                  onAddPoolMember={(poolId, payload) =>
-                    addPoolMemberMutation.mutateAsync({ poolId, payload })
-                  }
->>>>>>> 72630bbfe
                 />
-<<<<<<< 22625a07e
-                <PasswordSettings disabled={busy} />
-                {passwordManagementEnabled ? (
-                  <SessionSettings settings={settings} busy={busy} onSave={handleSave} />
-                ) : null}
-                {passwordManagementEnabled && passwordSessionActive ? (
-                  <Suspense fallback={null}>
-                    <TotpSettings settings={settings} disabled={busy} onSave={handleSave} />
-                  </Suspense>
-                ) : null}
               </SectionGroup>
             ) : null}
 
             <SectionGroup id="api-keys-settings" title="API keys & telemetry">
-              <ApiKeysSection
-                apiKeyAuthEnabled={settings.apiKeyAuthEnabled}
-                hideUpstreamQuotaFromApiKeys={settings.hideUpstreamQuotaFromApiKeys}
-                disabled={controlsDisabled}
-                onApiKeyAuthEnabledChange={(enabled) =>
-                  void handleSave({ apiKeyAuthEnabled: enabled })
-                }
-                onHideUpstreamQuotaFromApiKeysChange={(enabled) =>
-                  void handleSave({ hideUpstreamQuotaFromApiKeys: enabled })
-                }
-||||||| 84fde5a1e
+              {canWrite ? (
+                <ApiKeysSection
+                  apiKeyAuthEnabled={settings.apiKeyAuthEnabled}
+                  hideUpstreamQuotaFromApiKeys={settings.hideUpstreamQuotaFromApiKeys}
+                  disabled={controlsDisabled}
+                  policyControlsDisabled={controlsDisabled || !canWriteSecurity}
+                  onApiKeyAuthEnabledChange={(enabled) =>
+                    void handleSave({ apiKeyAuthEnabled: enabled })
+                  }
+                  onHideUpstreamQuotaFromApiKeysChange={(enabled) =>
+                    void handleSave({ hideUpstreamQuotaFromApiKeys: enabled })
+                  }
+                />
               ) : null}
-              <ModelSourcesSettings disabled={controlsDisabled} />
-              <FirewallSection disabled={controlsDisabled} />
-              <QuotaPlannerSection disabled={controlsDisabled} />
-              <StickySessionsSection disabled={controlsDisabled} />
-              <DataRetentionSettings
-                key={[
-                  settings.requestLogRetentionOverrideDays,
-                  settings.usageHistoryRetentionOverrideDays,
-                  settings.requestLogRetentionDays,
-                  settings.usageHistoryRetentionDays,
-                ].join(":")}
-                settings={settings}
-                busy={controlsDisabled}
-                onSave={handleSave}
-=======
-              ) : null}
-              <ModelSourcesSettings disabled={controlsDisabled} />
-              <ModelCatalogueSettings disabled={controlsDisabled} />
-              <FirewallSection disabled={controlsDisabled || !canWriteSecurity} />
-              <QuotaPlannerSection disabled={controlsDisabled} />
-              {canWrite ? <StickySessionsSection disabled={controlsDisabled} /> : null}
-              {/* Next to sticky sessions: both answer "which account served this, and what did it reuse?" */}
-              {canWriteOps ? <CacheIsolationProbeSection disabled={controlsDisabled} /> : null}
-              <DataRetentionSettings
-                key={[
-                  settings.requestLogRetentionOverrideDays,
-                  settings.usageHistoryRetentionOverrideDays,
-                  settings.requestLogRetentionDays,
-                  settings.usageHistoryRetentionDays,
-                  // R2 spool retention: a saved value (or a layer move back to
-                  // inherited) must re-seed the card's draft.
-                  settings.httpResponsesSessionBridgeOperationSpoolRetentionSeconds,
-                  settings.provenance?.http_responses_session_bridge_operation_spool_retention_seconds?.source ?? "",
-                ].join(":")}
-                settings={settings}
-                busy={controlsDisabled}
-                onSave={handleSave}
-              />
-              {/* M5 conversation archive: next to Data retention (same "what we keep" family). */}
-              <ConversationArchiveSettings settings={settings} busy={controlsDisabled} onSave={handleSave} />
-              <UpstreamTimeoutSettings
-                key={[
-                  settings.version,
-                  settings.upstreamConnectTimeoutSeconds,
-                  settings.proxyRequestBudgetSeconds,
-                  settings.compactRequestBudgetSeconds,
-                  settings.transcriptionRequestBudgetSeconds,
-                  settings.httpResponsesStreamRequestBudgetSeconds,
-                  settings.httpResponsesSessionBridgeRequestBudgetSeconds,
-                  settings.streamIdleTimeoutSeconds,
-                  settings.proxyDownstreamWebsocketIdleTimeoutSeconds,
-                  settings.sseKeepaliveIntervalSeconds,
-                ].join(":")}
-                settings={settings}
-                busy={controlsDisabled}
-                onSave={handleSave}
->>>>>>> 72630bbfe
-              />
-<<<<<<< 22625a07e
               <TelemetrySettings disabled={controlsDisabled} />
             </SectionGroup>
 
@@ -687,9 +432,19 @@ export function SettingsPage() {
                     settings.limitWarmupCooldownSeconds,
                     settings.limitWarmupStaggeredIdleEnabled,
                     settings.proxyAccountResponseCreateLimit,
+                    settings.proxyAccountResponseCreateLimitOverride,
                     settings.proxyAccountStreamLimit,
+                    settings.proxyAccountStreamLimitOverride,
                     settings.proxyAccountStreamRecoveryReserve,
+                    settings.proxyAccountStreamRecoveryReserveOverride,
                     settings.proxyApiKeyFairShareCongestionThresholdPct,
+                    settings.proxyApiKeyFairShareCongestionThresholdPctOverride,
+                    settings.proxyOverloadIsolationSeconds,
+                    settings.proxyAccountErrorRateWeightingEnabled,
+                    settings.proxyAccountInflightPenaltyPct,
+                    settings.proxyAccountLeaseTokenWeight,
+                    settings.proxyAccountLeaseTtlSeconds,
+                    ...ROUTING_OVERLOAD_PROVENANCE_KEYS.map((name) => settings.provenance?.[name]?.source ?? ""),
                   ].join(":")}
                   settings={settings}
                   accounts={accountsQuery.data ?? []}
@@ -697,10 +452,14 @@ export function SettingsPage() {
                   busy={controlsDisabled}
                   onSave={handleSave}
                 />
-                {upstreamProxyQuery.data ? (
+                <ResilienceSettings settings={settings} busy={controlsDisabled} onSave={handleSave} />
+                <SessionBridgeSettings settings={settings} busy={controlsDisabled} onSave={handleSave} />
+                <BackgroundJobsSettings settings={settings} busy={controlsDisabled} onSave={handleSave} />
+                {canWrite && upstreamProxyQuery.data ? (
                   <UpstreamProxySettings
                     admin={upstreamProxyQuery.data}
                     busy={controlsDisabled}
+                    canCreateEndpoint={canWriteSecurity}
                     onSaveSettings={handleSave}
                     onCreateEndpoint={(payload) => createEndpointMutation.mutateAsync(payload)}
                     onTestEndpoint={(endpointId) => testEndpointMutation.mutateAsync(endpointId)}
@@ -711,15 +470,41 @@ export function SettingsPage() {
                   />
                 ) : null}
                 <ModelSourcesSettings disabled={controlsDisabled} />
-                <FirewallSection disabled={controlsDisabled} />
+                <ModelCatalogueSettings disabled={controlsDisabled} />
+                <FirewallSection disabled={controlsDisabled || !canWriteSecurity} />
                 <QuotaPlannerSection disabled={controlsDisabled} />
-                <StickySessionsSection disabled={controlsDisabled} />
+                {canWrite ? <StickySessionsSection disabled={controlsDisabled} /> : null}
+                {/* Next to sticky sessions: both answer "which account served this, and what did it reuse?" */}
+                {canWriteOps ? <CacheIsolationProbeSection disabled={controlsDisabled} /> : null}
                 <DataRetentionSettings
                   key={[
                     settings.requestLogRetentionOverrideDays,
                     settings.usageHistoryRetentionOverrideDays,
                     settings.requestLogRetentionDays,
                     settings.usageHistoryRetentionDays,
+                    // R2 spool retention: a saved value (or a layer move back to
+                    // inherited) must re-seed the card's draft.
+                    settings.httpResponsesSessionBridgeOperationSpoolRetentionSeconds,
+                    settings.provenance?.http_responses_session_bridge_operation_spool_retention_seconds?.source ?? "",
+                  ].join(":")}
+                  settings={settings}
+                  busy={controlsDisabled}
+                  onSave={handleSave}
+                />
+                {/* M5 conversation archive: next to Data retention (same "what we keep" family). */}
+                <ConversationArchiveSettings settings={settings} busy={controlsDisabled} onSave={handleSave} />
+                <UpstreamTimeoutSettings
+                  key={[
+                    settings.version,
+                    settings.upstreamConnectTimeoutSeconds,
+                    settings.proxyRequestBudgetSeconds,
+                    settings.compactRequestBudgetSeconds,
+                    settings.transcriptionRequestBudgetSeconds,
+                    settings.httpResponsesStreamRequestBudgetSeconds,
+                    settings.httpResponsesSessionBridgeRequestBudgetSeconds,
+                    settings.streamIdleTimeoutSeconds,
+                    settings.proxyDownstreamWebsocketIdleTimeoutSeconds,
+                    settings.sseKeepaliveIntervalSeconds,
                   ].join(":")}
                   settings={settings}
                   busy={controlsDisabled}
@@ -727,16 +512,11 @@ export function SettingsPage() {
                 />
               </AdvancedSettingsGroup>
             </div>
-||||||| 84fde5a1e
-            </AdvancedSettingsGroup>
-=======
-            </AdvancedSettingsGroup>
 
             {/* PR-2c-2: the second collapsed group, last on the page. It draws
                 one line until a company install configures something, and its
                 children (and their requests) only exist while it is open. */}
             <OrganisationSettingsGroup disabled={controlsDisabled} />
->>>>>>> 72630bbfe
           </div>
 
           <LoadingOverlay visible={!!settings && busy} label={t("settings.page.savingLabel")} />

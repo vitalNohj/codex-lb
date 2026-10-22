@@ -7,46 +7,31 @@ from typing import cast
 import pytest
 
 import app.modules.settings.service as settings_service_module
-<<<<<<< 22625a07e
 from app.core.clients.claude_sidecar import SidecarPrefix
-from app.db.models import DashboardSettings
-from app.modules.openai_compat.endpoints import OpenAICompatEndpointUpdateData
-||||||| 84fde5a1e
-from app.db.models import DashboardSettings
-=======
 from app.core.config.dashboard_overrides import DASHBOARD_TIMEOUT_SETTINGS
 from app.core.config.settings import Settings
 from app.db.models import DashboardSettings, DashboardUser
->>>>>>> 72630bbfe
+from app.modules.openai_compat.endpoints import OpenAICompatEndpointUpdateData
 from app.modules.settings.repository import SettingsRepository
 from app.modules.settings.service import (
-<<<<<<< 22625a07e
     DashboardSettingsUpdateData,
-||||||| 84fde5a1e
-=======
     InheritableValue,
     SettingSource,
->>>>>>> 72630bbfe
     SettingsService,
     SidecarRoutingConflictError,
     _dump_additional_quota_routing_policies,
     _dump_claude_sidecar_model_prefixes,
     _dump_sidecar_full_models,
     _parse_additional_quota_routing_policies,
-<<<<<<< 22625a07e
     _parse_claude_sidecar_model_prefixes,
     _parse_sidecar_full_models,
     _validate_unique_sidecar_routes,
-||||||| 84fde5a1e
-=======
     resolve_inheritable,
->>>>>>> 72630bbfe
 )
 
 pytestmark = pytest.mark.unit
 
 
-<<<<<<< 22625a07e
 def _validate_routes(
     payload: DashboardSettingsUpdateData, stored_stars: dict[str, str] | None = None
 ) -> dict[str, str]:
@@ -57,8 +42,8 @@ def _validate_routes(
     """
 
     return _validate_unique_sidecar_routes(payload, stored_full_model_stars=stored_stars or {})
-||||||| 84fde5a1e
-=======
+
+
 def test_resolve_inheritable_null_column_uses_environment_when_it_differs_from_default() -> None:
     assert resolve_inheritable(None, 12, 8) == InheritableValue(12, "env", 12, 8)
 
@@ -259,7 +244,6 @@ async def test_stream_and_bridge_budgets_resolve_dashboard_then_environment_then
         7200.0, "default", 7200.0, 7200.0
     )
     assert settings.provenance["http_responses_session_bridge_request_budget_seconds"].source == "default"
->>>>>>> 72630bbfe
 
 
 @pytest.mark.asyncio
@@ -288,15 +272,7 @@ async def test_migrated_null_account_caps_inherit_environment(monkeypatch: pytes
                 "proxy_account_stream_limit": 32,
                 "proxy_account_stream_recovery_reserve": 4,
                 "proxy_api_key_fair_share_congestion_threshold_pct": 0,
-<<<<<<< 22625a07e
-                "request_log_retention_days": 0,
-                "usage_history_retention_days": 0,
                 "hourly_rollup_retention_days": 0,
-||||||| 84fde5a1e
-                "request_log_retention_days": 0,
-                "usage_history_retention_days": 0,
-=======
->>>>>>> 72630bbfe
             },
         )(),
     )
@@ -369,15 +345,7 @@ async def test_migrated_null_api_key_fair_share_threshold_inherits_environment(
                 "proxy_account_stream_limit": 32,
                 "proxy_account_stream_recovery_reserve": 4,
                 "proxy_api_key_fair_share_congestion_threshold_pct": 55,
-<<<<<<< 22625a07e
-                "request_log_retention_days": 0,
-                "usage_history_retention_days": 0,
                 "hourly_rollup_retention_days": 0,
-||||||| 84fde5a1e
-                "request_log_retention_days": 0,
-                "usage_history_retention_days": 0,
-=======
->>>>>>> 72630bbfe
             },
         )(),
     )
@@ -425,15 +393,7 @@ async def test_null_retention_inherits_environment_and_dashboard_value_wins(
                 "proxy_account_stream_limit": 32,
                 "proxy_account_stream_recovery_reserve": 4,
                 "proxy_api_key_fair_share_congestion_threshold_pct": 0,
-<<<<<<< 22625a07e
-                "request_log_retention_days": 90,
-                "usage_history_retention_days": 45,
                 "hourly_rollup_retention_days": 7,
-||||||| 84fde5a1e
-                "request_log_retention_days": 90,
-                "usage_history_retention_days": 45,
-=======
->>>>>>> 72630bbfe
             },
         )(),
     )
@@ -442,17 +402,9 @@ async def test_null_retention_inherits_environment_and_dashboard_value_wins(
     # NULL dashboard values mean retention was never configured, which is
     # disabled (0); the raw overrides stay exposed as None (= not set).
     settings = await service.get_settings()
-<<<<<<< 22625a07e
-    assert settings.request_log_retention_days == 90
-    assert settings.usage_history_retention_days == 45
-    assert settings.hourly_rollup_retention_days == 7
-||||||| 84fde5a1e
-    assert settings.request_log_retention_days == 90
-    assert settings.usage_history_retention_days == 45
-=======
     assert settings.request_log_retention_days == 0
     assert settings.usage_history_retention_days == 0
->>>>>>> 72630bbfe
+    assert settings.hourly_rollup_retention_days == 7
     assert settings.request_log_retention_override_days is None
     assert settings.usage_history_retention_override_days is None
     assert settings.hourly_rollup_retention_override_days is None
@@ -504,7 +456,6 @@ def test_dump_additional_quota_routing_policies_canonicalizes_keys_and_filters_i
     assert json.loads(dumped) == {"codex_spark": "burn_first"}
 
 
-<<<<<<< 22625a07e
 def test_sidecar_prefix_dump_parse_preserves_strip_flags_and_dedupes() -> None:
     dumped = _dump_claude_sidecar_model_prefixes(
         [
@@ -549,13 +500,29 @@ def _settings_update(
 ) -> DashboardSettingsUpdateData:
     return DashboardSettingsUpdateData(
         sticky_threads_enabled=True,
-        upstream_stream_transport="default",
+        upstream_stream_transport="auto",
         prohibit_fast_mode=False,
         http_downstream_transport_policy="smart",
+        thread_cache_identity_mode=None,
+        clear_thread_cache_identity_mode=False,
         proxy_account_response_create_limit=4,
+        clear_proxy_account_response_create_limit=False,
         proxy_account_stream_limit=8,
+        clear_proxy_account_stream_limit=False,
         proxy_account_stream_recovery_reserve=1,
+        clear_proxy_account_stream_recovery_reserve=False,
         proxy_api_key_fair_share_congestion_threshold_pct=0,
+        clear_proxy_api_key_fair_share_congestion_threshold_pct=False,
+        proxy_overload_isolation_seconds=None,
+        clear_proxy_overload_isolation_seconds=False,
+        proxy_account_error_rate_weighting_enabled=None,
+        clear_proxy_account_error_rate_weighting_enabled=False,
+        proxy_account_inflight_penalty_pct=None,
+        clear_proxy_account_inflight_penalty_pct=False,
+        proxy_account_lease_token_weight=None,
+        clear_proxy_account_lease_token_weight=False,
+        proxy_account_lease_ttl_seconds=None,
+        clear_proxy_account_lease_ttl_seconds=False,
         upstream_proxy_routing_enabled=False,
         upstream_proxy_default_pool_id=None,
         prefer_earlier_reset_accounts=True,
@@ -580,6 +547,8 @@ def _settings_update(
         warmup_model="auto",
         import_without_overwrite=True,
         totp_required_on_login=False,
+        totp_required_for_admin_role=False,
+        local_login_policy="enabled",
         api_key_auth_enabled=False,
         hide_upstream_quota_from_api_keys=False,
         limit_warmup_enabled=False,
@@ -975,8 +944,8 @@ def test_settings_update_request_accepts_ollama_string_prefix_arrays() -> None:
         {"prefix": "ollama_", "strip": True},
     ]
     assert payload.ollama_sidecar_full_models == ["gpt-oss:120b-cloud"]
-||||||| 84fde5a1e
-=======
+
+
 # --- C2-3 resilience toggles -------------------------------------------------
 
 
@@ -1183,4 +1152,3 @@ def test_conversation_archive_env_shadow_warning_names_the_variable(monkeypatch:
 
 
 # end M5 conversation archive
->>>>>>> 72630bbfe

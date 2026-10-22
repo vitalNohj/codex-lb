@@ -3,7 +3,6 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
 import { UpstreamTimeoutSettings } from "@/features/settings/components/upstream-timeout-settings";
-import { buildSettingsUpdateRequest } from "@/features/settings/payload";
 import type { DashboardSettings } from "@/features/settings/schemas";
 import { createDashboardSettings } from "@/test/mocks/factories";
 
@@ -75,7 +74,7 @@ describe("UpstreamTimeoutSettings", () => {
     await user.click(screen.getByRole("button", { name: "Save timeouts" }));
 
     expect(onSave).toHaveBeenCalledWith(
-      buildSettingsUpdateRequest(settings, { streamIdleTimeoutSeconds: 900 }),
+      { streamIdleTimeoutSeconds: 900 },
     );
   });
 
@@ -92,7 +91,7 @@ describe("UpstreamTimeoutSettings", () => {
     await user.click(screen.getByRole("button", { name: "Save timeouts" }));
 
     expect(onSave).toHaveBeenCalledWith(
-      buildSettingsUpdateRequest(settings, { compactRequestBudgetSeconds: null }),
+      { compactRequestBudgetSeconds: null },
     );
   });
 
@@ -127,11 +126,11 @@ describe("UpstreamTimeoutSettings", () => {
     await user.click(screen.getByRole("button", { name: "Save timeouts" }));
 
     expect(onSave).toHaveBeenCalledWith(
-      buildSettingsUpdateRequest(settingsWithProvenance(), {
+      {
         upstreamConnectTimeoutSeconds: 130,
         transcriptionRequestBudgetSeconds: 150,
         sseKeepaliveIntervalSeconds: 0,
-      }),
+      },
     );
   });
 
@@ -166,10 +165,10 @@ describe("UpstreamTimeoutSettings", () => {
     await user.click(screen.getByRole("button", { name: "Save timeouts" }));
 
     expect(onSave).toHaveBeenCalledWith(
-      buildSettingsUpdateRequest(settingsWithProvenance(), {
+      {
         httpResponsesStreamRequestBudgetSeconds: 60,
         httpResponsesSessionBridgeRequestBudgetSeconds: 6001,
-      }),
+      },
     );
   });
 

@@ -1,18 +1,10 @@
 from __future__ import annotations
 
-<<<<<<< 22625a07e
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import urlparse
-||||||| 84fde5a1e
-from pydantic import Field, field_validator
-=======
-from typing import Literal
 
-from pydantic import Field, StrictInt, field_validator
->>>>>>> 72630bbfe
-
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, StrictInt, field_validator, model_validator
 
 from app.core.config.opencode_go_endpoint import OPENCODE_GO_BASE_URL_ERROR, is_opencode_go_base_url
 from app.modules.settings.model_alias_pools import (
@@ -204,7 +196,6 @@ class AdditionalQuotaPolicy(DashboardModel):
     model_ids: list[str] = Field(default_factory=list)
 
 
-<<<<<<< 22625a07e
 class ClaudeSidecarAuthPlan(DashboardModel):
     auth_index: str | None = Field(default=None, max_length=255)
     email: str | None = Field(default=None, max_length=255)
@@ -377,8 +368,8 @@ class DashboardLayoutVisibilityUpdate(DashboardModel):
     usage: bool | None = None
     accounts: bool | None = None
     request_logs: bool | None = None
-||||||| 84fde5a1e
-=======
+
+
 class SettingProvenance(DashboardModel):
     """Where an inheritable setting's effective value comes from.
 
@@ -396,19 +387,12 @@ class SettingProvenance(DashboardModel):
 
 #: ``dashboard_settings.local_login_policy`` on the wire (PLAN §4.6).
 LocalLoginPolicyLiteral = Literal["enabled", "admins_only", "break_glass_only"]
->>>>>>> 72630bbfe
 
 
 class DashboardSettingsResponse(DashboardModel):
     sticky_threads_enabled: bool
-<<<<<<< 22625a07e
     cliproxy_capacity_routing_enabled: bool = True
-    upstream_stream_transport: str = Field(pattern=r"^(default|auto|http|websocket)$")
-||||||| 84fde5a1e
-    upstream_stream_transport: str = Field(pattern=r"^(default|auto|http|websocket)$")
-=======
     upstream_stream_transport: str = Field(pattern=r"^(auto|http|websocket)$")
->>>>>>> 72630bbfe
     prohibit_fast_mode: bool
     http_downstream_transport_policy: str = Field(pattern=_HTTP_DOWNSTREAM_TRANSPORT_POLICY_PATTERN)
     # Effective mode; ``provenance.thread_cache_identity_mode`` says whether it
@@ -846,7 +830,6 @@ class DashboardSettingsUpdateRequest(DashboardModel):
     # value = store the override.
     request_log_retention_override_days: int | None = Field(default=None, ge=0, le=3650)
     usage_history_retention_override_days: int | None = Field(default=None, ge=0, le=3650)
-<<<<<<< 22625a07e
     # No floor validator for the hourly window: anything below the raw
     # request-log window is clamped up at resolution time (max of the two).
     hourly_rollup_retention_override_days: int | None = Field(default=None, ge=0, le=3650)
@@ -855,8 +838,6 @@ class DashboardSettingsUpdateRequest(DashboardModel):
     # the stored one, filtered against the cards this save configures.
     sidecar_full_model_stars: dict[str, str] | None = Field(default=None, max_length=256)
     dashboard_layout: DashboardLayoutVisibilityUpdate | None = None
-||||||| 84fde5a1e
-=======
     # C2-3 resilience toggles: tri-state via ``model_fields_set`` (absent =
     # unchanged, null = clear the dashboard value and inherit the deprecated
     # env alias / code default, value = store).
@@ -899,7 +880,6 @@ class DashboardSettingsUpdateRequest(DashboardModel):
     http_responses_stream_request_budget_seconds: float | None = Field(default=None, gt=0, le=86400)
     http_responses_session_bridge_request_budget_seconds: float | None = Field(default=None, gt=0, le=86400)
     # end M1 stream/bridge budgets
->>>>>>> 72630bbfe
 
     @field_validator("request_log_retention_override_days")
     @classmethod
@@ -1185,7 +1165,6 @@ class RuntimeConnectAddressResponse(DashboardModel):
     connect_address: str
 
 
-<<<<<<< 22625a07e
 class AliasPoolTargetHealth(DashboardModel):
     """Failover state of one alias pool target on this replica.
 
@@ -1204,8 +1183,8 @@ class AliasPoolsHealthResponse(DashboardModel):
     """``{alias: {target: health}}`` for every configured alias, pool or not."""
 
     aliases: dict[str, dict[str, AliasPoolTargetHealth]]
-||||||| 84fde5a1e
-=======
+
+
 # M4 model catalogue: per-model context window overrides. ``source`` is
 # ``"dashboard"`` when a dashboard row exists for the slug and ``"env"`` when
 # only the ``CODEX_LB_MODEL_CONTEXT_WINDOW_OVERRIDES`` entry applies;
@@ -1234,7 +1213,6 @@ class ModelContextWindowOverrideUpsertRequest(DashboardModel):
 
 
 # end M4 model catalogue
->>>>>>> 72630bbfe
 
 
 class UpstreamProxyEndpointCreateRequest(DashboardModel):

@@ -2024,7 +2024,6 @@
   "modelSources.fields.reasoningEffortsDescription": "填写这个模型源接受的推理级别标识，并选择默认值。",
   "modelSources.fields.reasoningEffortsPlaceholder": "none, low, provider-specific",
   "modelSources.fields.defaultReasoningEffort": "默认推理级别",
-<<<<<<< 22625a07e
   "dashboard.requests.aliasedFrom": "别名自 {{model}}",
   "dashboard.requestDetails.aliasedFrom": "别名来源",
   "reports.filters.allTime": "全部时间",
@@ -2150,10 +2149,7 @@
   "settings.cliproxy.apiKeys.cacheKeyAria": "为 {{label}} 发送提示缓存键",
   "settings.cliproxy.apiKeys.cacheKeyHint": "向上游添加稳定的 prompt_cache_key，以便提供商复用缓存。仅在上游接受该字段时开启。",
   "settings.cliproxy.apiKeys.cacheKeyGroupHint_one": "路由固定到此分组，而不是其 {{count}} 个密钥中的某一个。",
-  "settings.cliproxy.apiKeys.cacheKeyGroupHint_other": "路由固定到此分组，而不是其 {{count}} 个密钥中的某一个。"
-||||||| 84fde5a1e
-  "modelSources.fields.defaultReasoningEffort": "默认推理级别"
-=======
+  "settings.cliproxy.apiKeys.cacheKeyGroupHint_other": "路由固定到此分组，而不是其 {{count}} 个密钥中的某一个。",
   "auth.login.continueWith": "使用 {{provider}} 继续",
   "auth.login.providerNoUrl": "请先通过 {{provider}} 登录，然后重新打开此仪表板。",
   "auth.login.useLocalPassword": "改用密码登录",
@@ -2283,5 +2279,4 @@
   "organisation.automaticAccounts.secret.copy": "复制凭据",
   "organisation.errors.scim_token_not_found": "该凭据已不存在。",
   "accounts.importDialog.selectedFiles": "已选择的文件"
->>>>>>> 72630bbfe
 }

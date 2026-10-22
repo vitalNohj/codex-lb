@@ -590,16 +590,8 @@ requires-dist = [
     { name = "python-socks", extras = ["asyncio"], specifier = ">=2.7.2" },
     { name = "pyyaml", specifier = ">=6.0.3" },
     { name = "segno", specifier = ">=1.6.6" },
-<<<<<<< 22625a07e
     { name = "sqlalchemy", specifier = ">=2.0.53" },
-    { name = "urllib3", specifier = ">=2.7.0" },
-||||||| 84fde5a1e
-    { name = "sqlalchemy", specifier = ">=2.0.45" },
-    { name = "urllib3", specifier = ">=2.7.0" },
-=======
-    { name = "sqlalchemy", specifier = ">=2.0.45" },
     { name = "urllib3", specifier = ">=2.8.0" },
->>>>>>> 72630bbfe
     { name = "uvicorn", specifier = ">=0.47.0" },
     { name = "websockets", specifier = ">=16.0" },
     { name = "zstandard", specifier = ">=0.25.0" },

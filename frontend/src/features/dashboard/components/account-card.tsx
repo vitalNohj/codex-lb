@@ -47,99 +47,11 @@ function formatWarmupWindow(window: string): string {
   return window === "primary" || window === "primary_idle" ? "5h" : "weekly";
 }
 
-<<<<<<< 22625a07e
 export function AccountCard({ account, showAccountId = false, readOnly = false, onAction }: AccountCardProps) {
   if (account.synthetic) {
     return <SyntheticAccountCard account={account} onAction={onAction} />;
   }
   return <NativeAccountCard account={account} showAccountId={showAccountId} readOnly={readOnly} onAction={onAction} />;
-||||||| 84fde5a1e
-function QuotaBar({
-  label,
-  percent,
-  resetLabel,
-}: {
-  label: string;
-  percent: number | null;
-  resetLabel: string;
-}) {
-  const clamped = percent === null ? 0 : Math.max(0, Math.min(100, percent));
-  const hasPercent = percent !== null;
-  return (
-    <div className="space-y-1">
-      <div className="flex items-center justify-between text-xs">
-        <span className="text-muted-foreground">{label}</span>
-        <span
-          className={cn(
-            "tabular-nums font-medium",
-            !hasPercent
-              ? "text-muted-foreground"
-              : clamped >= 70
-                ? "text-emerald-600 dark:text-emerald-400"
-                : clamped >= 30
-                  ? "text-amber-600 dark:text-amber-400"
-                  : "text-red-600 dark:text-red-400",
-          )}
-        >
-          {formatPercentNullable(percent)}
-        </span>
-      </div>
-      <div className={cn("h-1.5 w-full overflow-hidden rounded-full", quotaBarTrack(clamped))}>
-        <div
-          className={cn("h-full rounded-full transition-all duration-500 ease-out", quotaBarColor(clamped))}
-          style={{ width: `${clamped}%` }}
-        />
-      </div>
-      <div className="flex items-center gap-1 text-[11px] text-muted-foreground">
-        <Clock className="h-3 w-3 shrink-0" />
-        <span>{resetLabel}</span>
-      </div>
-    </div>
-  );
-=======
-function QuotaBar({
-  label,
-  percent,
-  resetLabel,
-}: {
-  label: string;
-  percent: number | null;
-  resetLabel: string;
-}) {
-  const clamped = percent === null ? 0 : Math.max(0, Math.min(100, percent));
-  const hasPercent = percent !== null;
-  return (
-    <div className="space-y-1">
-      <div className="flex items-center justify-between text-xs">
-        <span className="text-muted-foreground">{label}</span>
-        <span
-          className={cn(
-            "tabular-nums font-medium",
-            !hasPercent
-              ? "text-muted-foreground"
-              : clamped >= 70
-                ? "text-emerald-600 dark:text-emerald-400"
-                : clamped >= 30
-                  ? "text-amber-600 dark:text-amber-400"
-                  : "text-red-600 dark:text-red-400",
-          )}
-        >
-          {formatPercentNullable(percent, 1)}
-        </span>
-      </div>
-      <div className={cn("h-1.5 w-full overflow-hidden rounded-full", quotaBarTrack(clamped))}>
-        <div
-          className={cn("h-full rounded-full transition-colors duration-500 ease-out", quotaBarColor(clamped))}
-          style={{ width: `${clamped}%` }}
-        />
-      </div>
-      <div className="flex items-center gap-1 text-[11px] text-muted-foreground">
-        <Clock className="h-3 w-3 shrink-0" />
-        <span>{resetLabel}</span>
-      </div>
-    </div>
-  );
->>>>>>> 72630bbfe
 }
 
 function NativeAccountCard({ account, showAccountId = false, readOnly = false, onAction }: AccountCardProps) {
@@ -226,11 +138,16 @@ function NativeAccountCard({ account, showAccountId = false, readOnly = false, o
       {/* Quota bars */}
       <div className={cn("mt-3.5 grid gap-3", weeklyOnly || monthlyOnly ? "grid-cols-1" : "grid-cols-2")}>
         {monthlyOnly ? (
-          <QuotaBar label={t("common.time.monthly")} percent={monthlyRemaining} resetLabel={monthlyReset} />
+          <QuotaBar label={t("common.time.monthly")} percent={monthlyRemaining} resetLabel={monthlyReset} smoothed />
         ) : (
           <>
-            {!weeklyOnly && <QuotaBar label="5h" percent={primaryRemaining} resetLabel={primaryReset} />}
-            <QuotaBar label={t("common.time.weekly")} percent={secondaryRemaining} resetLabel={secondaryReset} />
+            {!weeklyOnly && <QuotaBar label="5h" percent={primaryRemaining} resetLabel={primaryReset} smoothed />}
+            <QuotaBar
+              label={t("common.time.weekly")}
+              percent={secondaryRemaining}
+              resetLabel={secondaryReset}
+              smoothed
+            />
           </>
         )}
       </div>
@@ -311,13 +228,7 @@ function NativeAccountCard({ account, showAccountId = false, readOnly = false, o
             ) : null}
           </Button>
         ) : null}
-<<<<<<< 22625a07e
-        {status === "paused" ? (
-||||||| 84fde5a1e
-        {status === "paused" && (
-=======
-        {(status === "paused" || status === "deactivated") && (
->>>>>>> 72630bbfe
+        {status === "paused" || status === "deactivated" ? (
           <Button
             type="button"
             size="sm"
@@ -329,7 +240,7 @@ function NativeAccountCard({ account, showAccountId = false, readOnly = false, o
             <Play className="h-3 w-3" />
             {t("common.actions.resume")}
           </Button>
-        ) : status === "reauth" || status === "deactivated" ? null : (
+        ) : status === "reauth" ? null : (
           <Button
             type="button"
             size="sm"

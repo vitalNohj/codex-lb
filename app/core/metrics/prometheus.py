@@ -399,7 +399,6 @@ if PROMETHEUS_AVAILABLE:
         "Total cache invalidation poll cycles that failed",
         registry=REGISTRY,
     )
-<<<<<<< 22625a07e
     cliproxy_route_outcome_total = Counter(
         "codex_lb_cliproxy_route_outcome_total",
         "CLIProxyAPI credential routing outcomes by sticky key source",
@@ -424,8 +423,7 @@ if PROMETHEUS_AVAILABLE:
         "CLIProxyAPI routing.session-affinity as last read by the quota poller (1 on, 0 off)",
         registry=REGISTRY,
         **({"multiprocess_mode": "livemax"} if MULTIPROCESS_MODE else {}),
-||||||| 84fde5a1e
-=======
+    )
     # Model-source dispatch (#2123 WP-C1). ``kind`` is an opaque dispatch kind
     # supplied by the caller (``direct`` for direct source routing); every label
     # set is closed or bounded by the number of configured sources.
@@ -465,7 +463,6 @@ if PROMETHEUS_AVAILABLE:
         "Total limited-key model-source reservations settled at an estimate, by cause",
         ["source_id", "cause"],
         registry=REGISTRY,
->>>>>>> 72630bbfe
     )
 
     def make_scrape_registry() -> CollectorRegistryLike:
@@ -544,20 +541,16 @@ else:
     stream_terminal_delivery_total: CounterLike | None = None
     cache_invalidation_bump_failures_total: CounterLike | None = None
     cache_invalidation_poll_failures_total: CounterLike | None = None
-<<<<<<< 22625a07e
     cliproxy_route_outcome_total: CounterLike | None = None
     cliproxy_claude_sticky_cache_total: CounterLike | None = None
     cliproxy_xai_responses_route_total: CounterLike | None = None
     cliproxy_session_affinity_enabled: GaugeLike | None = None
-||||||| 84fde5a1e
-=======
     model_source_dispatch_total: CounterLike | None = None
     model_source_dispatch_abandoned_total: CounterLike | None = None
     model_source_timeout_total: CounterLike | None = None
     model_source_bulkhead_rejections_total: CounterLike | None = None
     model_source_bulkhead_in_flight: GaugeLike | None = None
     model_source_usage_estimated_total: CounterLike | None = None
->>>>>>> 72630bbfe
 
     def make_scrape_registry() -> None:
         return None

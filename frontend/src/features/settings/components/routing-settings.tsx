@@ -15,13 +15,7 @@ import {
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import type { AccountSummary } from "@/features/accounts/schemas";
-<<<<<<< 22625a07e
-||||||| 84fde5a1e
-import { buildSettingsUpdateRequest } from "@/features/settings/payload";
-=======
 import { InheritBadge } from "@/features/settings/components/inherit-badge";
-import { buildSettingsUpdateRequest } from "@/features/settings/payload";
->>>>>>> 72630bbfe
 import type {
   AdditionalQuotaRoutingPolicy,
   DashboardSettings,

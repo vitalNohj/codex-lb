@@ -16,10 +16,12 @@ from __future__ import annotations
 
 import pytest
 
+from app.core.auth.dashboard_access import PRESET_ROLE_IDS, PresetRoleSlug
+from app.core.auth.dashboard_users_cache import get_dashboard_users_cache
 from app.core.clients.opencode_go import OpenCodeGoError, OpenCodeGoUnavailableError
 from app.core.clients.opencode_go_sidecar import OPENCODE_GO_USER_AGENT
 from app.core.config.settings_cache import get_settings_cache
-from app.db.models import DashboardSettings
+from app.db.models import DashboardUser
 from app.db.session import SessionLocal
 from app.modules.opencode_go.service import reset_opencode_go_quota_cache
 
@@ -140,11 +142,16 @@ def configured_settings(async_client):
 async def _require_dashboard_password() -> None:
     """Turn on dashboard password auth so unauthenticated reads are rejected."""
     async with SessionLocal() as session:
-        settings = await session.get(DashboardSettings, 1)
-        assert settings is not None
-        settings.password_hash = "$2b$12$" + "x" * 53
+        session.add(
+            DashboardUser(
+                username="quota-admin",
+                role_id=PRESET_ROLE_IDS[PresetRoleSlug.ADMIN],
+                password_hash="$2b$12$" + "x" * 53,
+            )
+        )
         await session.commit()
     await get_settings_cache().invalidate()
+    await get_dashboard_users_cache().invalidate()
 
 
 @pytest.mark.asyncio

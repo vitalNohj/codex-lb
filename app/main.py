@@ -98,15 +98,11 @@ from app.modules.audit import api as audit_api
 from app.modules.auth_providers import api as auth_providers_api
 from app.modules.automations import api as automations_api
 from app.modules.automations.scheduler import build_automations_scheduler
-<<<<<<< 22625a07e
+from app.modules.cache_isolation_probe import api as cache_isolation_probe_api
 from app.modules.claude_sidecar import api as claude_sidecar_api
 from app.modules.claude_sidecar.quota_poller import build_claude_sidecar_quota_poller
 from app.modules.claude_sidecar.usage_collector import build_claude_sidecar_usage_collector
 from app.modules.cliproxy_accounts import api as cliproxy_accounts_api
-||||||| 84fde5a1e
-=======
-from app.modules.cache_isolation_probe import api as cache_isolation_probe_api
->>>>>>> 72630bbfe
 from app.modules.conversation_archive import api as conversation_archive_api
 from app.modules.dashboard import api as dashboard_api
 from app.modules.dashboard_auth import api as dashboard_auth_api
@@ -286,8 +282,7 @@ async def _drain_proxy_persistence_tasks(
         return False
 
 
-<<<<<<< 22625a07e
-async def _drain_opencode_go_settlements(timeout_seconds: float) -> None:
+async def _drain_opencode_go_settlements(timeout_seconds: float) -> bool:
     """Join OpenCode Go's detached settlement tasks within the shutdown budget.
 
     Never raises: shutdown must continue even if a settlement fails, and a
@@ -303,14 +298,13 @@ async def _drain_opencode_go_settlements(timeout_seconds: float) -> None:
                 "OpenCode Go settlement tasks did not finish within the shutdown drain deadline; "
                 "some request logs or reservation settlements may be incomplete"
             )
+            return False
     except Exception:
         logger.warning("Failed to drain OpenCode Go settlement tasks during shutdown", exc_info=True)
+        return False
+    return True
 
 
-async def _drain_detached_control_plane_tasks(timeout_seconds: float) -> None:
-||||||| 84fde5a1e
-async def _drain_detached_control_plane_tasks(timeout_seconds: float) -> None:
-=======
 async def _close_proxy_http_bridge_sessions_for_shutdown(
     proxy_service: Any,
     *,
@@ -350,7 +344,6 @@ async def _close_proxy_http_bridge_sessions_for_shutdown(
 
 
 async def _drain_detached_control_plane_tasks(timeout_seconds: float) -> bool:
->>>>>>> 72630bbfe
     # Closing admission is synchronous with producer checks on the event loop,
     # so no task can appear after the stable drain passes complete.
     close_control_plane_task_admission()
@@ -919,7 +912,6 @@ async def lifespan(app: FastAPI):
             remaining_drain_seconds,
             failure_message="Failed to drain proxy persistence tasks during shutdown",
         )
-<<<<<<< 22625a07e
         # OpenCode Go settles stream accounting on a detached task so a client
         # disconnect cannot strand the reservation. Those tasks are not owned by
         # ProxyService, so the drain above does not cover them; without this
@@ -928,11 +920,12 @@ async def lifespan(app: FastAPI):
         # stranded reservation it exists to prevent. Drained here, inside the
         # same committed deadline and before teardown, rather than as a new
         # shutdown phase.
-        await _drain_opencode_go_settlements(shutdown_state.remaining_drain_timeout_seconds() or 0.0)
-||||||| 84fde5a1e
-=======
-        database_tasks_drained = database_tasks_drained and final_proxy_persistence_drained
->>>>>>> 72630bbfe
+        opencode_go_settlements_drained = await _drain_opencode_go_settlements(
+            shutdown_state.remaining_drain_timeout_seconds() or 0.0
+        )
+        database_tasks_drained = (
+            database_tasks_drained and final_proxy_persistence_drained and opencode_go_settlements_drained
+        )
 
         # Cancel heartbeat and age the shared ring row near expiry.
         if heartbeat_task is not None:
@@ -1091,20 +1084,17 @@ def create_app(*, static_dir: Path | None = None) -> FastAPI:
 
         init_tracing(service_name="codex-lb", endpoint=settings.otel_exporter_endpoint, app=app)
 
-<<<<<<< 22625a07e
-    # Added first so it wraps the router and the exception handlers, sitting
-    # inside every other codex-lb middleware (OTel instrumentation, when enabled,
-    # wraps closer still; it does not change statuses). It must see every
-    # route-produced status, and it reads the API key the proxy auth dependency
-    # recorded on the request scope.
-    add_rate_limit_payment_required_middleware(app)
-||||||| 84fde5a1e
-=======
     # Innermost of the app-level middlewares: binds the dashboard-managed
     # settings overrides (C2-1 timeouts) for the request/socket once the
     # admission middlewares below have let it through.
     app.add_middleware(cast(Any, DashboardOverridesMiddleware))
->>>>>>> 72630bbfe
+    # Added right after the overrides binding so it wraps the router and the
+    # exception handlers, sitting inside every other codex-lb admission
+    # middleware (OTel instrumentation, when enabled,
+    # wraps closer still; it does not change statuses). It must see every
+    # route-produced status, and it reads the API key the proxy auth dependency
+    # recorded on the request scope.
+    add_rate_limit_payment_required_middleware(app)
     app.add_middleware(cast(Any, InFlightMiddleware))
     add_dashboard_gzip_middleware(app)
     add_dashboard_auth_proxy_middleware(app)

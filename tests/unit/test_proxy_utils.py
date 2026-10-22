@@ -78,12 +78,8 @@ from app.modules.proxy import request_policy as proxy_request_policy
 from app.modules.proxy import service as proxy_service
 from app.modules.proxy._service import compact as proxy_compact_service
 from app.modules.proxy._service import file_ops as proxy_file_ops
-<<<<<<< 22625a07e
-from app.modules.proxy._service import selection_hold as proxy_selection_hold
-||||||| 84fde5a1e
-=======
 from app.modules.proxy._service import observability as proxy_observability_module
->>>>>>> 72630bbfe
+from app.modules.proxy._service import selection_hold as proxy_selection_hold
 from app.modules.proxy._service import support as proxy_support
 from app.modules.proxy._service import warmup as proxy_warmup_service
 from app.modules.proxy._service.http_bridge import helpers as http_bridge_helpers_module
@@ -44755,7 +44751,7 @@ async def test_select_account_with_budget_holds_transient_drained_owner_until_re
         AsyncMock(return_value=30.0),
     )
     monkeypatch.setattr(proxy_selection_hold, "_OWNER_HOLD_POLL_INTERVAL_SECONDS", 0.001)
-    monkeypatch.setattr(proxy_service, "_remaining_budget_seconds", lambda _deadline: 10.0)
+    monkeypatch.setattr(service, "_remaining_budget_seconds", lambda _deadline: 10.0)
     monkeypatch.setattr(proxy_selection_hold, "_remaining_budget_seconds", lambda _deadline: 10.0)
 
     selection = await service._select_account_with_budget(
@@ -44799,7 +44795,7 @@ async def test_select_account_with_budget_hold_expiry_marks_owner_hold_expired(m
         AsyncMock(return_value=30.0),
     )
     monkeypatch.setattr(proxy_selection_hold, "_OWNER_HOLD_POLL_INTERVAL_SECONDS", 0.001)
-    monkeypatch.setattr(proxy_service, "_remaining_budget_seconds", lambda _deadline: 10.0)
+    monkeypatch.setattr(service, "_remaining_budget_seconds", lambda _deadline: 10.0)
     monkeypatch.setattr(proxy_selection_hold, "_remaining_budget_seconds", lambda _deadline: 10.0)
 
     selection = await service._select_account_with_budget(
@@ -44841,7 +44837,7 @@ async def test_select_account_with_budget_permanent_owner_unavailability_skips_h
         "required_owner_transient_drain_seconds",
         required_owner_transient_drain_seconds,
     )
-    monkeypatch.setattr(proxy_service, "_remaining_budget_seconds", lambda _deadline: 10.0)
+    monkeypatch.setattr(service, "_remaining_budget_seconds", lambda _deadline: 10.0)
     monkeypatch.setattr(proxy_selection_hold, "_remaining_budget_seconds", lambda _deadline: 10.0)
 
     selection = await service._select_account_with_budget(
@@ -44890,7 +44886,7 @@ async def test_select_account_with_budget_hold_aborts_when_owner_becomes_permane
         AsyncMock(side_effect=[30.0, None]),
     )
     monkeypatch.setattr(proxy_selection_hold, "_OWNER_HOLD_POLL_INTERVAL_SECONDS", 0.001)
-    monkeypatch.setattr(proxy_service, "_remaining_budget_seconds", lambda _deadline: 10.0)
+    monkeypatch.setattr(service, "_remaining_budget_seconds", lambda _deadline: 10.0)
     monkeypatch.setattr(proxy_selection_hold, "_remaining_budget_seconds", lambda _deadline: 10.0)
 
     selection = await service._select_account_with_budget(
@@ -44931,7 +44927,7 @@ async def test_select_account_with_budget_hold_respects_client_cancel(monkeypatc
         AsyncMock(return_value=30.0),
     )
     monkeypatch.setattr(proxy_selection_hold, "_OWNER_HOLD_POLL_INTERVAL_SECONDS", 5.0)
-    monkeypatch.setattr(proxy_service, "_remaining_budget_seconds", lambda _deadline: 10.0)
+    monkeypatch.setattr(service, "_remaining_budget_seconds", lambda _deadline: 10.0)
     monkeypatch.setattr(proxy_selection_hold, "_remaining_budget_seconds", lambda _deadline: 10.0)
 
     task = asyncio.create_task(
@@ -44989,7 +44985,7 @@ async def test_select_account_with_budget_hold_reads_core_settings_not_dashboard
         AsyncMock(return_value=30.0),
     )
     monkeypatch.setattr(proxy_selection_hold, "_OWNER_HOLD_POLL_INTERVAL_SECONDS", 0.001)
-    monkeypatch.setattr(proxy_service, "_remaining_budget_seconds", lambda _deadline: 10.0)
+    monkeypatch.setattr(service, "_remaining_budget_seconds", lambda _deadline: 10.0)
     monkeypatch.setattr(proxy_selection_hold, "_remaining_budget_seconds", lambda _deadline: 10.0)
 
     selection = await service._select_account_with_budget(
@@ -54310,7 +54306,6 @@ async def test_stream_with_retry_reframes_data_only_delta_frames_after_ttft(monk
     assert request_logs.calls[0]["status"] == "success"
 
 
-<<<<<<< 22625a07e
 @pytest.mark.asyncio
 @pytest.mark.parametrize("hint_seconds, expected_slept, selection_count", [(300, 0, 1), (10, 30, 4)])
 async def test_stream_with_retry_selection_recovery_fails_fast_past_silent_hold_cap(
@@ -54327,7 +54322,7 @@ async def test_stream_with_retry_selection_recovery_fails_fast_past_silent_hold_
     service = proxy_service.ProxyService(_repo_factory(_RequestLogsRecorder()))
     slept: list[float] = []
 
-    async def fake_sleep(seconds: float) -> None:
+    async def fake_sleep(seconds: float, result: None = None) -> None:
         slept.append(seconds)
 
     monkeypatch.setattr(proxy_service, "get_settings_cache", lambda: _SettingsCache(settings))
@@ -54395,7 +54390,7 @@ async def test_stream_with_retry_capacity_hint_belongs_to_winning_failure(monkey
     slept: list[float] = []
     stream_calls = 0
 
-    async def fake_sleep(seconds: float) -> None:
+    async def fake_sleep(seconds: float, result: None = None) -> None:
         slept.append(seconds)
 
     async def fake_stream_once(*_args: object, **_kwargs: object):
@@ -54600,7 +54595,7 @@ async def test_stream_with_retry_selection_recovery_smooths_over_short_wait(monk
     slept: list[float] = []
     selection_calls = 0
 
-    async def fake_sleep(seconds: float) -> None:
+    async def fake_sleep(seconds: float, result: None = None) -> None:
         slept.append(seconds)
 
     async def select_account(_deadline: float, **_kwargs: object) -> AccountSelection:
@@ -54652,8 +54647,8 @@ async def test_stream_with_retry_selection_recovery_smooths_over_short_wait(monk
     assert slept == [5.0]
     assert selection_calls == 2
     assert json.loads(chunks[-1].split("data: ", 1)[1])["type"] == "response.completed"
-||||||| 84fde5a1e
-=======
+
+
 # --- Accepted output-free capacity replay (#1384 takeover, narrowed scope) ---
 
 
@@ -57364,4 +57359,3 @@ async def test_process_upstream_websocket_text_routes_anonymous_output_to_create
     send_downstream.assert_awaited_once()
     assert send_downstream.await_args is not None
     assert send_downstream.await_args.kwargs["text"] == text
->>>>>>> 72630bbfe

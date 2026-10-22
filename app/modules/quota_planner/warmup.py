@@ -146,31 +146,15 @@ class QuotaWarmupService:
             force_probe=force_probe,
         )
         if not allowed:
-<<<<<<< 22625a07e
-            row = await self._planner.update_decision_status(
-                decision_id,
-                status="skipped",
-                reason=reason,
-                expected_status="planned",
-            )
-||||||| 84fde5a1e
-            row = await self._planner.update_decision_status(
-                decision.id,
-                status="skipped",
-                reason=reason,
-                expected_status="planned",
-            )
-=======
             if decision.status == "executing" and warmup_claim_is_expired(decision):
-                row = await self._planner.skip_stale_warmup_claim(decision.id, reason=reason)
+                row = await self._planner.skip_stale_warmup_claim(decision_id, reason=reason)
             else:
                 row = await self._planner.update_decision_status(
-                    decision.id,
+                    decision_id,
                     status="skipped",
                     reason=reason,
                     expected_status="planned",
                 )
->>>>>>> 72630bbfe
             if row is None:
                 current = await self._planner.get_decision(decision_id)
                 if current is not None:
@@ -199,27 +183,21 @@ class QuotaWarmupService:
             claim_ttl_seconds=_warmup_claim_ttl_seconds(dashboard_settings),
         )
         if claimed is None:
-<<<<<<< 22625a07e
             return await self._resolve_refused_claim(decision_id=decision_id, settings=settings)
-||||||| 84fde5a1e
-            return await self._resolve_refused_claim(decision_id=decision.id, settings=settings)
-=======
-            return await self._resolve_refused_claim(decision_id=decision.id, settings=settings)
         claim_executed_at = claimed.executed_at
         claim_lease_expires_at = claimed.lease_expires_at
         assert claim_executed_at is not None
         assert claim_lease_expires_at is not None
 
-        request_id = _warmup_request_id(decision.id)
+        request_id = _warmup_request_id(decision_id)
         replay_result = await self._reconcile_existing_warmup_request(
-            decision_id=decision.id,
+            decision_id=decision_id,
             request_id=request_id,
             claim_executed_at=claim_executed_at,
             claim_lease_expires_at=claim_lease_expires_at,
         )
         if replay_result is not None:
             return replay_result
->>>>>>> 72630bbfe
 
         reservation_id: str | None = None
         if api_key_id is not None:

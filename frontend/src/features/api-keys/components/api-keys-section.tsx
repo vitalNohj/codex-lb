@@ -85,7 +85,6 @@ export function ApiKeysSection({
   };
 
   return (
-<<<<<<< 22625a07e
     <SettingsSection>
       <SettingsSectionHeader
         icon={KeySquare}
@@ -96,77 +95,20 @@ export function ApiKeysSection({
             {t("apiKeys.section.createKey")}
           </Button>
         }
-||||||| 84fde5a1e
-    <section className="space-y-3 rounded-xl border bg-card p-5">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2.5">
-          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10">
-            <KeySquare className="h-4 w-4 text-primary" aria-hidden="true" />
-          </div>
-          <div>
-            <h3 className="text-sm font-semibold">{t("apiKeys.section.title")}</h3>
-            <p className="text-xs text-muted-foreground">{t("apiKeys.section.description")}</p>
-          </div>
-        </div>
-        <Button type="button" size="sm" className="h-8 text-xs" onClick={() => createDialog.show()} disabled={busy}>
-          {t("apiKeys.section.createKey")}
-        </Button>
-      </div>
-
-      <ApiKeyAuthToggle
-        enabled={apiKeyAuthEnabled}
-        disabled={busy}
-        onChange={onApiKeyAuthEnabledChange}
-=======
-    <section className="space-y-3 rounded-xl border bg-card p-5">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2.5">
-          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10">
-            <KeySquare className="h-4 w-4 text-primary" aria-hidden="true" />
-          </div>
-          <div>
-            <h3 className="text-sm font-semibold">{t("apiKeys.section.title")}</h3>
-            <p className="text-xs text-muted-foreground">{t("apiKeys.section.description")}</p>
-          </div>
-        </div>
-        <Button type="button" size="sm" className="h-8 text-xs" onClick={() => createDialog.show()} disabled={busy}>
-          {t("apiKeys.section.createKey")}
-        </Button>
-      </div>
-
-      <ApiKeyAuthToggle
-        enabled={apiKeyAuthEnabled}
-        disabled={busy || policyControlsDisabled}
-        onChange={onApiKeyAuthEnabledChange}
->>>>>>> 72630bbfe
       />
 
-<<<<<<< 22625a07e
       <SettingsRowGroup>
         <ApiKeyAuthToggle
           enabled={apiKeyAuthEnabled}
-          disabled={busy}
+          disabled={busy || policyControlsDisabled}
           onChange={onApiKeyAuthEnabledChange}
         />
         <ApiKeyQuotaPrivacyToggle
           enabled={hideUpstreamQuotaFromApiKeys}
-          disabled={busy}
+          disabled={busy || policyControlsDisabled}
           onChange={onHideUpstreamQuotaFromApiKeysChange}
         />
       </SettingsRowGroup>
-||||||| 84fde5a1e
-      <ApiKeyQuotaPrivacyToggle
-        enabled={hideUpstreamQuotaFromApiKeys}
-        disabled={busy}
-        onChange={onHideUpstreamQuotaFromApiKeysChange}
-      />
-=======
-      <ApiKeyQuotaPrivacyToggle
-        enabled={hideUpstreamQuotaFromApiKeys}
-        disabled={busy || policyControlsDisabled}
-        onChange={onHideUpstreamQuotaFromApiKeysChange}
-      />
->>>>>>> 72630bbfe
 
       {mutationError ? <AlertMessage variant="error">{mutationError}</AlertMessage> : null}
 

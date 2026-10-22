@@ -96,28 +96,12 @@ export function PasswordSettings({ disabled = false }: PasswordSettingsProps) {
                 {t("settings.password.actions.loginToManage")}
               </Button>
             ) : !passwordRequired ? (
-<<<<<<< 22625a07e
-              <Button
-                type="button"
-                size="sm"
-                className="h-9 text-xs"
-                disabled={lock}
-                onClick={() => setActiveDialog("setup")}
-||||||| 84fde5a1e
-              <Button
-                type="button"
-                size="sm"
-                className="h-8 text-xs"
-                disabled={lock}
-                onClick={() => setActiveDialog("setup")}
-=======
               <PasswordSetupDialog
                 open={activeDialog === "setup"}
                 onOpenChange={handleSetupOpenChange}
                 disabled={disabled}
->>>>>>> 72630bbfe
               >
-                <Button type="button" size="sm" className="h-8 text-xs" disabled={lock}>
+                <Button type="button" size="sm" className="h-9 text-xs" disabled={lock}>
                   {t("settings.password.actions.set")}
                 </Button>
               </PasswordSetupDialog>

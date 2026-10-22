@@ -5,23 +5,14 @@ import codecs
 import json
 import re
 from collections.abc import AsyncIterator, Callable, Mapping
-<<<<<<< 22625a07e
-from typing import Final, Literal
-||||||| 84fde5a1e
-=======
-from typing import cast
->>>>>>> 72630bbfe
+from typing import Final, Literal, cast
 
 from app.core.errors import ResponseFailedEvent
 from app.core.shutdown import wait_for_shutdown_stream_handoff
 from app.core.types import JsonObject, JsonValue
 from app.core.utils.json_guards import is_json_dict
-<<<<<<< 22625a07e
-from app.core.utils.stream_close import aclose_stream
-||||||| 84fde5a1e
-=======
 from app.core.utils.shared_future import _await_task_deferring_cancellation, wait_on_shared_future
->>>>>>> 72630bbfe
+from app.core.utils.stream_close import aclose_stream
 
 type JsonPayload = Mapping[str, JsonValue] | ResponseFailedEvent
 
@@ -94,65 +85,9 @@ async def inject_sse_keepalives(
     Closing this generator closes ``source`` too, so the cleanup in the
     source's ``finally`` runs now rather than at garbage collection.
     """
-<<<<<<< 22625a07e
-    if interval_seconds <= 0 and shutdown_handoff_frame is None:
-        try:
-            async for chunk in source:
-                yield chunk
-        finally:
-            await aclose_stream(source)
-        return
-
-    async def _next_chunk(it: AsyncIterator[str]) -> str:
-        return await it.__anext__()
-
-||||||| 84fde5a1e
-    if interval_seconds <= 0:
-        async for chunk in source:
-            yield chunk
-        return
-
-    async def _next_chunk(it: AsyncIterator[str]) -> str:
-        return await it.__anext__()
-
-=======
->>>>>>> 72630bbfe
     iterator = source.__aiter__()
-<<<<<<< 22625a07e
-    pending: asyncio.Task[str] | None = None
-    handoff: asyncio.Task[None] | None = None
-    if shutdown_handoff_frame is not None:
-        handoff = asyncio.create_task(wait_for_shutdown_stream_handoff())
-||||||| 84fde5a1e
-    pending: asyncio.Task[str] | None = None
-=======
->>>>>>> 72630bbfe
     try:
-<<<<<<< 22625a07e
-        while True:
-            if pending is None:
-                pending = asyncio.create_task(_next_chunk(iterator))
-            if handoff is None:
-                try:
-                    chunk = await asyncio.wait_for(
-                        asyncio.shield(pending),
-||||||| 84fde5a1e
-        while True:
-            if pending is None:
-                pending = asyncio.create_task(_next_chunk(iterator))
-            try:
-                chunk = await asyncio.wait_for(
-                    asyncio.shield(pending),
-                    timeout=interval_seconds,
-                )
-            except asyncio.TimeoutError:
-                if on_keepalive is not None:
-                    on_keepalive()
-                yield keepalive_frame
-                continue
-            except StopAsyncIteration:
-=======
-        if interval_seconds <= 0:
+        if interval_seconds <= 0 and shutdown_handoff_frame is None:
             async for chunk in iterator:
                 yield chunk
             return
@@ -161,61 +96,65 @@ async def inject_sse_keepalives(
             return await it.__anext__()
 
         pending: asyncio.Task[str] | None = None
+        handoff: asyncio.Task[None] | None = None
+        if shutdown_handoff_frame is not None:
+            handoff = asyncio.create_task(wait_for_shutdown_stream_handoff())
         try:
             while True:
                 if pending is None:
                     pending = asyncio.create_task(_next_chunk(iterator))
-                try:
-                    # Not ``wait_for(shield(pending))``: Python 3.14's shield
-                    # leaks a done-callback onto ``pending`` at every keepalive
-                    # timeout, so a quiet upstream accumulates callbacks (and
-                    # O(n) remove scans) until the next chunk arrives.
-                    chunk = await wait_on_shared_future(
-                        pending,
->>>>>>> 72630bbfe
-                        timeout=interval_seconds,
-                    )
-                except asyncio.TimeoutError:
-                    if on_keepalive is not None:
-                        on_keepalive()
-                    yield keepalive_frame
+                if handoff is None:
+                    try:
+                        # Not ``wait_for(shield(pending))``: Python 3.14's shield
+                        # leaks a done-callback onto ``pending`` at every keepalive
+                        # timeout, so a quiet upstream accumulates callbacks (and
+                        # O(n) remove scans) until the next chunk arrives.
+                        chunk = await wait_on_shared_future(
+                            pending,
+                            timeout=interval_seconds,
+                        )
+                    except asyncio.TimeoutError:
+                        if on_keepalive is not None:
+                            on_keepalive()
+                        yield keepalive_frame
+                        continue
+                    except StopAsyncIteration:
+                        pending = None
+                        break
+                    pending = None
+                    yield chunk
                     continue
-                except StopAsyncIteration:
-                    pending = None
-                    break
-                pending = None
-                yield chunk
-<<<<<<< 22625a07e
-                continue
 
-            waiters: set[asyncio.Future[object]] = {pending, handoff}
-            timeout = None if interval_seconds <= 0 else interval_seconds
-            done, _ = await asyncio.wait(
-                waiters,
-                timeout=timeout,
-                return_when=asyncio.FIRST_COMPLETED,
-            )
-            if handoff in done:
-                yield shutdown_handoff_frame
-                return
-            if pending in done:
-                try:
-                    chunk = pending.result()
-                except StopAsyncIteration:
+                waiters: set[asyncio.Future[object]] = {pending, handoff}
+                timeout = None if interval_seconds <= 0 else interval_seconds
+                done, _ = await asyncio.wait(
+                    waiters,
+                    timeout=timeout,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if handoff in done:
+                    assert shutdown_handoff_frame is not None
+                    yield shutdown_handoff_frame
+                    return
+                if pending in done:
+                    try:
+                        chunk = pending.result()
+                    except StopAsyncIteration:
+                        pending = None
+                        break
                     pending = None
-                    break
-                pending = None
-                yield chunk
-                continue
-            if on_keepalive is not None:
-                on_keepalive()
-            yield keepalive_frame
-||||||| 84fde5a1e
-                break
-            pending = None
-            yield chunk
-=======
+                    yield chunk
+                    continue
+                if on_keepalive is not None:
+                    on_keepalive()
+                yield keepalive_frame
         finally:
+            if handoff is not None and not handoff.done():
+                handoff.cancel()
+                try:
+                    await _await_task_deferring_cancellation(handoff)
+                except BaseException:
+                    pass
             if pending is not None and not pending.done():
                 pending.cancel()
                 try:
@@ -233,24 +172,13 @@ async def inject_sse_keepalives(
                     await _await_task_deferring_cancellation(pending)
                 except BaseException:
                     pass
->>>>>>> 72630bbfe
     finally:
-<<<<<<< 22625a07e
-        try:
-            if handoff is not None and not handoff.done():
-                handoff.cancel()
-                try:
-                    await handoff
-                except BaseException:
-                    pass
-            if pending is not None and not pending.done():
-                pending.cancel()
-                try:
-                    await pending
-                except BaseException:
-                    pass
-        finally:
-            await aclose_stream(source)
+        # Close the source with cancellation deferred so its own ``finally``
+        # (settlement, reservation release) runs now and completes even when
+        # the client disconnect cancelled this task.
+        if iterator is not source:
+            await aclose_stream(iterator)
+        await aclose_stream(source)
 
 
 class SseLineDecoder:
@@ -491,22 +419,6 @@ def _json_events(payloads: list[str]) -> list[SseJsonEvent]:
         if is_json_dict(parsed):
             events.append(parsed)
     return events
-||||||| 84fde5a1e
-        if pending is not None and not pending.done():
-            pending.cancel()
-            try:
-                await pending
-            except BaseException:
-                pass
-=======
-        aclose = getattr(iterator, "aclose", None)
-        if aclose is not None:
-            await aclose()
-        elif iterator is not source:
-            source_aclose = getattr(source, "aclose", None)
-            if source_aclose is not None:
-                await source_aclose()
->>>>>>> 72630bbfe
 
 
 def format_sse_event(payload: JsonPayload) -> str:
@@ -545,7 +457,6 @@ def format_sse_data(payload: Mapping[str, JsonValue]) -> str:
     return f"data: {data}\n\n"
 
 
-<<<<<<< 22625a07e
 def parse_websocket_json_text(text: str) -> dict[str, JsonValue] | None:
     """Parse one websocket text frame as a JSON object.
 
@@ -560,8 +471,8 @@ def parse_websocket_json_text(text: str) -> dict[str, JsonValue] | None:
     if is_json_dict(payload):
         return payload
     return None
-||||||| 84fde5a1e
-=======
+
+
 class ParsedSseBlock(str):
     """An SSE event block that carries its already-parsed ``data:`` payload.
 
@@ -633,7 +544,6 @@ def parse_sse_data_json_text(text: str) -> dict[str, JsonValue] | None:
             return payload
         return None
     return parse_sse_data_json(f"data: {text}\n\n")
->>>>>>> 72630bbfe
 
 
 def parse_sse_data_json(event_block: str) -> dict[str, JsonValue] | None:

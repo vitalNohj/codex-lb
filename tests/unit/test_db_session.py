@@ -2103,7 +2103,6 @@ async def test_close_db_bounds_the_wedged_teardown_drain(monkeypatch, caplog) ->
         await stuck
 
 
-<<<<<<< 22625a07e
 def _sqlite_write_slot_is_free(db_path: Path) -> bool:
     import sqlite3
 
@@ -2295,8 +2294,10 @@ async def test_cancelling_a_returning_write_mid_statement_does_not_hold_the_writ
                 await task
             await asyncio.sleep(0.01)
             assert _sqlite_write_slot_is_free(db_path), f"write lock outlived a cancelled writer (attempt {attempt})"
-||||||| 84fde5a1e
-=======
+    finally:
+        await engine.dispose()
+
+
 @pytest.mark.asyncio
 async def test_close_db_drains_teardown_registered_during_engine_disposal(monkeypatch) -> None:
     """A disposal callback registered after the initial snapshot still gates clean."""
@@ -2828,6 +2829,5 @@ async def test_sqlite_watchdog_never_reconnects_an_invalidated_transaction_durin
             assert connection.invalidated
             await connection.rollback()
             assert (await connection.execute(sa_text("SELECT 1"))).scalar_one() == 1
->>>>>>> 72630bbfe
     finally:
         await engine.dispose()

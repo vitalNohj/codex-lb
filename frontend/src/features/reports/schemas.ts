@@ -85,6 +85,8 @@ const ReportComparisonSchema = z.object({
 export const ReportsOptionsResponseSchema = z.object({
   models: z.array(z.string()),
   useragents: z.array(z.string()),
+  // Fork: lifetime All-time origin for the account/API-key scope.
+  earliestActivityAt: z.string().nullable().optional(),
 });
 
 export const ReportsResponseSchema = z.object({

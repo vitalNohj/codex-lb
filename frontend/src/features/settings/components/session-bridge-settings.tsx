@@ -3,13 +3,12 @@ import { useTranslation } from "react-i18next";
 
 import { Switch } from "@/components/ui/switch";
 import { InheritBadge } from "@/features/settings/components/inherit-badge";
-import { buildSettingsUpdateRequest } from "@/features/settings/payload";
 import type { DashboardSettings, SettingsUpdateRequest } from "@/features/settings/schemas";
 
 export type SessionBridgeSettingsProps = {
   settings: DashboardSettings;
   busy: boolean;
-  onSave: (payload: SettingsUpdateRequest) => Promise<void>;
+  onSave: (patch: Partial<SettingsUpdateRequest>) => Promise<DashboardSettings | void>;
 };
 
 /**
@@ -24,7 +23,7 @@ export type SessionBridgeSettingsProps = {
 export function SessionBridgeSettings({ settings, busy, onSave }: SessionBridgeSettingsProps) {
   const { t } = useTranslation();
   const save = (patch: Partial<SettingsUpdateRequest>) =>
-    void onSave(buildSettingsUpdateRequest(settings, patch));
+    void onSave(patch);
 
   return (
     <section className="rounded-xl border bg-card p-5">

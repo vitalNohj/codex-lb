@@ -40,15 +40,9 @@ type TotpDialog = "setup" | "disable" | null;
 export type TotpSettingsProps = {
   settings: DashboardSettings;
   disabled?: boolean;
-<<<<<<< 22625a07e
-  onSave: (patch: Partial<SettingsUpdateRequest>) => Promise<DashboardSettings | void>;
-||||||| 84fde5a1e
-  onSave: (payload: SettingsUpdateRequest) => Promise<void>;
-=======
   /** The "require on login" toggle is a security setting; without it only the personal controls render. */
   canEditPolicy?: boolean;
-  onSave: (payload: SettingsUpdateRequest) => Promise<void>;
->>>>>>> 72630bbfe
+  onSave: (patch: Partial<SettingsUpdateRequest>) => Promise<DashboardSettings | void>;
 };
 
 export function TotpSettings({ settings, disabled = false, canEditPolicy = true, onSave }: TotpSettingsProps) {
@@ -102,62 +96,18 @@ export function TotpSettings({ settings, disabled = false, canEditPolicy = true,
   };
 
   return (
-<<<<<<< 22625a07e
-    <SettingsSection>
+    <SettingsSection id="totp">
       <SettingsSectionHeader
         icon={Shield}
         title={t("settings.totp.title")}
         description={
-          settings.totpConfigured
+          totpConfigured
             ? t("settings.totp.status.configured")
             : t("settings.totp.status.notConfigured")
         }
         actions={
           <>
-            {settings.totpConfigured ? (
-||||||| 84fde5a1e
-    <section className="rounded-xl border bg-card p-5">
-      <div className="space-y-3">
-        {/* Status row */}
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2.5">
-            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10">
-              <Shield className="h-4 w-4 text-primary" aria-hidden="true" />
-            </div>
-            <div>
-              <h3 className="text-sm font-semibold">{t("settings.totp.title")}</h3>
-              <p className="text-xs text-muted-foreground">
-                {settings.totpConfigured
-                  ? t("settings.totp.status.configured")
-                  : t("settings.totp.status.notConfigured")}
-              </p>
-            </div>
-          </div>
-
-          <div className="flex items-center gap-2">
-            {settings.totpConfigured ? (
-=======
-    <section id="totp" className="rounded-xl border bg-card p-5">
-      <div className="space-y-3">
-        {/* Status row */}
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2.5">
-            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10">
-              <Shield className="h-4 w-4 text-primary" aria-hidden="true" />
-            </div>
-            <div>
-              <h3 className="text-sm font-semibold">{t("settings.totp.title")}</h3>
-              <p className="text-xs text-muted-foreground">
-                {totpConfigured
-                  ? t("settings.totp.status.configured")
-                  : t("settings.totp.status.notConfigured")}
-              </p>
-            </div>
-          </div>
-
-          <div className="flex items-center gap-2">
             {totpConfigured ? (
->>>>>>> 72630bbfe
               <Button
                 type="button"
                 size="sm"
@@ -183,56 +133,22 @@ export function TotpSettings({ settings, disabled = false, canEditPolicy = true,
         }
       />
 
-<<<<<<< 22625a07e
-      <SettingsRowGroup>
-        <SettingsRow
-          label={t("settings.totp.requireLogin.label")}
-          description={t("settings.totp.requireLogin.description")}
-        >
-          <Switch
-            checked={settings.totpRequiredOnLogin}
-            disabled={lock}
-            onCheckedChange={(checked) =>
-              void onSave({ totpRequiredOnLogin: checked })
-            }
-          />
-        </SettingsRow>
-      </SettingsRowGroup>
-||||||| 84fde5a1e
-        {/* Require on login toggle */}
-        <div className="flex items-center justify-between rounded-lg border p-3">
-          <div>
-            <p className="text-sm font-medium">{t("settings.totp.requireLogin.label")}</p>
-            <p className="text-xs text-muted-foreground">{t("settings.totp.requireLogin.description")}</p>
-          </div>
-          <Switch
-            checked={settings.totpRequiredOnLogin}
-            disabled={lock}
-            onCheckedChange={(checked) =>
-              void onSave(buildSettingsUpdateRequest(settings, { totpRequiredOnLogin: checked }))
-            }
-          />
-        </div>
-      </div>
-=======
-        {/* Require on login toggle */}
-        {canEditPolicy ? (
-          <div className="flex items-center justify-between rounded-lg border p-3">
-            <div>
-              <p className="text-sm font-medium">{t("settings.totp.requireLogin.label")}</p>
-              <p className="text-xs text-muted-foreground">{t("settings.totp.requireLogin.description")}</p>
-            </div>
+      {canEditPolicy ? (
+        <SettingsRowGroup>
+          <SettingsRow
+            label={t("settings.totp.requireLogin.label")}
+            description={t("settings.totp.requireLogin.description")}
+          >
             <Switch
               checked={settings.totpRequiredOnLogin}
               disabled={lock}
               onCheckedChange={(checked) =>
-                void onSave(buildSettingsUpdateRequest(settings, { totpRequiredOnLogin: checked }))
+                void onSave({ totpRequiredOnLogin: checked })
               }
             />
-          </div>
-        ) : null}
-      </div>
->>>>>>> 72630bbfe
+          </SettingsRow>
+        </SettingsRowGroup>
+      ) : null}
 
       {/* Setup dialog */}
       <Dialog open={activeDialog === "setup"} onOpenChange={(open) => !open && closeDialog()}>

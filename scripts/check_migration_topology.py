@@ -89,6 +89,19 @@ TIMESTAMP_PREFIX_PATTERN = re.compile(r"^(\d{8}_\d{6})_")
 # merge revision): zero violations at or after the cutoff.
 RATCHET_PREFIX = "20260911_000000"
 
+# Fork (vitalNohj/codex-lb): revisions authored before upstream's guard reached
+# the fork and already stamped into production, so they cannot be re-stamped.
+# 20261016_000000 holds two chained revisions (cliproxy credential prefixes ->
+# prefix write claims -> config snapshots), which is one slot collision and one
+# order inversion. Exempting these exact ids keeps the ratchet strict for
+# every other revision, including all future fork work.
+GRANDFATHERED_REVISIONS = frozenset(
+    {
+        "20261016_000000_add_cliproxy_config_snapshots",
+        "20261016_000000_add_cliproxy_credential_prefixes",
+    }
+)
+
 _FAILURE_PREFIX = "check_migration_topology"
 
 
@@ -387,6 +400,8 @@ def check_timestamp_prefix_collisions(revisions: Sequence[Revision], ratchet_pre
             continue
         if not _ratcheted((prefix,), ratchet_prefix):
             continue
+        if all(revision.revision in GRANDFATHERED_REVISIONS for revision in group):
+            continue
         group = sorted(group, key=lambda item: item.revision)
         described = "; ".join(revision.describe() for revision in group)
         forked = not _group_is_chained(group, parents)
@@ -422,6 +437,8 @@ def check_prefix_ordering(revisions: Iterable[Revision], ratchet_prefix: str = R
     for revision in revisions:
         prefix = revision.prefix
         if prefix is None or not _ratcheted((prefix,), ratchet_prefix):
+            continue
+        if revision.revision in GRANDFATHERED_REVISIONS:
             continue
         for parent in revision.down_revisions:
             parent_prefix = prefixes.get(parent)
@@ -554,6 +571,20 @@ def check_branch_fork(revisions: Sequence[Revision], base_revisions: Sequence[Re
         for parent in revision.down_revisions:
             base_children[parent].append(revision.revision)
     base_heads = tuple(sorted(base_ids - set(base_children)))
+    parents = {revision.revision: revision.down_revisions for revision in revisions}
+    # Fork (vitalNohj/codex-lb): a branch that merges in another line of history
+    # (an upstream sync) carries that line's root, which forks off a revision the
+    # base ref already built on. A merge revision on this branch that descends
+    # from both that root and a base head has already converged the two lineages,
+    # so merging the branch leaves one head and there is nothing to repair.
+    converging_ancestors = [
+        _ancestors(revision.revision, parents)
+        for revision in revisions
+        if revision.revision not in base_ids and len(revision.down_revisions) > 1
+    ]
+    converging_ancestors = [
+        ancestors for ancestors in converging_ancestors if any(head in ancestors for head in base_heads)
+    ]
     for revision in revisions:
         if revision.revision in base_ids:
             continue
@@ -563,6 +594,8 @@ def check_branch_fork(revisions: Sequence[Revision], base_revisions: Sequence[Re
             continue
         parent = revision.down_revisions[0]
         if parent not in base_ids or parent not in base_children:
+            continue
+        if any(revision.revision in ancestors for ancestors in converging_ancestors):
             continue
         report.error(
             f"alembic_branch_forks_base revision={revision.revision} parent={parent} base_ref={base_ref}: "

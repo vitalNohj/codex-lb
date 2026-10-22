@@ -23,14 +23,8 @@ from app.core.clients.proxy_websocket import (
 )
 from app.core.clock import REAL_CLOCK, Clock, Scheduler
 from app.core.config.settings import get_settings
-<<<<<<< 22625a07e
 from app.core.conversation.headers import extract_conversation_id
-from app.core.errors import OpenAIErrorDetail, OpenAIErrorEnvelope, openai_error
-||||||| 84fde5a1e
-from app.core.errors import OpenAIErrorEnvelope, openai_error
-=======
-from app.core.errors import OpenAIErrorEnvelope, OpenAIErrorParam, openai_error
->>>>>>> 72630bbfe
+from app.core.errors import OpenAIErrorDetail, OpenAIErrorEnvelope, OpenAIErrorParam, openai_error
 from app.core.openai.model_registry import get_model_registry
 from app.core.openai.models import OpenAIEvent
 from app.core.openai.parsing import classify_event_type
@@ -1245,14 +1239,8 @@ class _WebSocketRequestState:
     error_code_override: str | None = None
     error_message_override: str | None = None
     error_type_override: str | None = None
-<<<<<<< 22625a07e
-    error_param_override: str | None = None
-    error_recovery_metadata_override: OpenAIErrorDetail = field(default_factory=dict)
-||||||| 84fde5a1e
-    error_param_override: str | None = None
-=======
     error_param_override: OpenAIErrorParam | JsonValue | None = None
->>>>>>> 72630bbfe
+    error_recovery_metadata_override: OpenAIErrorDetail = field(default_factory=dict)
     failure_phase_override: str | None = None
     failure_detail_override: str | None = None
     upstream_error_code_override: str | None = None

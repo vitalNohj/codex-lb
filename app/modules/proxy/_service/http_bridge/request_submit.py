@@ -655,10 +655,9 @@ def _request_kind_from_headers(headers: Mapping[str, str] | None) -> str:
     return "normal"
 
 
-<<<<<<< 22625a07e
 _GENERIC_PRECREATED_RETRY_ERROR_CODES = frozenset({"upstream_unavailable", "stream_incomplete"})
-||||||| 84fde5a1e
-=======
+
+
 def _http_bridge_session_unowned_locked(
     session: "_HTTPBridgeSession",
     *,
@@ -684,7 +683,6 @@ def _http_bridge_session_unowned_locked(
         and (ignore_unanchored_reservation or session.unanchored_reservation_id is None)
         and not session.upstream_close_attempted
     )
->>>>>>> 72630bbfe
 
 
 class _HTTPBridgeRequestSubmitMixin:

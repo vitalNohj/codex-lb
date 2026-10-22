@@ -4,13 +4,12 @@ import { useTranslation } from "react-i18next";
 import { Switch } from "@/components/ui/switch";
 import { InheritBadge } from "@/features/settings/components/inherit-badge";
 import type { InheritableSettingField } from "@/features/settings/hooks/use-inheritable-setting";
-import { buildSettingsUpdateRequest } from "@/features/settings/payload";
 import type { DashboardSettings, SettingsUpdateRequest } from "@/features/settings/schemas";
 
 export type ResilienceSettingsProps = {
   settings: DashboardSettings;
   busy: boolean;
-  onSave: (payload: SettingsUpdateRequest) => Promise<void>;
+  onSave: (patch: Partial<SettingsUpdateRequest>) => Promise<DashboardSettings | void>;
 };
 
 type ResilienceToggle = {
@@ -37,7 +36,7 @@ const RESILIENCE_TOGGLES: readonly ResilienceToggle[] = [
 export function ResilienceSettings({ settings, busy, onSave }: ResilienceSettingsProps) {
   const { t } = useTranslation();
   const save = (patch: Partial<SettingsUpdateRequest>) =>
-    void onSave(buildSettingsUpdateRequest(settings, patch));
+    void onSave(patch);
 
   return (
     <section className="rounded-xl border bg-card p-5">

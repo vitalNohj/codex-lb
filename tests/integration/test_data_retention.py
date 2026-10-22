@@ -6,12 +6,7 @@ import pytest
 from sqlalchemy import select
 
 import app.core.retention.job as retention_job
-<<<<<<< 22625a07e
-from app.core.config.settings import Settings, get_settings
-||||||| 84fde5a1e
-from app.core.config.settings import Settings, get_settings
-=======
->>>>>>> 72630bbfe
+from app.core.config.settings import get_settings
 from app.core.config.settings_cache import get_settings_cache
 from app.core.crypto import TokenEncryptor
 from app.core.retention.job import get_effective_retention, run_retention_pass
@@ -29,18 +24,12 @@ from app.db.models import (
 from app.db.session import SessionLocal
 from app.modules.accounts.repository import AccountsRepository
 from app.modules.accounts.usage_rollup import run_fold_pass
-<<<<<<< 22625a07e
 from app.modules.accounts.usage_time_rollup import (
     run_conversation_fold_pass,
     run_daily_fold_pass,
     run_hourly_fold_pass,
 )
-||||||| 84fde5a1e
-from app.modules.accounts.usage_time_rollup import run_conversation_fold_pass, run_hourly_fold_pass
-=======
-from app.modules.accounts.usage_time_rollup import run_conversation_fold_pass, run_hourly_fold_pass
 from app.modules.reports.rollup import run_report_fold_pass
->>>>>>> 72630bbfe
 from app.modules.request_logs.repository import RequestLogsRepository
 from app.modules.settings.repository import SettingsRepository
 
@@ -405,6 +394,8 @@ async def test_request_log_pruning_paused_while_upgrade_repair_pending(db_setup,
     await run_fold_pass(now=now)
     await run_hourly_fold_pass(now=now)
     await run_conversation_fold_pass(now=now)
+    while await run_report_fold_pass(now=now):
+        pass
     # What a cost backfill migration leaves behind after repricing folded rows.
     async with SessionLocal() as session:
         await session.execute(
@@ -412,7 +403,7 @@ async def test_request_log_pruning_paused_while_upgrade_repair_pending(db_setup,
         )
         await session.commit()
 
-    _set_retention(monkeypatch, request_logs=30)
+    await _set_retention(request_logs=30)
     assert (await run_retention_pass(now=now))["request_logs"] == 0
     async with SessionLocal() as session:
         remaining = (await session.execute(select(RequestLog.request_id))).scalars().all()
@@ -738,8 +729,7 @@ async def test_null_dashboard_value_disables_retention_despite_removed_env_alias
     assert deleted["usage_history"] == 0
     async with SessionLocal() as session:
         remaining = (await session.execute(select(UsageHistory.used_percent))).scalars().all()
-<<<<<<< 22625a07e
-    assert remaining == [20.0]
+    assert sorted(remaining) == [10.0, 20.0]
 
 
 async def _set_dashboard_hourly_retention(days: int | None) -> None:
@@ -782,7 +772,7 @@ async def test_hourly_rollup_pruning_prunes_only_past_dashboard_window(db_setup,
     pruning only runs while request-log retention is enabled — with raw
     retention disabled the hourly store is kept at full precision.)"""
     now = utcnow()
-    _set_retention(monkeypatch, request_logs=30)
+    await _set_retention(request_logs=30)
     async with SessionLocal() as session:
         accounts_repo = AccountsRepository(session)
         logs_repo = RequestLogsRepository(session)
@@ -844,7 +834,7 @@ async def test_hourly_rollup_pruning_never_cuts_below_raw_window(db_setup, monke
     await run_conversation_fold_pass(now=now)
     await run_daily_fold_pass()
 
-    _set_retention(monkeypatch, request_logs=30)
+    await _set_retention(request_logs=30)
     await _set_dashboard_hourly_retention(10)
     try:
         deleted = await run_retention_pass(now=now)
@@ -877,7 +867,7 @@ async def test_hourly_rollup_pruning_skipped_while_raw_retention_disabled(db_set
     await run_conversation_fold_pass(now=now)
     await run_daily_fold_pass()
 
-    _set_retention(monkeypatch, request_logs=0)
+    await _set_retention(request_logs=0)
     await _set_dashboard_hourly_retention(10)
     try:
         deleted = await run_retention_pass(now=now)
@@ -888,8 +878,3 @@ async def test_hourly_rollup_pruning_skipped_while_raw_retention_disabled(db_set
         assert (await run_retention_pass(now=now))["hourly_rollups"] == 0
     finally:
         await _set_dashboard_hourly_retention(None)
-||||||| 84fde5a1e
-    assert remaining == [20.0]
-=======
-    assert sorted(remaining) == [10.0, 20.0]
->>>>>>> 72630bbfe

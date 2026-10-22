@@ -13,7 +13,7 @@ const TotpSettings = lazy(() =>
 export type AccessMySignInTabProps = {
   settings: DashboardSettings;
   busy: boolean;
-  onSave: (payload: SettingsUpdateRequest) => Promise<void>;
+  onSave: (patch: Partial<SettingsUpdateRequest>) => Promise<DashboardSettings | void>;
   onRefresh: () => Promise<unknown>;
 };
 

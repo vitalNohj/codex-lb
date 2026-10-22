@@ -63,7 +63,21 @@ function renderFilters(
   return props;
 }
 
-<<<<<<< 22625a07e
+describe("RequestFilters API key filter", () => {
+  it("renders the API key filter by default", () => {
+    renderFilters();
+
+    expect(screen.getByRole("button", { name: "API Keys" })).toBeInTheDocument();
+  });
+
+  it("hides the API key filter when showApiKeyFilter is false", () => {
+    renderFilters({}, EMPTY_OPTIONS, { showApiKeyFilter: false });
+
+    expect(screen.queryByRole("button", { name: "API Keys" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Accounts" })).toBeInTheDocument();
+  });
+});
+
 describe("RequestFilters", () => {
   it("shows simplified as the selected request-log view mode", () => {
     render(
@@ -99,21 +113,6 @@ describe("RequestFilters", () => {
     await user.click(screen.getByRole("radio", { name: "Expanded" }));
 
     expect(onViewModeChange).toHaveBeenCalledWith("expanded");
-||||||| 84fde5a1e
-=======
-describe("RequestFilters API key filter", () => {
-  it("renders the API key filter by default", () => {
-    renderFilters();
-
-    expect(screen.getByRole("button", { name: "API Keys" })).toBeInTheDocument();
-  });
-
-  it("hides the API key filter when showApiKeyFilter is false", () => {
-    renderFilters({}, EMPTY_OPTIONS, { showApiKeyFilter: false });
-
-    expect(screen.queryByRole("button", { name: "API Keys" })).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Accounts" })).toBeInTheDocument();
->>>>>>> 72630bbfe
   });
 });
 

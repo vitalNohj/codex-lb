@@ -16,7 +16,7 @@ no sidecar, no model source, and no authoritative Codex catalog serves is
 from __future__ import annotations
 
 import json
-from collections.abc import AsyncIterable, AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from typing import cast
 
 from fastapi import Request
@@ -90,12 +90,16 @@ def chat_sidecar_provider(
 async def non_http_responses_model_rejection(
     model: str,
     *,
-    source_owned: bool,
+    source_owned: bool | Callable[[], Awaitable[bool]],
 ) -> tuple[int, OpenAIErrorEnvelope] | None:
     """Reject a compact or websocket turn that must not select a Codex account.
 
     HTTP Responses dispatches sidecar models. Compact and the Codex websocket
     do not. Source-owned models keep the existing HTTP-fallback behavior.
+
+    ``source_owned`` may be a lookup, run only when the model is neither a
+    sidecar's nor in the Codex catalog: the websocket path keeps its single
+    source-ownership check (and a recorded subscription owner bypasses it).
     """
 
     provider = await _chat_sidecar_provider_for_model(model)
@@ -108,7 +112,9 @@ async def non_http_responses_model_rejection(
                 error_type="invalid_request_error",
             ),
         )
-    if source_owned or codex_serves_model(model):
+    if codex_serves_model(model):
+        return None
+    if source_owned if isinstance(source_owned, bool) else await source_owned():
         return None
     return (
         404,

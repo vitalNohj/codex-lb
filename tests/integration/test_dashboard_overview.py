@@ -8,13 +8,7 @@ import pytest
 
 from app.core.crypto import TokenEncryptor
 from app.core.utils.time import naive_utc_to_epoch, utcnow
-<<<<<<< 22625a07e
-from app.db.models import Account, AccountStatus, ClaudeSidecarUsageEvent, RequestLog
-||||||| 84fde5a1e
-from app.db.models import Account, AccountStatus, RequestLog
-=======
-from app.db.models import Account, AccountStatus, ApiKey, RequestLog
->>>>>>> 72630bbfe
+from app.db.models import Account, AccountStatus, ApiKey, ClaudeSidecarUsageEvent, RequestLog
 from app.db.session import SessionLocal
 from app.modules.accounts.repository import AccountsRepository
 from app.modules.accounts.schemas import AccountSummary

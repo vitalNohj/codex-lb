@@ -3273,14 +3273,20 @@ class _WebSocketMixin:
                 }
             )
         validate_model_access(refreshed_api_key, responses_payload.model)
+
         # Compact and this socket cannot speak chat-provider Responses. A model
         # those providers own must not select a Codex account. Source-owned
         # models keep the existing non-terminal HTTP fallback.
-        source_owned = not source_route_excluded and await responses_model_is_source_owned(
-            responses_payload.model,
-            refreshed_api_key,
-            raw_model=raw_source_model,
-        )
+        async def source_owned() -> bool:
+            # Only asked for a model neither a sidecar nor the Codex catalog
+            # serves; the turn's own source guard below stays the one
+            # ownership lookup otherwise.
+            return not source_route_excluded and await responses_model_is_source_owned(
+                responses_payload.model,
+                refreshed_api_key,
+                raw_model=raw_source_model,
+            )
+
         # Lazy: this mixin is imported while ``api`` is still loading, and the
         # rejection helper imports ``api`` only when a turn is prepared.
         from app.modules.proxy.responses_provider_dispatch import (

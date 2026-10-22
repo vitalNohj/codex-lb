@@ -2024,7 +2024,6 @@
   "modelSources.fields.reasoningEffortsDescription": "List the effort slugs this model source accepts and choose which one should be the default.",
   "modelSources.fields.reasoningEffortsPlaceholder": "none, low, provider-specific",
   "modelSources.fields.defaultReasoningEffort": "Default reasoning effort",
-<<<<<<< 22625a07e
   "dashboard.requests.aliasedFrom": "aliased from {{model}}",
   "dashboard.requestDetails.aliasedFrom": "Aliased from",
   "reports.filters.allTime": "All time",
@@ -2150,10 +2149,7 @@
   "settings.cliproxy.apiKeys.cacheKeyAria": "Send prompt cache key for {{label}}",
   "settings.cliproxy.apiKeys.cacheKeyHint": "Adds a stable prompt_cache_key upstream so the provider can reuse its cache. Turn on only if the upstream accepts the field.",
   "settings.cliproxy.apiKeys.cacheKeyGroupHint_one": "Routing pins this group, not one of its {{count}} key.",
-  "settings.cliproxy.apiKeys.cacheKeyGroupHint_other": "Routing pins this group, not one of its {{count}} keys."
-||||||| 84fde5a1e
-  "modelSources.fields.defaultReasoningEffort": "Default reasoning effort"
-=======
+  "settings.cliproxy.apiKeys.cacheKeyGroupHint_other": "Routing pins this group, not one of its {{count}} keys.",
   "auth.login.continueWith": "Continue with {{provider}}",
   "auth.login.providerNoUrl": "Sign in through {{provider}} first, then open this dashboard again.",
   "auth.login.useLocalPassword": "Sign in with a password instead",
@@ -2283,5 +2279,4 @@
   "organisation.automaticAccounts.secret.copy": "Copy credential",
   "organisation.errors.scim_token_not_found": "That credential no longer exists.",
   "accounts.importDialog.selectedFiles": "Selected files"
->>>>>>> 72630bbfe
 }

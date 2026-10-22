@@ -1446,7 +1446,6 @@ async def test_request_logs_repository_normalizes_whitespace_only_useragent_fiel
 
 
 @pytest.mark.asyncio
-<<<<<<< 22625a07e
 async def test_request_usage_summary_for_source_aggregates_savings(db_setup):
     async with SessionLocal() as session:
         logs_repo = RequestLogsRepository(session)
@@ -1498,8 +1497,8 @@ async def test_request_usage_summary_for_source_aggregates_savings(db_setup):
 
     assert summary.request_count == 3
     assert summary.total_savings_usd == pytest.approx(0.016)
-||||||| 84fde5a1e
-=======
+
+
 async def test_retire_stale_unavailable_bridge_owners_frees_a_reauth_pinned_thread(db_setup):
     """The status that neither the DEACTIVATED cleanup nor the sticky grace covers.
 
@@ -1585,4 +1584,3 @@ async def test_retire_stale_unavailable_bridge_owners_frees_a_reauth_pinned_thre
             await session.execute(select(HttpBridgeSessionRecord).where(HttpBridgeSessionRecord.id == bridge.id))
         ).scalar_one_or_none() is None
         assert await _get_bridge_aliases(session, bridge.id) == []
->>>>>>> 72630bbfe

@@ -146,6 +146,44 @@ SETTING_TIERS: Final[dict[str, Tier]] = {
     "shutdown_drain_timeout_seconds": "T1",
     "http_connector_limit": "T1",
     "http_connector_limit_per_host": "T1",
+    # --- Fork (vitalNohj/codex-lb) fields ---
+    # External-integration (sidecar) settings. Each one seeds the same-name
+    # ``dashboard_settings`` column (or the ``*_json`` / ``*_encrypted`` column
+    # mapped in ``DASHBOARD_HOMES``) when the settings row is first created; the
+    # dashboard's External Integrations tabs manage them afterwards. Keys and
+    # the CLIProxyAPI management key are stored encrypted, so they are secrets.
+    **{
+        f"{provider}_sidecar_{suffix}": tier
+        for provider in ("claude", "openrouter", "orcarouter", "opencode_go", "omniroute", "ollama")
+        for suffix, tier in (
+            ("enabled", "T3"),
+            ("base_url", "T3"),
+            ("api_key", "T2"),
+            ("connect_timeout_seconds", "T3"),
+            ("request_timeout_seconds", "T3"),
+            ("models_cache_ttl_seconds", "T3"),
+        )
+    },
+    "claude_sidecar_model_prefixes": "T3",
+    "claude_sidecar_management_key": "T2",
+    "claude_sidecar_quota_poll_interval_seconds": "T3",
+    "claude_sidecar_usage_poll_interval_seconds": "T3",
+    "claude_sidecar_usage_queue_batch_size": "T3",
+    "claude_sidecar_usage_collection_enabled": "T3",
+    "openrouter_sidecar_model_prefixes": "T3",
+    "orcarouter_sidecar_model_prefixes": "T3",
+    "opencode_go_sidecar_model_prefixes": "T3",
+    "omniroute_sidecar_selected_models": "T3",
+    "ollama_sidecar_model_prefixes": "T3",
+    "ollama_sidecar_full_models": "T3",
+    # Rollback switch for CLIProxyAPI's native xAI /v1/responses path: flipped
+    # only when that path misbehaves, like the session-bridge kill switch.
+    "cliproxy_xai_native_responses_enabled": "T4",
+    # Deprecated env alias for ``dashboard_settings.hourly_rollup_retention_days``.
+    "hourly_rollup_retention_days": "T3",
+    # Bounded owner hold for continuity follow-ups (#130). An incident escape
+    # hatch (0 disables the hold), not a routine tunable.
+    "proxy_continuity_owner_hold_seconds": "T4",
 }
 
 # T3 fields that still live only in env. Value = target dashboard home or
@@ -171,4 +209,12 @@ DASHBOARD_HOMES: Final[dict[str, str]] = {
     "telemetry_enabled": "dashboard_settings.telemetry_consent",
     # M4 model catalogue: one row per slug; the env dict is the per-slug fallback
     "model_context_window_overrides": "model_context_window_overrides.context_window",
+    # Fork sidecar routing lists are stored as JSON columns.
+    "claude_sidecar_model_prefixes": "dashboard_settings.claude_sidecar_model_prefixes_json",
+    "openrouter_sidecar_model_prefixes": "dashboard_settings.openrouter_sidecar_model_prefixes_json",
+    "orcarouter_sidecar_model_prefixes": "dashboard_settings.orcarouter_sidecar_model_prefixes_json",
+    "opencode_go_sidecar_model_prefixes": "dashboard_settings.opencode_go_sidecar_model_prefixes_json",
+    "omniroute_sidecar_selected_models": "dashboard_settings.omniroute_sidecar_selected_models_json",
+    "ollama_sidecar_model_prefixes": "dashboard_settings.ollama_sidecar_model_prefixes_json",
+    "ollama_sidecar_full_models": "dashboard_settings.ollama_sidecar_full_models_json",
 }

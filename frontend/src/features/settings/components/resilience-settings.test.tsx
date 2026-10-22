@@ -47,7 +47,7 @@ describe("ResilienceSettings", () => {
 
     await user.click(screen.getByRole("switch", { name: "Soft drain" }));
 
-    expect(onSave).toHaveBeenCalledWith(buildSettingsUpdateRequest(settings, { softDrainEnabled: false }));
+    expect(onSave).toHaveBeenCalledWith({ softDrainEnabled: false });
   });
 
   it("resets a dashboard-owned toggle to inherited with an explicit null", async () => {
@@ -57,7 +57,7 @@ describe("ResilienceSettings", () => {
 
     await user.click(screen.getByRole("button", { name: "Reset to inherited" }));
 
-    const payload = buildSettingsUpdateRequest(settings, { circuitBreakerEnabled: null });
+    const payload = { circuitBreakerEnabled: null };
     expect(payload.circuitBreakerEnabled).toBeNull();
     expect(onSave).toHaveBeenCalledWith(payload);
   });

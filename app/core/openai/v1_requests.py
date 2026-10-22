@@ -4,13 +4,8 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
-<<<<<<< 22625a07e
     ModelWrapValidatorHandler,
     PrivateAttr,
-||||||| 84fde5a1e
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
-=======
->>>>>>> 72630bbfe
     field_validator,
     model_validator,
 )
@@ -44,7 +39,6 @@ def _validate_optional_messages_array(value: list[JsonValue] | None) -> list[Jso
 
 class V1ResponsesRequest(BaseModel):
     model_config = ConfigDict(extra="allow")
-<<<<<<< 22625a07e
     _codex_lb_client_requested_store: bool = PrivateAttr(default=False)
 
     @model_validator(mode="wrap")
@@ -59,10 +53,6 @@ class V1ResponsesRequest(BaseModel):
             request._codex_lb_client_requested_store = True
         return request
 
-||||||| 84fde5a1e
-
-=======
->>>>>>> 72630bbfe
     model: str = Field(min_length=1)
     messages: PassthroughJsonList | None = None
     input: PassthroughJsonValue = None

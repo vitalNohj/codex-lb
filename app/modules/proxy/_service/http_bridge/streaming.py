@@ -6,13 +6,7 @@ import json
 import logging
 import math
 from collections.abc import AsyncGenerator, Callable
-<<<<<<< 22625a07e
-from typing import Any, AsyncIterator, Mapping, NamedTuple, NoReturn, TypeVar, cast
-||||||| 84fde5a1e
-from typing import Any, AsyncIterator, Mapping, TypeVar, cast
-=======
-from typing import Any, AsyncIterator, Literal, Mapping, TypeVar, cast, get_args
->>>>>>> 72630bbfe
+from typing import Any, AsyncIterator, Literal, Mapping, NamedTuple, NoReturn, TypeVar, cast, get_args
 from uuid import uuid4
 
 import anyio
@@ -93,14 +87,10 @@ from app.modules.proxy._service.http_bridge.helpers import (
     _http_bridge_abandonment_may_settle_circuit,
     _http_bridge_continuity_bound_without_safe_replay,
     _http_bridge_durable_lookup_allows_turn_state_takeover,
-<<<<<<< 22625a07e
     _http_bridge_error_is_previous_response_not_found,
-||||||| 84fde5a1e
-=======
     _http_bridge_eventless_budget_seconds,
     _http_bridge_eventless_max_keepalive_count,
     _http_bridge_eventless_timeout_message,
->>>>>>> 72630bbfe
     _http_bridge_is_context_overflow_error,
     _http_bridge_is_explicit_previous_response_rejection,
     _http_bridge_is_previous_response_owner_unavailable,
@@ -695,7 +685,7 @@ def _http_bridge_capacity_wait_plan(
     exc: ProxyResponseError,
     *,
     request_deadline: float,
-<<<<<<< 22625a07e
+    now: float,
     request_state: _WebSocketRequestState | None = None,
     holds_downstream_silently: bool = False,
 ) -> _HTTPBridgeCapacityWaitPlan | None:
@@ -712,12 +702,6 @@ def _http_bridge_capacity_wait_plan(
     * ``holds_downstream_silently`` and the hint would push this request past
       its remaining ``_SilentCapacityHold`` allowance.
     """
-||||||| 84fde5a1e
-) -> tuple[float, float, str | None] | None:
-=======
-    now: float,
-) -> tuple[float, float, str | None] | None:
->>>>>>> 72630bbfe
     account_capacity_wait_seconds = _http_bridge_account_capacity_wait_seconds(exc)
     if account_capacity_wait_seconds is None:
         return None
@@ -800,13 +784,9 @@ async def _iter_account_capacity_wait_sse(
     sleep_seconds: float,
     emit_keepalives: bool,
     request_state: _WebSocketRequestState | None = None,
-<<<<<<< 22625a07e
     counts_against_silent_hold: bool = True,
-||||||| 84fde5a1e
-=======
     scheduler: Scheduler,
     clock: Clock,
->>>>>>> 72630bbfe
 ) -> AsyncIterator[str]:
     if not emit_keepalives:
         if request_state is not None and request_state.capacity_startup_ready_event is not None:
@@ -2662,16 +2642,11 @@ class _HTTPBridgeStreamingMixin:
                         preferred_account_has_continuity_provenance = False
                         continue
                     wait_plan = _http_bridge_capacity_wait_plan(
-<<<<<<< 22625a07e
                         exc,
                         request_deadline=request_deadline,
+                        now=clock.monotonic(),
                         request_state=request_state,
                         holds_downstream_silently=propagate_http_errors,
-||||||| 84fde5a1e
-                    wait_plan = _http_bridge_capacity_wait_plan(exc, request_deadline=request_deadline)
-=======
-                        exc, request_deadline=request_deadline, now=clock.monotonic()
->>>>>>> 72630bbfe
                     )
                     if wait_plan is not None:
                         bounded_wait_seconds, account_capacity_wait_seconds, message, counts_against_silent_hold = (
@@ -2692,13 +2667,9 @@ class _HTTPBridgeStreamingMixin:
                             sleep_seconds=bounded_wait_seconds,
                             emit_keepalives=not propagate_http_errors,
                             request_state=request_state,
-<<<<<<< 22625a07e
                             counts_against_silent_hold=counts_against_silent_hold,
-||||||| 84fde5a1e
-=======
                             scheduler=scheduler,
                             clock=clock,
->>>>>>> 72630bbfe
                         ):
                             yield line
                         if clock.monotonic() >= request_deadline:
@@ -2939,16 +2910,11 @@ class _HTTPBridgeStreamingMixin:
                             owner_forward_fresh_replay = True
                             continue
                         wait_plan = _http_bridge_capacity_wait_plan(
-<<<<<<< 22625a07e
                             capacity_exc,
                             request_deadline=request_deadline,
+                            now=clock.monotonic(),
                             request_state=request_state,
                             holds_downstream_silently=propagate_http_errors,
-||||||| 84fde5a1e
-                        wait_plan = _http_bridge_capacity_wait_plan(capacity_exc, request_deadline=request_deadline)
-=======
-                            capacity_exc, request_deadline=request_deadline, now=clock.monotonic()
->>>>>>> 72630bbfe
                         )
                         if wait_plan is None:
                             raise
@@ -2973,13 +2939,9 @@ class _HTTPBridgeStreamingMixin:
                             sleep_seconds=bounded_wait_seconds,
                             emit_keepalives=not propagate_http_errors,
                             request_state=request_state,
-<<<<<<< 22625a07e
                             counts_against_silent_hold=counts_against_silent_hold,
-||||||| 84fde5a1e
-=======
                             scheduler=scheduler,
                             clock=clock,
->>>>>>> 72630bbfe
                         ):
                             yield line
                         if clock.monotonic() >= request_deadline:
@@ -3717,16 +3679,11 @@ class _HTTPBridgeStreamingMixin:
                         )
                     except ProxyResponseError as capacity_exc:
                         wait_plan = _http_bridge_capacity_wait_plan(
-<<<<<<< 22625a07e
                             capacity_exc,
                             request_deadline=request_deadline,
+                            now=clock.monotonic(),
                             request_state=request_state,
                             holds_downstream_silently=propagate_http_errors,
-||||||| 84fde5a1e
-                        wait_plan = _http_bridge_capacity_wait_plan(capacity_exc, request_deadline=request_deadline)
-=======
-                            capacity_exc, request_deadline=request_deadline, now=clock.monotonic()
->>>>>>> 72630bbfe
                         )
                         if wait_plan is None:
                             raise
@@ -3748,13 +3705,9 @@ class _HTTPBridgeStreamingMixin:
                             sleep_seconds=bounded_wait_seconds,
                             emit_keepalives=not propagate_http_errors,
                             request_state=request_state,
-<<<<<<< 22625a07e
                             counts_against_silent_hold=counts_against_silent_hold,
-||||||| 84fde5a1e
-=======
                             scheduler=scheduler,
                             clock=clock,
->>>>>>> 72630bbfe
                         ):
                             yield line
                         if clock.monotonic() >= request_deadline:
@@ -3844,16 +3797,11 @@ class _HTTPBridgeStreamingMixin:
                         )
                     except ProxyResponseError as capacity_exc:
                         wait_plan = _http_bridge_capacity_wait_plan(
-<<<<<<< 22625a07e
                             capacity_exc,
                             request_deadline=request_deadline,
+                            now=clock.monotonic(),
                             request_state=request_state,
                             holds_downstream_silently=propagate_http_errors,
-||||||| 84fde5a1e
-                        wait_plan = _http_bridge_capacity_wait_plan(capacity_exc, request_deadline=request_deadline)
-=======
-                            capacity_exc, request_deadline=request_deadline, now=clock.monotonic()
->>>>>>> 72630bbfe
                         )
                         if wait_plan is None:
                             raise
@@ -3875,13 +3823,9 @@ class _HTTPBridgeStreamingMixin:
                             sleep_seconds=bounded_wait_seconds,
                             emit_keepalives=not propagate_http_errors,
                             request_state=request_state,
-<<<<<<< 22625a07e
                             counts_against_silent_hold=counts_against_silent_hold,
-||||||| 84fde5a1e
-=======
                             scheduler=scheduler,
                             clock=clock,
->>>>>>> 72630bbfe
                         ):
                             yield line
                         if clock.monotonic() >= request_deadline:
@@ -3935,36 +3879,6 @@ class _HTTPBridgeStreamingMixin:
                 effective_payload.previous_response_id is not None
                 and _http_bridge_should_attempt_local_previous_response_recovery(exc)
             )
-<<<<<<< 22625a07e
-            # Upstream definitively rejected this turn's anchored previous
-            # response with previous_response_not_found, and that anchor was
-            # injected by the proxy on top of a preserved full resend. Retrying
-            # the same trimmed payload against the same dead anchor can only
-            # fail identically (previous_response_recover_local re-arms it);
-            # the reader already invalidated the anchor, so the anchored local
-            # rebind is skipped and the unanchored fresh resend below replays
-            # the client's own full payload once instead of surfacing a 502.
-            dead_upstream_anchor_not_found = (
-                request_state.proxy_injected_previous_response_id
-                and request_state.proxy_injected_anchor_had_full_resend_payload
-                and request_state.previous_response_not_found_rewritten
-                and _http_bridge_error_is_previous_response_not_found(exc)
-            )
-            if local_previous_response_recovery_applicable and dead_upstream_anchor_not_found:
-                _log_http_bridge_event(
-                    "previous_response_recover_skipped",
-                    bridge_session_key,
-                    account_id=session.account.id,
-                    model=effective_payload.model,
-                    detail="reason=previous_response_not_found outcome=dead_upstream_anchor",
-                    cache_key_family=bridge_session_key.affinity_kind,
-                    model_class=_extract_model_class(effective_payload.model) if effective_payload.model else None,
-                    owner_check_applied=True,
-                )
-            should_attempt_previous_response_recovery = (
-                local_previous_response_recovery_applicable and not dead_upstream_anchor_not_found
-||||||| 84fde5a1e
-=======
             previous_response_rejected_same_owner_full_resend = bool(
                 explicit_previous_response_rejection
                 and verified_stale_anchor_operation_fenced
@@ -3985,24 +3899,51 @@ class _HTTPBridgeStreamingMixin:
                 and request_state.response_event_count == 0
                 and request_state.replay_count == 0
                 and durable_full_resend_retains_required_context()
->>>>>>> 72630bbfe
             )
             should_attempt_context_overflow_fresh_turn_recovery = (
                 is_context_overflow
                 and effective_payload.previous_response_id is not None
                 and bridge_session_key.strength != "hard"
             )
+            # Upstream definitively rejected this turn's anchored previous
+            # response with previous_response_not_found, and that anchor was
+            # injected by the proxy on top of a preserved full resend. Retrying
+            # the same trimmed payload against the same dead anchor can only
+            # fail identically; upstream_events already retired the anchor, so
+            # the anchored local rebind is skipped and the unanchored fresh
+            # resend below replays the client's own full payload once instead of
+            # surfacing a 502. The verified stale-anchor branches above take
+            # precedence whenever durable context and an operation fence prove
+            # their stronger replay, so this only covers the remaining shapes.
+            dead_upstream_anchor_not_found = bool(
+                local_previous_response_recovery_applicable
+                and request_state.proxy_injected_previous_response_id
+                and request_state.proxy_injected_anchor_had_full_resend_payload
+                and request_state.previous_response_not_found_rewritten
+                and _http_bridge_error_is_previous_response_not_found(exc)
+                and not previous_response_rejected_full_resend
+                and not previous_response_rejected_same_owner_full_resend
+                and not previous_response_rejected_full_resend_without_operation_fence
+            )
+            if dead_upstream_anchor_not_found:
+                _log_http_bridge_event(
+                    "previous_response_recover_skipped",
+                    bridge_session_key,
+                    account_id=session.account.id,
+                    model=effective_payload.model,
+                    detail="reason=previous_response_not_found outcome=dead_upstream_anchor",
+                    cache_key_family=bridge_session_key.affinity_kind,
+                    model_class=_extract_model_class(effective_payload.model) if effective_payload.model else None,
+                    owner_check_applied=True,
+                )
+            should_attempt_previous_response_recovery = (
+                local_previous_response_recovery_applicable and not dead_upstream_anchor_not_found
+            )
             if (
                 not should_attempt_previous_response_recovery
                 and not should_rollover_after_context_overflow
                 and not should_attempt_context_overflow_fresh_turn_recovery
-<<<<<<< 22625a07e
-                and not durable_recovery_fresh_replay
                 and not dead_upstream_anchor_not_found
-||||||| 84fde5a1e
-                and not durable_recovery_fresh_replay
-=======
->>>>>>> 72630bbfe
             ):
                 if is_context_overflow:
                     _log_http_bridge_event(
@@ -4017,10 +3958,15 @@ class _HTTPBridgeStreamingMixin:
                     )
                 raise
 
-<<<<<<< 22625a07e
-            if durable_recovery_fresh_replay:
-                pass
-            elif dead_upstream_anchor_not_found:
+            if previous_response_rejected_full_resend_without_operation_fence:
+                raise ProxyResponseError(
+                    502,
+                    openai_error(
+                        "bridge_continuity_persistence_failed",
+                        "HTTP response recovery operation fence is unavailable; retry the request.",
+                    ),
+                ) from exc
+            if dead_upstream_anchor_not_found:
                 # Nothing reached the client yet and the reader already
                 # invalidated the dead proxy-injected anchor. Re-send the
                 # client's own full, untrimmed payload without the anchor once
@@ -4041,6 +3987,11 @@ class _HTTPBridgeStreamingMixin:
                     model_class=_extract_model_class(effective_payload.model) if effective_payload.model else None,
                     owner_check_applied=True,
                 )
+                if _http_bridge_verified_stale_anchor_replay_is_operation_fenced(session, request_state):
+                    # The rewritten not-found is durably spooled as this
+                    # operation's terminal failure; clear it before the resend
+                    # so a later durable replay cannot return it first.
+                    await reset_previous_response_recovery_operation_spool(session, request_state)
                 recovery_path = "previous_response_fresh_resend"
                 retry_payload = _http_bridge_payload_without_previous_response_id(untrimmed_effective_payload)
                 retry_previous_response_id = None
@@ -4048,21 +3999,6 @@ class _HTTPBridgeStreamingMixin:
                 retry_preferred_account_id = request_state.preferred_account_id
                 allow_previous_response_recovery_rebind = False
             elif should_attempt_context_overflow_fresh_turn_recovery:
-||||||| 84fde5a1e
-            if durable_recovery_fresh_replay:
-                pass
-            elif should_attempt_context_overflow_fresh_turn_recovery:
-=======
-            if previous_response_rejected_full_resend_without_operation_fence:
-                raise ProxyResponseError(
-                    502,
-                    openai_error(
-                        "bridge_continuity_persistence_failed",
-                        "HTTP response recovery operation fence is unavailable; retry the request.",
-                    ),
-                ) from exc
-            if should_attempt_context_overflow_fresh_turn_recovery:
->>>>>>> 72630bbfe
                 if PROMETHEUS_AVAILABLE and bridge_durable_recover_total is not None:
                     bridge_durable_recover_total.labels(path="context_overflow_fresh_turn").inc()
                 _log_http_bridge_event(
@@ -4302,16 +4238,11 @@ class _HTTPBridgeStreamingMixin:
                         )
                     except ProxyResponseError as capacity_exc:
                         wait_plan = _http_bridge_capacity_wait_plan(
-<<<<<<< 22625a07e
                             capacity_exc,
                             request_deadline=request_deadline,
+                            now=clock.monotonic(),
                             request_state=request_state,
                             holds_downstream_silently=propagate_http_errors,
-||||||| 84fde5a1e
-                        wait_plan = _http_bridge_capacity_wait_plan(capacity_exc, request_deadline=request_deadline)
-=======
-                            capacity_exc, request_deadline=request_deadline, now=clock.monotonic()
->>>>>>> 72630bbfe
                         )
                         if wait_plan is None:
                             raise
@@ -4334,13 +4265,9 @@ class _HTTPBridgeStreamingMixin:
                             sleep_seconds=bounded_wait_seconds,
                             emit_keepalives=not propagate_http_errors,
                             request_state=request_state,
-<<<<<<< 22625a07e
                             counts_against_silent_hold=counts_against_silent_hold,
-||||||| 84fde5a1e
-=======
                             scheduler=scheduler,
                             clock=clock,
->>>>>>> 72630bbfe
                         ):
                             yield line
                         if clock.monotonic() >= request_deadline:
@@ -4378,61 +4305,11 @@ class _HTTPBridgeStreamingMixin:
                     retry_payload,
                     reservation=retry_api_key_reservation,
                 )
-<<<<<<< 22625a07e
-                if (
-                    recovery_path in {"local_previous_response_error", "previous_response_fresh_resend"}
-                    and request_state.operation_registered
-                    and request_state.operation_id is not None
-                    and session.durable_session_id is not None
-                    and session.durable_owner_epoch is not None
-                ):
-                    reset_operation_event_spool = getattr(self._durable_bridge, "reset_operation_event_spool", None)
-                    if callable(reset_operation_event_spool):
-                        reset_ok = await reset_operation_event_spool(
-                            operation_id=request_state.operation_id,
-                            session_id=session.durable_session_id,
-                            instance_id=_service_get_settings().http_responses_session_bridge_instance_id,
-                            owner_epoch=session.durable_owner_epoch,
-                        )
-                        if not reset_ok:
-                            raise ProxyResponseError(
-                                502,
-                                openai_error(
-                                    "bridge_continuity_persistence_failed",
-                                    "HTTP response recovery spool could not be reset; retry the request.",
-                                ),
-                            )
-||||||| 84fde5a1e
-                if (
-                    recovery_path == "local_previous_response_error"
-                    and request_state.operation_registered
-                    and request_state.operation_id is not None
-                    and session.durable_session_id is not None
-                    and session.durable_owner_epoch is not None
-                ):
-                    reset_operation_event_spool = getattr(self._durable_bridge, "reset_operation_event_spool", None)
-                    if callable(reset_operation_event_spool):
-                        reset_ok = await reset_operation_event_spool(
-                            operation_id=request_state.operation_id,
-                            session_id=session.durable_session_id,
-                            instance_id=_service_get_settings().http_responses_session_bridge_instance_id,
-                            owner_epoch=session.durable_owner_epoch,
-                        )
-                        if not reset_ok:
-                            raise ProxyResponseError(
-                                502,
-                                openai_error(
-                                    "bridge_continuity_persistence_failed",
-                                    "HTTP response recovery spool could not be reset; retry the request.",
-                                ),
-                            )
-=======
                 local_previous_response_recovery = recovery_path in {
                     "local_previous_response_error",
                     "local_previous_response_fresh_replay",
                     "local_previous_response_same_owner_fresh_replay",
                 }
->>>>>>> 72630bbfe
                 # A recovery request is the one bounded server-side replay;
                 # prevent a second cooldown bypass if this fresh socket also
                 # fails before response.created.
@@ -4463,11 +4340,6 @@ class _HTTPBridgeStreamingMixin:
                 retry_request_state.operation_registered = request_state.operation_registered
                 retry_request_state.operation_persisted_response_id = request_state.operation_persisted_response_id
                 retry_request_state.operation_rebind_required = request_state.operation_rebind_required
-<<<<<<< 22625a07e
-                if recovery_path in {"local_previous_response_error", "previous_response_fresh_resend"}:
-||||||| 84fde5a1e
-                if recovery_path == "local_previous_response_error":
-=======
                 # An anchored recovery replays the proxy's own anchor, so the
                 # retry inherits its provenance. Without this the retry looks
                 # client-anchored: diagnostics report
@@ -4508,8 +4380,7 @@ class _HTTPBridgeStreamingMixin:
                     request_state.proxy_injected_anchor_had_full_resend_payload
                     and retry_request_state.proxy_injected_previous_response_id
                 )
-                if local_previous_response_recovery:
->>>>>>> 72630bbfe
+                if local_previous_response_recovery or recovery_path == "previous_response_fresh_resend":
                     # The prior response.failed/error made the operation
                     # terminal - a local continuity error for the local rebind
                     # and the rewritten definitive not-found for the unanchored
@@ -4923,16 +4794,11 @@ class _HTTPBridgeStreamingMixin:
                 if request_state.bridge_soft_capacity_reroute_allowed:
                     raise
                 wait_plan = _http_bridge_capacity_wait_plan(
-<<<<<<< 22625a07e
                     exc,
                     request_deadline=request_deadline,
+                    now=clock.monotonic(),
                     request_state=request_state,
                     holds_downstream_silently=propagate_http_errors,
-||||||| 84fde5a1e
-                wait_plan = _http_bridge_capacity_wait_plan(exc, request_deadline=request_deadline)
-=======
-                    exc, request_deadline=request_deadline, now=clock.monotonic()
->>>>>>> 72630bbfe
                 )
                 if wait_plan is None:
                     raise
@@ -4977,13 +4843,9 @@ class _HTTPBridgeStreamingMixin:
                         sleep_seconds=bounded_wait_seconds,
                         emit_keepalives=not propagate_http_errors,
                         request_state=request_state,
-<<<<<<< 22625a07e
                         counts_against_silent_hold=counts_against_silent_hold,
-||||||| 84fde5a1e
-=======
                         scheduler=scheduler,
                         clock=clock,
->>>>>>> 72630bbfe
                     ):
                         yield line
                 finally:

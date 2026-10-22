@@ -733,12 +733,8 @@ async def test_cleanup_once_purges_prompt_cache_only(monkeypatch) -> None:
     sticky_repo = AsyncMock()
     sticky_repo.purge_stale_hard_codex_session_mappings = AsyncMock(return_value=0)
     sticky_repo.purge_prompt_cache_before = AsyncMock(return_value=5)
-<<<<<<< 22625a07e
     sticky_repo.purge_cliproxy_before = AsyncMock(return_value=0)
-||||||| 84fde5a1e
-=======
     sticky_repo.purge_before_for_key_prefix = AsyncMock(return_value=0)
->>>>>>> 72630bbfe
     sticky_repo.purge_before = AsyncMock(return_value=0)
     bridge_repo = AsyncMock()
     bridge_repo.retire_stale_unavailable_bridge_owners = AsyncMock(return_value=0)
@@ -783,12 +779,9 @@ async def test_cleanup_once_purges_prompt_cache_only(monkeypatch) -> None:
     passed_cutoff = sticky_repo.purge_stale_hard_codex_session_mappings.call_args.args[0]
     expected_cutoff = utcnow() - timedelta(seconds=cleanup_scheduler._STALE_HARD_CODEX_SESSION_UNAVAILABLE_SECONDS)
     assert abs((passed_cutoff - expected_cutoff).total_seconds()) < 5
-<<<<<<< 22625a07e
     sticky_repo.purge_cliproxy_before.assert_called_once()
     cliproxy_cutoff = sticky_repo.purge_cliproxy_before.call_args.args[0]
     assert abs((cliproxy_cutoff - (utcnow() - timedelta(seconds=600))).total_seconds()) < 5
-||||||| 84fde5a1e
-=======
     # The durable-bridge counterpart runs on the same sweep and the same grace
     # window; a bridged thread must not wait longer than a sticky one.
     bridge_repo.retire_stale_unavailable_bridge_owners.assert_called_once()
@@ -802,7 +795,6 @@ async def test_cleanup_once_purges_prompt_cache_only(monkeypatch) -> None:
         )
         < 5
     )
->>>>>>> 72630bbfe
 
 
 @pytest.mark.asyncio
@@ -825,12 +817,8 @@ async def test_cleanup_once_skips_bridge_purge_when_schema_is_not_ready(monkeypa
     sticky_repo = AsyncMock()
     sticky_repo.purge_stale_hard_codex_session_mappings = AsyncMock(return_value=0)
     sticky_repo.purge_prompt_cache_before = AsyncMock(return_value=0)
-<<<<<<< 22625a07e
     sticky_repo.purge_cliproxy_before = AsyncMock(return_value=0)
-||||||| 84fde5a1e
-=======
     sticky_repo.purge_before_for_key_prefix = AsyncMock(return_value=0)
->>>>>>> 72630bbfe
     bridge_repo = AsyncMock()
     bridge_repo.retire_stale_unavailable_bridge_owners = AsyncMock(return_value=0)
     bridge_repo.purge_closed_before = AsyncMock(return_value=0)
@@ -895,12 +883,8 @@ async def test_cleanup_once_purges_bridge_when_schema_exists_after_startup_flag_
     sticky_repo = AsyncMock()
     sticky_repo.purge_stale_hard_codex_session_mappings = AsyncMock(return_value=0)
     sticky_repo.purge_prompt_cache_before = AsyncMock(return_value=0)
-<<<<<<< 22625a07e
     sticky_repo.purge_cliproxy_before = AsyncMock(return_value=0)
-||||||| 84fde5a1e
-=======
     sticky_repo.purge_before_for_key_prefix = AsyncMock(return_value=0)
->>>>>>> 72630bbfe
     bridge_repo = AsyncMock()
     bridge_repo.retire_stale_unavailable_bridge_owners = AsyncMock(return_value=0)
     bridge_repo.purge_closed_before = AsyncMock(return_value=1)
@@ -981,12 +965,8 @@ async def test_cleanup_once_gates_abandoned_purge_on_prompt_cache_reuse_ttl(monk
     sticky_repo = AsyncMock()
     sticky_repo.purge_stale_hard_codex_session_mappings = AsyncMock(return_value=0)
     sticky_repo.purge_prompt_cache_before = AsyncMock(return_value=0)
-<<<<<<< 22625a07e
     sticky_repo.purge_cliproxy_before = AsyncMock(return_value=0)
-||||||| 84fde5a1e
-=======
     sticky_repo.purge_before_for_key_prefix = AsyncMock(return_value=0)
->>>>>>> 72630bbfe
     bridge_repo = AsyncMock()
     bridge_repo.retire_stale_unavailable_bridge_owners = AsyncMock(return_value=0)
     bridge_repo.purge_closed_before = AsyncMock(return_value=0)

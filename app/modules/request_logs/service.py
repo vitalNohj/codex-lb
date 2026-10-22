@@ -147,10 +147,9 @@ class RequestLogsService:
                 request_count=total,
                 aggregated_cost_usd=result.aggregated_cost_usd,
             )
-<<<<<<< 22625a07e
-        api_key_ids = [log.api_key_id for log in logs if log.api_key_id]
+        api_key_ids = [log.api_key_id for log in logs if log.api_key_id] if include_api_key_identity else []
         claude_sidecar_logs = [(log.request_id, log.requested_at) for log in logs if log.source == "claude_sidecar"]
-        api_key_name_by_id = await self._repo.get_api_key_names_by_ids(api_key_ids)
+        api_key_name_by_id = await self._repo.get_api_key_names_by_ids(api_key_ids) if api_key_ids else {}
         sidecar_account_label_by_request_id = await self._repo.get_claude_sidecar_account_labels_for_logs(
             claude_sidecar_logs
         )
@@ -178,13 +177,6 @@ class RequestLogsService:
             if (provider := external_priced_provider_for_log_source(log.source)) is not None
         }
         current_price_status_by_key = await self._repo.get_external_price_statuses(set(price_key_by_log_id.values()))
-||||||| 84fde5a1e
-        api_key_ids = [log.api_key_id for log in logs if log.api_key_id]
-        api_key_name_by_id = await self._repo.get_api_key_names_by_ids(api_key_ids)
-=======
-        api_key_ids = [log.api_key_id for log in logs if log.api_key_id] if include_api_key_identity else []
-        api_key_name_by_id = await self._repo.get_api_key_names_by_ids(api_key_ids) if api_key_ids else {}
->>>>>>> 72630bbfe
         requests = [
             to_request_log_entry(
                 log,

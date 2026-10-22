@@ -547,7 +547,6 @@ async def test_request_logs_options_unfiltered_issues_no_distinct_statements(asy
     assert any("facet_skip" in stmt for stmt in options_statements)
 
 
-<<<<<<< 22625a07e
 @pytest.mark.asyncio
 async def test_request_logs_options_unfiltered_probes_walk_facet_indexes_sqlite(async_client, db_setup):
     """Each skip-scan probe must walk its facet column's index on SQLite.
@@ -611,8 +610,8 @@ async def test_request_logs_options_unfiltered_probes_walk_facet_indexes_sqlite(
                 # seek the (status, error_code) index by status.
                 if facet not in {"status", "error_code"}:
                     assert "status=?" not in detail, (facet, detail)
-||||||| 84fde5a1e
-=======
+
+
 # PostgreSQL plan pin for the live-row partial facet indexes. Seed shape
 # mirrors production: thousands of live rows spread over several models, api
 # keys and statuses (so a full pass over any live-row index, including the
@@ -791,4 +790,3 @@ async def test_request_logs_options_facet_probes_use_live_row_indexes_postgresql
             assert index_names == {expected_index}, f"{sql}: {scans}"
             assert sum(int(node.get("Rows Removed by Filter", 0)) for node in scans) == 0, f"{sql}: {scans}"
             assert all(int(node.get("Actual Rows", 0)) <= _PROBE_ROW_BOUND for node in scans), f"{sql}: {scans}"
->>>>>>> 72630bbfe

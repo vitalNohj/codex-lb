@@ -7,20 +7,10 @@ Regenerate with `uv run python scripts/generate_settings_reference.py`;
 `tests/unit/test_settings_reference.py` fails when this page drifts from
 `app/core/config/settings.py`.
 
-<<<<<<< 22625a07e
-codex-lb currently exposes 182 settings. Every setting is an environment
-variable with the `CODEX_LB_` prefix (process environment or `.env` /
-`.env.local` next to the process). All defaults work with zero configuration —
-||||||| 84fde5a1e
-codex-lb currently exposes 131 settings. Every setting is an environment
-variable with the `CODEX_LB_` prefix (process environment or `.env` /
-`.env.local` next to the process). All defaults work with zero configuration —
-=======
-codex-lb currently exposes 96 settings. Every setting is an environment
+codex-lb currently exposes 147 settings. Every setting is an environment
 variable, normally with the `CODEX_LB_` prefix (process environment or `.env` /
 `.env.local` next to the process); aliased settings list every accepted name.
 All defaults work with zero configuration —
->>>>>>> 72630bbfe
 start from [Configuration](../configuration.md) for the handful that matter,
 and treat everything else as advanced operational tunables.
 
@@ -157,50 +147,6 @@ anything else belongs in `app/core/config/settings.py`.
 
 ## Proxy admission & account caps
 
-<<<<<<< 22625a07e
-| Environment variable | Type | Default |
-| --- | --- | --- |
-| `CODEX_LB_PROXY_ACCOUNT_CAP_PARTITION_SCALE_DOWN_SECONDS` | `int` | `60` |
-| `CODEX_LB_PROXY_ACCOUNT_CAPS_SCOPE` | `'partitioned' \| 'replica'` | `'partitioned'` |
-| `CODEX_LB_PROXY_ACCOUNT_INFLIGHT_PENALTY_PCT` | `float` | `2.5` |
-| `CODEX_LB_PROXY_ACCOUNT_LEASE_TOKEN_WEIGHT` | `float` | `1.0` |
-| `CODEX_LB_PROXY_ACCOUNT_LEASE_TTL_SECONDS` | `float` | `900.0` |
-| `CODEX_LB_PROXY_ACCOUNT_RESPONSE_CREATE_LIMIT` | `int` | `4` |
-| `CODEX_LB_PROXY_ACCOUNT_STREAM_LIMIT` | `int` | `8` |
-| `CODEX_LB_PROXY_ACCOUNT_STREAM_RECOVERY_RESERVE` | `int` | `1` |
-| `CODEX_LB_PROXY_ADMISSION_WAIT_TIMEOUT_SECONDS` | `float` | `10.0` |
-| `CODEX_LB_PROXY_API_KEY_FAIR_SHARE_CONGESTION_THRESHOLD_PCT` | `int` | `0` |
-| `CODEX_LB_PROXY_COMPACT_RESPONSE_CREATE_LIMIT` | `int` | `64` |
-| `CODEX_LB_PROXY_CONTINUITY_OWNER_HOLD_SECONDS` | `float` | `10.0` |
-| `CODEX_LB_PROXY_DOWNSTREAM_WEBSOCKET_IDLE_TIMEOUT_SECONDS` | `float` | `120.0` |
-| `CODEX_LB_PROXY_REFRESH_FAILURE_COOLDOWN_SECONDS` | `float` | `5.0` |
-| `CODEX_LB_PROXY_REQUEST_BUDGET_SECONDS` | `float` | `600.0` |
-| `CODEX_LB_PROXY_RESPONSE_CREATE_LIMIT` | `int` | `256` |
-| `CODEX_LB_PROXY_TOKEN_REFRESH_LIMIT` | `int` | `64` |
-| `CODEX_LB_PROXY_UNAUTHENTICATED_CLIENT_CIDRS` | `list[str]` | `[]` |
-| `CODEX_LB_PROXY_UPSTREAM_WEBSOCKET_CONNECT_LIMIT` | `int` | `128` |
-||||||| 84fde5a1e
-| Environment variable | Type | Default |
-| --- | --- | --- |
-| `CODEX_LB_PROXY_ACCOUNT_CAP_PARTITION_SCALE_DOWN_SECONDS` | `int` | `60` |
-| `CODEX_LB_PROXY_ACCOUNT_CAPS_SCOPE` | `'partitioned' \| 'replica'` | `'partitioned'` |
-| `CODEX_LB_PROXY_ACCOUNT_INFLIGHT_PENALTY_PCT` | `float` | `2.5` |
-| `CODEX_LB_PROXY_ACCOUNT_LEASE_TOKEN_WEIGHT` | `float` | `1.0` |
-| `CODEX_LB_PROXY_ACCOUNT_LEASE_TTL_SECONDS` | `float` | `900.0` |
-| `CODEX_LB_PROXY_ACCOUNT_RESPONSE_CREATE_LIMIT` | `int` | `4` |
-| `CODEX_LB_PROXY_ACCOUNT_STREAM_LIMIT` | `int` | `8` |
-| `CODEX_LB_PROXY_ACCOUNT_STREAM_RECOVERY_RESERVE` | `int` | `1` |
-| `CODEX_LB_PROXY_ADMISSION_WAIT_TIMEOUT_SECONDS` | `float` | `10.0` |
-| `CODEX_LB_PROXY_API_KEY_FAIR_SHARE_CONGESTION_THRESHOLD_PCT` | `int` | `0` |
-| `CODEX_LB_PROXY_COMPACT_RESPONSE_CREATE_LIMIT` | `int` | `64` |
-| `CODEX_LB_PROXY_DOWNSTREAM_WEBSOCKET_IDLE_TIMEOUT_SECONDS` | `float` | `120.0` |
-| `CODEX_LB_PROXY_REFRESH_FAILURE_COOLDOWN_SECONDS` | `float` | `5.0` |
-| `CODEX_LB_PROXY_REQUEST_BUDGET_SECONDS` | `float` | `600.0` |
-| `CODEX_LB_PROXY_RESPONSE_CREATE_LIMIT` | `int` | `256` |
-| `CODEX_LB_PROXY_TOKEN_REFRESH_LIMIT` | `int` | `64` |
-| `CODEX_LB_PROXY_UNAUTHENTICATED_CLIENT_CIDRS` | `list[str]` | `[]` |
-| `CODEX_LB_PROXY_UPSTREAM_WEBSOCKET_CONNECT_LIMIT` | `int` | `128` |
-=======
 | Environment variable | Tier | Type | Default |
 | --- | --- | --- | --- |
 | `CODEX_LB_PROXY_ACCOUNT_CAP_PARTITION_SCALE_DOWN_SECONDS` | T1 | `int` | `60` |
@@ -213,12 +159,12 @@ anything else belongs in `app/core/config/settings.py`.
 | `CODEX_LB_PROXY_ACCOUNT_STREAM_LIMIT` | T3 (dashboard) | `int` | `8` |
 | `CODEX_LB_PROXY_ACCOUNT_STREAM_RECOVERY_RESERVE` | T3 (dashboard) | `int` | `1` |
 | `CODEX_LB_PROXY_API_KEY_FAIR_SHARE_CONGESTION_THRESHOLD_PCT` | T3 (dashboard) | `int` | `0` |
+| `CODEX_LB_PROXY_CONTINUITY_OWNER_HOLD_SECONDS` | T4 | `float` | `10.0` |
 | `CODEX_LB_PROXY_DOWNSTREAM_WEBSOCKET_IDLE_TIMEOUT_SECONDS` | T3 (dashboard) | `float` | `120.0` |
 | `CODEX_LB_PROXY_OVERLOAD_ISOLATION_SECONDS` | T3 (dashboard) | `int` | `1800` |
 | `CODEX_LB_PROXY_REQUEST_BUDGET_SECONDS` | T3 (dashboard) | `float` | `600.0` |
 | `CODEX_LB_PROXY_RESPONSE_CREATE_LIMIT` | T1 | `int` | `256` |
 | `CODEX_LB_PROXY_UNAUTHENTICATED_CLIENT_CIDRS` | T1 | `list[str]` | `[]` |
->>>>>>> 72630bbfe
 
 ## OAuth
 
@@ -314,81 +260,63 @@ anything else belongs in `app/core/config/settings.py`.
 
 ## Other
 
-<<<<<<< 22625a07e
-| Environment variable | Type | Default |
-| --- | --- | --- |
-| `CODEX_LB_CLAUDE_SIDECAR_API_KEY` | `str` | `''` |
-| `CODEX_LB_CLAUDE_SIDECAR_BASE_URL` | `str` | `'http://127.0.0.1:8317'` |
-| `CODEX_LB_CLAUDE_SIDECAR_CONNECT_TIMEOUT_SECONDS` | `float` | `8.0` |
-| `CODEX_LB_CLAUDE_SIDECAR_ENABLED` | `bool` | `False` |
-| `CODEX_LB_CLAUDE_SIDECAR_MANAGEMENT_KEY` | `str` | `''` |
-| `CODEX_LB_CLAUDE_SIDECAR_MODEL_PREFIXES` | `list[str]` | `['claude']` |
-| `CODEX_LB_CLAUDE_SIDECAR_MODELS_CACHE_TTL_SECONDS` | `float` | `60.0` |
-| `CODEX_LB_CLAUDE_SIDECAR_QUOTA_POLL_INTERVAL_SECONDS` | `float` | `60.0` |
-| `CODEX_LB_CLAUDE_SIDECAR_REQUEST_TIMEOUT_SECONDS` | `float` | `600.0` |
-| `CODEX_LB_CLAUDE_SIDECAR_USAGE_COLLECTION_ENABLED` | `bool` | `True` |
-| `CODEX_LB_CLAUDE_SIDECAR_USAGE_POLL_INTERVAL_SECONDS` | `float` | `15.0` |
-| `CODEX_LB_CLAUDE_SIDECAR_USAGE_QUEUE_BATCH_SIZE` | `int` | `100` |
-| `CODEX_LB_CLIPROXY_XAI_NATIVE_RESPONSES_ENABLED` | `bool` | `True` |
-| `CODEX_LB_EVENT_LOOP_LAG_WARN_THRESHOLD_SECONDS` | `float` | `0.5` |
-| `CODEX_LB_HOURLY_ROLLUP_RETENTION_DAYS` | `int` | `0` |
-| `CODEX_LB_OLLAMA_SIDECAR_API_KEY` | `str` | `''` |
-| `CODEX_LB_OLLAMA_SIDECAR_BASE_URL` | `str` | `'https://ollama.com'` |
-| `CODEX_LB_OLLAMA_SIDECAR_CONNECT_TIMEOUT_SECONDS` | `float` | `8.0` |
-| `CODEX_LB_OLLAMA_SIDECAR_ENABLED` | `bool` | `False` |
-| `CODEX_LB_OLLAMA_SIDECAR_FULL_MODELS` | `list[str]` | `[]` |
-| `CODEX_LB_OLLAMA_SIDECAR_MODEL_PREFIXES` | `list[str]` | `[]` |
-| `CODEX_LB_OLLAMA_SIDECAR_MODELS_CACHE_TTL_SECONDS` | `float` | `60.0` |
-| `CODEX_LB_OLLAMA_SIDECAR_REQUEST_TIMEOUT_SECONDS` | `float` | `600.0` |
-| `CODEX_LB_OMNIROUTE_SIDECAR_API_KEY` | `str` | `''` |
-| `CODEX_LB_OMNIROUTE_SIDECAR_BASE_URL` | `str` | `'http://127.0.0.1:20128/v1'` |
-| `CODEX_LB_OMNIROUTE_SIDECAR_CONNECT_TIMEOUT_SECONDS` | `float` | `8.0` |
-| `CODEX_LB_OMNIROUTE_SIDECAR_ENABLED` | `bool` | `False` |
-| `CODEX_LB_OMNIROUTE_SIDECAR_MODELS_CACHE_TTL_SECONDS` | `float` | `60.0` |
-| `CODEX_LB_OMNIROUTE_SIDECAR_REQUEST_TIMEOUT_SECONDS` | `float` | `600.0` |
-| `CODEX_LB_OMNIROUTE_SIDECAR_SELECTED_MODELS` | `list[str]` | `[]` |
-| `CODEX_LB_OPENCODE_GO_SIDECAR_API_KEY` | `str` | `''` |
-| `CODEX_LB_OPENCODE_GO_SIDECAR_BASE_URL` | `str` | `'https://opencode.ai/zen/go/v1'` |
-| `CODEX_LB_OPENCODE_GO_SIDECAR_CONNECT_TIMEOUT_SECONDS` | `float` | `8.0` |
-| `CODEX_LB_OPENCODE_GO_SIDECAR_ENABLED` | `bool` | `False` |
-| `CODEX_LB_OPENCODE_GO_SIDECAR_MODEL_PREFIXES` | `list[str]` | `['opencode-go/']` |
-| `CODEX_LB_OPENCODE_GO_SIDECAR_MODELS_CACHE_TTL_SECONDS` | `float` | `60.0` |
-| `CODEX_LB_OPENCODE_GO_SIDECAR_REQUEST_TIMEOUT_SECONDS` | `float` | `600.0` |
-| `CODEX_LB_OPENROUTER_SIDECAR_API_KEY` | `str` | `''` |
-| `CODEX_LB_OPENROUTER_SIDECAR_BASE_URL` | `str` | `'https://openrouter.ai/api/v1'` |
-| `CODEX_LB_OPENROUTER_SIDECAR_CONNECT_TIMEOUT_SECONDS` | `float` | `8.0` |
-| `CODEX_LB_OPENROUTER_SIDECAR_ENABLED` | `bool` | `False` |
-| `CODEX_LB_OPENROUTER_SIDECAR_MODEL_PREFIXES` | `list[str]` | `[]` |
-| `CODEX_LB_OPENROUTER_SIDECAR_MODELS_CACHE_TTL_SECONDS` | `float` | `60.0` |
-| `CODEX_LB_OPENROUTER_SIDECAR_REQUEST_TIMEOUT_SECONDS` | `float` | `600.0` |
-| `CODEX_LB_ORCAROUTER_SIDECAR_API_KEY` | `str` | `''` |
-| `CODEX_LB_ORCAROUTER_SIDECAR_BASE_URL` | `str` | `'https://api.orcarouter.ai/v1'` |
-| `CODEX_LB_ORCAROUTER_SIDECAR_CONNECT_TIMEOUT_SECONDS` | `float` | `8.0` |
-| `CODEX_LB_ORCAROUTER_SIDECAR_ENABLED` | `bool` | `False` |
-| `CODEX_LB_ORCAROUTER_SIDECAR_MODEL_PREFIXES` | `list[str]` | `['orcarouter/']` |
-| `CODEX_LB_ORCAROUTER_SIDECAR_MODELS_CACHE_TTL_SECONDS` | `float` | `60.0` |
-| `CODEX_LB_ORCAROUTER_SIDECAR_REQUEST_TIMEOUT_SECONDS` | `float` | `600.0` |
-| `CODEX_LB_TELEMETRY_ENABLED` | `bool \| None` | `None` |
-| `CODEX_LB_TELEMETRY_ENDPOINT` | `str` | `'https://telemetry.tokmaxxing.com'` |
-| `CODEX_LB_TIMEOUT_INVARIANT_VALIDATION_STRICT` | `bool` | `False` |
-| `CODEX_LB_WARMUP_MODEL` | `str` | `'gpt-5.4-mini'` |
-||||||| 84fde5a1e
-| Environment variable | Type | Default |
-| --- | --- | --- |
-| `CODEX_LB_EVENT_LOOP_LAG_WARN_THRESHOLD_SECONDS` | `float` | `0.5` |
-| `CODEX_LB_TELEMETRY_ENABLED` | `bool \| None` | `None` |
-| `CODEX_LB_TELEMETRY_ENDPOINT` | `str` | `'https://telemetry.tokmaxxing.com'` |
-| `CODEX_LB_TIMEOUT_INVARIANT_VALIDATION_STRICT` | `bool` | `False` |
-| `CODEX_LB_WARMUP_MODEL` | `str` | `'gpt-5.4-mini'` |
-=======
 | Environment variable | Tier | Type | Default |
 | --- | --- | --- | --- |
+| `CODEX_LB_CLAUDE_SIDECAR_API_KEY` | T2 | `str` | `''` |
+| `CODEX_LB_CLAUDE_SIDECAR_BASE_URL` | T3 (dashboard) | `str` | `'http://127.0.0.1:8317'` |
+| `CODEX_LB_CLAUDE_SIDECAR_CONNECT_TIMEOUT_SECONDS` | T3 (dashboard) | `float` | `8.0` |
+| `CODEX_LB_CLAUDE_SIDECAR_ENABLED` | T3 (dashboard) | `bool` | `False` |
+| `CODEX_LB_CLAUDE_SIDECAR_MANAGEMENT_KEY` | T2 | `str` | `''` |
+| `CODEX_LB_CLAUDE_SIDECAR_MODEL_PREFIXES` | T3 (dashboard) | `list[str]` | `['claude']` |
+| `CODEX_LB_CLAUDE_SIDECAR_MODELS_CACHE_TTL_SECONDS` | T3 (dashboard) | `float` | `60.0` |
+| `CODEX_LB_CLAUDE_SIDECAR_QUOTA_POLL_INTERVAL_SECONDS` | T3 (dashboard) | `float` | `60.0` |
+| `CODEX_LB_CLAUDE_SIDECAR_REQUEST_TIMEOUT_SECONDS` | T3 (dashboard) | `float` | `600.0` |
+| `CODEX_LB_CLAUDE_SIDECAR_USAGE_COLLECTION_ENABLED` | T3 (dashboard) | `bool` | `True` |
+| `CODEX_LB_CLAUDE_SIDECAR_USAGE_POLL_INTERVAL_SECONDS` | T3 (dashboard) | `float` | `15.0` |
+| `CODEX_LB_CLAUDE_SIDECAR_USAGE_QUEUE_BATCH_SIZE` | T3 (dashboard) | `int` | `100` |
+| `CODEX_LB_CLIPROXY_XAI_NATIVE_RESPONSES_ENABLED` | T4 | `bool` | `True` |
 | `CODEX_LB_EVENT_LOOP_LAG_WARN_THRESHOLD_SECONDS` | T1 | `float` | `0.5` |
+| `CODEX_LB_HOURLY_ROLLUP_RETENTION_DAYS` | T3 (dashboard) | `int` | `0` |
+| `CODEX_LB_OLLAMA_SIDECAR_API_KEY` | T2 | `str` | `''` |
+| `CODEX_LB_OLLAMA_SIDECAR_BASE_URL` | T3 (dashboard) | `str` | `'https://ollama.com'` |
+| `CODEX_LB_OLLAMA_SIDECAR_CONNECT_TIMEOUT_SECONDS` | T3 (dashboard) | `float` | `8.0` |
+| `CODEX_LB_OLLAMA_SIDECAR_ENABLED` | T3 (dashboard) | `bool` | `False` |
+| `CODEX_LB_OLLAMA_SIDECAR_FULL_MODELS` | T3 (dashboard) | `list[str]` | `[]` |
+| `CODEX_LB_OLLAMA_SIDECAR_MODEL_PREFIXES` | T3 (dashboard) | `list[str]` | `[]` |
+| `CODEX_LB_OLLAMA_SIDECAR_MODELS_CACHE_TTL_SECONDS` | T3 (dashboard) | `float` | `60.0` |
+| `CODEX_LB_OLLAMA_SIDECAR_REQUEST_TIMEOUT_SECONDS` | T3 (dashboard) | `float` | `600.0` |
+| `CODEX_LB_OMNIROUTE_SIDECAR_API_KEY` | T2 | `str` | `''` |
+| `CODEX_LB_OMNIROUTE_SIDECAR_BASE_URL` | T3 (dashboard) | `str` | `'http://127.0.0.1:20128/v1'` |
+| `CODEX_LB_OMNIROUTE_SIDECAR_CONNECT_TIMEOUT_SECONDS` | T3 (dashboard) | `float` | `8.0` |
+| `CODEX_LB_OMNIROUTE_SIDECAR_ENABLED` | T3 (dashboard) | `bool` | `False` |
+| `CODEX_LB_OMNIROUTE_SIDECAR_MODELS_CACHE_TTL_SECONDS` | T3 (dashboard) | `float` | `60.0` |
+| `CODEX_LB_OMNIROUTE_SIDECAR_REQUEST_TIMEOUT_SECONDS` | T3 (dashboard) | `float` | `600.0` |
+| `CODEX_LB_OMNIROUTE_SIDECAR_SELECTED_MODELS` | T3 (dashboard) | `list[str]` | `[]` |
+| `CODEX_LB_OPENCODE_GO_SIDECAR_API_KEY` | T2 | `str` | `''` |
+| `CODEX_LB_OPENCODE_GO_SIDECAR_BASE_URL` | T3 (dashboard) | `str` | `'https://opencode.ai/zen/go/v1'` |
+| `CODEX_LB_OPENCODE_GO_SIDECAR_CONNECT_TIMEOUT_SECONDS` | T3 (dashboard) | `float` | `8.0` |
+| `CODEX_LB_OPENCODE_GO_SIDECAR_ENABLED` | T3 (dashboard) | `bool` | `False` |
+| `CODEX_LB_OPENCODE_GO_SIDECAR_MODEL_PREFIXES` | T3 (dashboard) | `list[str]` | `['opencode-go/']` |
+| `CODEX_LB_OPENCODE_GO_SIDECAR_MODELS_CACHE_TTL_SECONDS` | T3 (dashboard) | `float` | `60.0` |
+| `CODEX_LB_OPENCODE_GO_SIDECAR_REQUEST_TIMEOUT_SECONDS` | T3 (dashboard) | `float` | `600.0` |
+| `CODEX_LB_OPENROUTER_SIDECAR_API_KEY` | T2 | `str` | `''` |
+| `CODEX_LB_OPENROUTER_SIDECAR_BASE_URL` | T3 (dashboard) | `str` | `'https://openrouter.ai/api/v1'` |
+| `CODEX_LB_OPENROUTER_SIDECAR_CONNECT_TIMEOUT_SECONDS` | T3 (dashboard) | `float` | `8.0` |
+| `CODEX_LB_OPENROUTER_SIDECAR_ENABLED` | T3 (dashboard) | `bool` | `False` |
+| `CODEX_LB_OPENROUTER_SIDECAR_MODEL_PREFIXES` | T3 (dashboard) | `list[str]` | `[]` |
+| `CODEX_LB_OPENROUTER_SIDECAR_MODELS_CACHE_TTL_SECONDS` | T3 (dashboard) | `float` | `60.0` |
+| `CODEX_LB_OPENROUTER_SIDECAR_REQUEST_TIMEOUT_SECONDS` | T3 (dashboard) | `float` | `600.0` |
+| `CODEX_LB_ORCAROUTER_SIDECAR_API_KEY` | T2 | `str` | `''` |
+| `CODEX_LB_ORCAROUTER_SIDECAR_BASE_URL` | T3 (dashboard) | `str` | `'https://api.orcarouter.ai/v1'` |
+| `CODEX_LB_ORCAROUTER_SIDECAR_CONNECT_TIMEOUT_SECONDS` | T3 (dashboard) | `float` | `8.0` |
+| `CODEX_LB_ORCAROUTER_SIDECAR_ENABLED` | T3 (dashboard) | `bool` | `False` |
+| `CODEX_LB_ORCAROUTER_SIDECAR_MODEL_PREFIXES` | T3 (dashboard) | `list[str]` | `['orcarouter/']` |
+| `CODEX_LB_ORCAROUTER_SIDECAR_MODELS_CACHE_TTL_SECONDS` | T3 (dashboard) | `float` | `60.0` |
+| `CODEX_LB_ORCAROUTER_SIDECAR_REQUEST_TIMEOUT_SECONDS` | T3 (dashboard) | `float` | `600.0` |
 | `CODEX_LB_TELEMETRY_ENABLED` | T3 (dashboard) | `bool \| None` | `None` |
 | `CODEX_LB_TELEMETRY_ENDPOINT` | T1 | `str` | `'https://telemetry.tokmaxxing.com'` |
 | `CODEX_LB_THREAD_CACHE_IDENTITY_MODE` | T3 (dashboard) | `str` | `'shared'` |
 | `CODEX_LB_TIMEOUT_INVARIANT_VALIDATION_STRICT` | T4 | `bool` | `False` |
->>>>>>> 72630bbfe
 
 ## Removed
 
@@ -403,7 +331,6 @@ Removed settings (ignored with a one-release startup warning; each is now a
 fixed default or a dashboard runtime setting — see PRINCIPLES.md P2 /
 issue [#1340](https://github.com/Soju06/codex-lb/issues/1340)):
 
-- `CODEX_LB_HOURLY_ROLLUP_RETENTION_DAYS`
 - `CODEX_LB_REQUEST_LOG_RETENTION_DAYS`
 - `CODEX_LB_USAGE_HISTORY_RETENTION_DAYS`
 - `CODEX_LB_HTTP_DOWNSTREAM_TRANSPORT_POLICY`

@@ -16,16 +16,12 @@ from pydantic import AliasChoices, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 from app.core.auth.dashboard_mode import DashboardAuthMode, normalize_dashboard_auth_proxy_header
-<<<<<<< 22625a07e
-from app.core.config.opencode_go_endpoint import OPENCODE_GO_BASE_URL_ERROR, is_opencode_go_base_url
-||||||| 84fde5a1e
-=======
 from app.core.clients.codex_version_snapshot import CODEX_VERSION
 from app.core.clients.thread_cache_identity import (
     THREAD_CACHE_IDENTITY_MODE_DEFAULT,
     normalize_thread_cache_identity_mode,
 )
->>>>>>> 72630bbfe
+from app.core.config.opencode_go_endpoint import OPENCODE_GO_BASE_URL_ERROR, is_opencode_go_base_url
 from app.core.utils.proxy_env import outbound_proxy_env_configured
 
 logger = logging.getLogger(__name__)
@@ -344,7 +340,6 @@ class Settings(BaseSettings):
     # T3 → dashboard (deprecated env alias, remove next minor)
     upstream_connect_timeout_seconds: float = 8.0
     upstream_websocket_trust_env: bool = Field(default_factory=_default_upstream_websocket_trust_env)
-<<<<<<< 22625a07e
     claude_sidecar_enabled: bool = False
     claude_sidecar_base_url: str = "http://127.0.0.1:8317"
     claude_sidecar_api_key: str = ""
@@ -394,10 +389,7 @@ class Settings(BaseSettings):
     ollama_sidecar_connect_timeout_seconds: float = Field(default=8.0, gt=0)
     ollama_sidecar_request_timeout_seconds: float = Field(default=600.0, gt=0)
     ollama_sidecar_models_cache_ttl_seconds: float = Field(default=60.0, ge=0)
-||||||| 84fde5a1e
-=======
     # T3 → dashboard (deprecated env alias, remove next minor)
->>>>>>> 72630bbfe
     proxy_request_budget_seconds: float = Field(default=600.0, gt=0)
     # T3 → dashboard (deprecated env alias, remove next minor)
     http_responses_stream_request_budget_seconds: float = Field(default=7200.0, gt=0)
@@ -422,22 +414,10 @@ class Settings(BaseSettings):
     additional_quota_registry_file: Path | None = None
     # T3 → dashboard (deprecated env alias, remove next minor)
     rate_limit_reset_credits_refresh_enabled: bool = True
-<<<<<<< 22625a07e
-    rate_limit_reset_credits_refresh_interval_seconds: int = Field(default=60, gt=0)
-    openai_cache_affinity_max_age_seconds: int = Field(default=1800, gt=0)
-    warmup_model: str = "gpt-5.4-mini"
-    openai_prompt_cache_key_derivation_enabled: bool = True
     # xAI models behind CLIProxyAPI take its native /v1/responses instead of the
     # Responses -> chat bridge, which drops encrypted reasoning and so breaks
     # xAI's prefix cache. Off returns xAI to the bridge.
     cliproxy_xai_native_responses_enabled: bool = True
-||||||| 84fde5a1e
-    rate_limit_reset_credits_refresh_interval_seconds: int = Field(default=60, gt=0)
-    openai_cache_affinity_max_age_seconds: int = Field(default=1800, gt=0)
-    warmup_model: str = "gpt-5.4-mini"
-    openai_prompt_cache_key_derivation_enabled: bool = True
-=======
->>>>>>> 72630bbfe
     http_responses_session_bridge_enabled: bool = True
     # T3 → dashboard (deprecated env alias, remove next minor)
     http_responses_session_bridge_request_budget_seconds: float = Field(default=7200.0, gt=0)
@@ -477,16 +457,7 @@ class Settings(BaseSettings):
     # disables caching. Admin mutations invalidate durably through the
     # cache-invalidation bus, so this only bounds out-of-band database edits.
     upstream_route_cache_ttl_seconds: float = Field(default=60.0, ge=0)
-<<<<<<< 22625a07e
-    # Data retention (0 = disabled). Non-zero values have safety floors so
-    # every in-product consumer window stays inside retained data.
-    # DEPRECATED: retention is managed from the dashboard runtime settings
-    # (`dashboard_settings.request_log_retention_days` /
-    # `usage_history_retention_days`); a non-NULL dashboard value wins. These
-    # env fields remain one release as aliases for unset dashboard values and
-    # will be removed in a later phase.
-    request_log_retention_days: int = Field(default=0, ge=0, le=3650)
-    usage_history_retention_days: int = Field(default=0, ge=0, le=3650)
+    # T3 → dashboard (deprecated env alias, remove next minor)
     # Optional retention for the main hourly usage rollup table (0 = off,
     # the default — the hourly rollups are permanent like every other
     # rollup). When enabled, prunes only hours already folded into the daily
@@ -501,21 +472,6 @@ class Settings(BaseSettings):
     # dashboard value wins. This env field remains one release as an alias
     # for an unset dashboard value and will be removed in a later phase.
     hourly_rollup_retention_days: int = Field(default=0, ge=0, le=3650)
-    quota_planner_scheduler_enabled: bool = True
-||||||| 84fde5a1e
-    # Data retention (0 = disabled). Non-zero values have safety floors so
-    # every in-product consumer window stays inside retained data.
-    # DEPRECATED: retention is managed from the dashboard runtime settings
-    # (`dashboard_settings.request_log_retention_days` /
-    # `usage_history_retention_days`); a non-NULL dashboard value wins. These
-    # env fields remain one release as aliases for unset dashboard values and
-    # will be removed in a later phase.
-    request_log_retention_days: int = Field(default=0, ge=0, le=3650)
-    usage_history_retention_days: int = Field(default=0, ge=0, le=3650)
-    quota_planner_scheduler_enabled: bool = True
-=======
-    # T3 → dashboard (deprecated env alias, remove next minor)
->>>>>>> 72630bbfe
     automations_scheduler_enabled: bool = True
     # T3 (dashboard home: dashboard_settings.telemetry_consent). Headless
     # first-boot opt-out fallback; a persisted dashboard decision always wins.
@@ -859,16 +815,6 @@ class Settings(BaseSettings):
             return _validate_context_window_entries(value)
         raise TypeError("model_context_window_overrides must be a JSON object string or dict")
 
-<<<<<<< 22625a07e
-    @field_validator("upstream_compact_timeout_seconds")
-    @classmethod
-    def _validate_upstream_compact_timeout_seconds(cls, value: float | None) -> float | None:
-        if value is None:
-            return None
-        if value <= 0:
-            raise ValueError("upstream_compact_timeout_seconds must be greater than zero")
-        return value
-
     @field_validator("claude_sidecar_model_prefixes", mode="before")
     @classmethod
     def _normalize_claude_sidecar_model_prefixes(cls, value: StringListInput) -> list[str]:
@@ -961,38 +907,6 @@ class Settings(BaseSettings):
             raise ValueError("omniroute_sidecar_base_url must not be blank")
         return normalized
 
-    @field_validator("warmup_model", mode="before")
-    @classmethod
-    def _normalize_warmup_model(cls, value: object) -> str:
-        if not isinstance(value, str):
-            raise TypeError("warmup_model must be a string")
-        normalized = value.strip()
-        if not normalized:
-            raise ValueError("warmup_model must not be blank")
-        return normalized
-
-||||||| 84fde5a1e
-    @field_validator("upstream_compact_timeout_seconds")
-    @classmethod
-    def _validate_upstream_compact_timeout_seconds(cls, value: float | None) -> float | None:
-        if value is None:
-            return None
-        if value <= 0:
-            raise ValueError("upstream_compact_timeout_seconds must be greater than zero")
-        return value
-
-    @field_validator("warmup_model", mode="before")
-    @classmethod
-    def _normalize_warmup_model(cls, value: object) -> str:
-        if not isinstance(value, str):
-            raise TypeError("warmup_model must be a string")
-        normalized = value.strip()
-        if not normalized:
-            raise ValueError("warmup_model must not be blank")
-        return normalized
-
-=======
->>>>>>> 72630bbfe
     @model_validator(mode="after")
     def _apply_data_dir_defaults(self) -> "Settings":
         if self.data_dir == DEFAULT_HOME_DIR:

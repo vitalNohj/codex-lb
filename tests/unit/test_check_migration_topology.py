@@ -385,6 +385,69 @@ def test_merge_revision_is_exempt_from_the_branch_fork_check(checker: ModuleType
     assert checker.check_graph_shape(revisions).errors == []
 
 
+def test_merged_in_lineage_converged_by_a_branch_merge_revision_is_accepted(
+    checker: ModuleType, tmp_path: Path
+) -> None:
+    """An upstream sync brings a lineage rooted below the base head plus the merge that joins it."""
+    versions = tmp_path / "versions"
+    head = _linear_fixture(checker, versions)
+    _write_revision(versions, "20260912_000000_landed_on_main", head)
+    _write_revision(versions, "20260912_010000_upstream_root", head)
+    _write_revision(versions, "20260912_020000_upstream_tip", "20260912_010000_upstream_root")
+    _write_revision(
+        versions,
+        "20260912_030000_merge_heads",
+        ("20260912_000000_landed_on_main", "20260912_020000_upstream_tip"),
+    )
+    base_revisions = [
+        _base_revision(checker, "20260901_000000_fixture_base", None),
+        _base_revision(checker, head, "20260901_000000_fixture_base"),
+        _base_revision(checker, "20260912_000000_landed_on_main", head),
+    ]
+
+    revisions = checker.load_graph(versions)
+    assert checker.check_branch_fork(revisions, base_revisions, "origin/main").errors == []
+    assert checker.check_graph_shape(revisions).errors == []
+
+
+def test_merge_revision_that_skips_the_base_head_does_not_excuse_a_fork(checker: ModuleType, tmp_path: Path) -> None:
+    """Converging two branch-local lines still leaves the base head unjoined."""
+    versions = tmp_path / "versions"
+    head = _linear_fixture(checker, versions)
+    _write_revision(versions, "20260912_010000_left", head)
+    _write_revision(versions, "20260912_020000_right", "20260912_010000_left")
+    _write_revision(versions, "20260912_030000_side", "20260912_010000_left")
+    _write_revision(versions, "20260912_040000_merge", ("20260912_020000_right", "20260912_030000_side"))
+    base_revisions = [
+        _base_revision(checker, "20260901_000000_fixture_base", None),
+        _base_revision(checker, head, "20260901_000000_fixture_base"),
+        _base_revision(checker, "20260912_000000_landed_on_main", head),
+    ]
+
+    report = checker.check_branch_fork(checker.load_graph(versions), base_revisions, "origin/main")
+    assert len(report.errors) == 1
+    assert "revision=20260912_010000_left" in report.errors[0]
+
+
+def test_grandfathered_fork_revisions_are_the_only_ratchet_exemptions(checker: ModuleType, tmp_path: Path) -> None:
+    versions = tmp_path / "versions"
+    head = _linear_fixture(checker, versions)
+    grandfathered = sorted(checker.GRANDFATHERED_REVISIONS)
+    assert all(name.startswith("20261016_000000_") for name in grandfathered)
+    _write_revision(versions, grandfathered[1], head)
+    _write_revision(versions, "20261016_010000_between", grandfathered[1])
+    _write_revision(versions, grandfathered[0], "20261016_010000_between")
+    reports, _ = checker.run_all(versions_dir=versions, base_ref="")
+    assert _errors(reports) == []
+    assert _warnings(reports) == []
+
+    _write_revision(versions, "20261016_000000_new_collision", grandfathered[0])
+    reports, _ = checker.run_all(versions_dir=versions, base_ref="")
+    assert any(
+        message.startswith("alembic_timestamp_prefix_collision prefix=20261016_000000") for message in _errors(reports)
+    )
+
+
 def test_parent_unknown_to_the_base_ref_does_not_report_a_fork(checker: ModuleType, tmp_path: Path) -> None:
     """A parent the base ref does not carry is branch-local work, not a fork."""
     versions = tmp_path / "versions"

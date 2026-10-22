@@ -68,7 +68,7 @@ describe("RoutingSettings", () => {
   });
 
   it("renders inherited capacity values as empty inputs with effective hints", () => {
-    render(
+    renderWithProviders(
       <RoutingSettings
         settings={{
           ...BASE_SETTINGS,
@@ -90,7 +90,7 @@ describe("RoutingSettings", () => {
   });
 
   it("shows the legacy inherited hint only under empty inputs", () => {
-    render(
+    renderWithProviders(
       <RoutingSettings
         settings={{
           ...BASE_SETTINGS,
@@ -109,7 +109,7 @@ describe("RoutingSettings", () => {
   });
 
   it("blocks resetting a stream limit whose inherited value the saved reserve would exceed", () => {
-    render(
+    renderWithProviders(
       <RoutingSettings
         settings={{
           ...BASE_SETTINGS,
@@ -154,7 +154,7 @@ describe("RoutingSettings", () => {
         proxy_api_key_fair_share_congestion_threshold_pct: { source: "default", envValue: 0, default: 0 },
       },
     };
-    render(<RoutingSettings settings={settings} busy={false} onSave={onSave} />);
+    renderWithProviders(<RoutingSettings settings={settings} busy={false} onSave={onSave} />);
 
     expect(screen.getByText("Inherited from environment (6)")).toBeInTheDocument();
     expect(screen.getByText("Default (1)")).toBeInTheDocument();
@@ -163,7 +163,7 @@ describe("RoutingSettings", () => {
 
     await user.click(screen.getByRole("button", { name: "Reset to inherited" }));
 
-    expect(onSave).toHaveBeenCalledWith(buildSettingsUpdateRequest(settings, { proxyAccountStreamLimit: null }));
+    expect(onSave).toHaveBeenCalledWith({ proxyAccountStreamLimit: null });
   });
 
   it("renders routing weights as inherited inputs and saves only the changed fields", async () => {
@@ -179,7 +179,7 @@ describe("RoutingSettings", () => {
         proxy_account_lease_ttl_seconds: { source: "default", envValue: 900, default: 900 },
       },
     };
-    render(<RoutingSettings settings={settings} busy={false} onSave={onSave} />);
+    renderWithProviders(<RoutingSettings settings={settings} busy={false} onSave={onSave} />);
 
     expect(screen.getByRole("spinbutton", { name: "Overload isolation (seconds)" })).toHaveValue(null);
     expect(screen.getByRole("spinbutton", { name: "In-flight penalty (% per request)" })).toHaveValue(null);
@@ -194,7 +194,6 @@ describe("RoutingSettings", () => {
     await user.click(saveButton);
 
     expect(onSave).toHaveBeenCalledWith({
-      ...BASE_UPDATE_PAYLOAD,
       proxyOverloadIsolationSeconds: 240,
       proxyAccountInflightPenaltyPct: 7.5,
     });
@@ -214,7 +213,7 @@ describe("RoutingSettings", () => {
         proxy_account_inflight_penalty_pct: { source: "default", envValue: 2.5, default: 2.5 },
       },
     };
-    render(<RoutingSettings settings={settings} busy={false} onSave={onSave} />);
+    renderWithProviders(<RoutingSettings settings={settings} busy={false} onSave={onSave} />);
 
     const ttlInput = screen.getByRole("spinbutton", { name: "Account lease TTL (seconds)" });
     expect(ttlInput).toHaveValue(1200);
@@ -227,24 +226,24 @@ describe("RoutingSettings", () => {
     await user.clear(ttlInput);
     expect(saveButton).toBeEnabled();
     await user.click(saveButton);
-    expect(onSave).toHaveBeenCalledWith({ ...BASE_UPDATE_PAYLOAD, proxyAccountLeaseTtlSeconds: null });
+    expect(onSave).toHaveBeenCalledWith({ proxyAccountLeaseTtlSeconds: null });
 
     await user.click(screen.getByRole("button", { name: "Reset to inherited" }));
     expect(onSave).toHaveBeenLastCalledWith(
-      buildSettingsUpdateRequest(settings, { proxyAccountLeaseTtlSeconds: null }),
+      { proxyAccountLeaseTtlSeconds: null },
     );
   });
 
   it("toggles error-rate weighting as a dashboard value", async () => {
     const user = userEvent.setup();
     const onSave = vi.fn().mockResolvedValue(undefined);
-    render(<RoutingSettings settings={BASE_SETTINGS} busy={false} onSave={onSave} />);
+    renderWithProviders(<RoutingSettings settings={BASE_SETTINGS} busy={false} onSave={onSave} />);
 
     const toggle = screen.getByRole("switch", { name: "Toggle error-rate weighting" });
     expect(toggle).toHaveAttribute("aria-checked", "true");
     await user.click(toggle);
 
-    expect(onSave).toHaveBeenCalledWith({ ...BASE_UPDATE_PAYLOAD, proxyAccountErrorRateWeightingEnabled: false });
+    expect(onSave).toHaveBeenCalledWith({ proxyAccountErrorRateWeightingEnabled: false });
   });
 
   it.each([
@@ -255,13 +254,12 @@ describe("RoutingSettings", () => {
   ] as const)("sends only an explicit null when clearing %s", async (label, field) => {
     const user = userEvent.setup();
     const onSave = vi.fn().mockResolvedValue(undefined);
-    render(<RoutingSettings settings={BASE_SETTINGS} busy={false} onSave={onSave} />);
+    renderWithProviders(<RoutingSettings settings={BASE_SETTINGS} busy={false} onSave={onSave} />);
 
     await user.clear(screen.getByRole("spinbutton", { name: label }));
     await user.click(screen.getByRole("button", { name: "Save capacity limits" }));
 
     expect(onSave).toHaveBeenCalledWith({
-      ...BASE_UPDATE_PAYLOAD,
       [field]: null,
     });
   });
@@ -276,13 +274,12 @@ describe("RoutingSettings", () => {
       proxyAccountStreamRecoveryReserveOverride: null,
       proxyApiKeyFairShareCongestionThresholdPctOverride: null,
     };
-    render(<RoutingSettings settings={inheritedSettings} busy={false} onSave={onSave} />);
+    renderWithProviders(<RoutingSettings settings={inheritedSettings} busy={false} onSave={onSave} />);
 
     await user.type(screen.getByRole("spinbutton", { name: "Stream limit" }), "12");
     await user.click(screen.getByRole("button", { name: "Save capacity limits" }));
 
     expect(onSave).toHaveBeenCalledWith({
-      ...buildSettingsUpdateRequest(inheritedSettings, {}),
       proxyAccountStreamLimit: 12,
     });
     const payload = onSave.mock.calls[0]?.[0];
@@ -294,7 +291,7 @@ describe("RoutingSettings", () => {
   it("validates a cleared stream limit against its inherited environment value", async () => {
     const user = userEvent.setup();
     const onSave = vi.fn().mockResolvedValue(undefined);
-    render(
+    renderWithProviders(
       <RoutingSettings
         settings={{
           ...BASE_SETTINGS,

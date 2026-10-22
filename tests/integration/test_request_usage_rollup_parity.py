@@ -648,6 +648,20 @@ async def test_statistics_survive_retention_pruning_folded_raw(db_setup, monkeyp
         await session.execute(delete(RequestLog).where(RequestLog.requested_at < prune_cutoff))
         await session.commit()
 
+    # Fork: raw is only ever pruned with request-log retention on, and the
+    # reports lifetime layer serves the days below that retention floor from
+    # the rollups (as in test_reports_history_reads_match_raw_within_retained_window).
+    # Two days from NOW puts the floor just past the prune cutoff.
+    from types import SimpleNamespace
+
+    from app.modules.reports import repository as reports_repository_module
+
+    async def _retained_retention():
+        return SimpleNamespace(request_log_days=2, usage_history_days=0)
+
+    monkeypatch.setattr(reports_repository_module, "get_effective_retention", _retained_retention)
+    monkeypatch.setattr(reports_repository_module, "utcnow", lambda: NOW)
+
     pruned = await _snapshot()
     expected = dict(reference)
     for key in (
@@ -672,7 +686,6 @@ async def test_statistics_survive_retention_pruning_folded_raw(db_setup, monkeyp
             "buckets_raw_degrade",
             "trends_raw_degrade",
             "conv_buckets_raw_degrade",
-<<<<<<< 22625a07e
             # Reports measures other than conversation_count are raw-bound
             # (documented non-goal); the satellite-served conversation counts
             # are asserted to survive below. The half-hour-offset local days
@@ -683,17 +696,6 @@ async def test_statistics_survive_retention_pruning_folded_raw(db_setup, monkeyp
             "reports_summary",
             "reports_summary_filtered",
             "reports_daily_utc",
-||||||| 84fde5a1e
-            # Reports measures other than conversation_count are raw-bound
-            # (documented non-goal); the satellite-served conversation counts
-            # are asserted to survive below. The half-hour-offset local days
-            # additionally lose their pruned partial leading half hours.
-            "reports_summary",
-            "reports_summary_filtered",
-            "reports_daily_utc",
-=======
-            # Half-hour-offset local days lose their pruned partial raw edges.
->>>>>>> 72630bbfe
             "reports_daily_offset",
             "reports_monthly",
             "listing_totals",  # tracks listable rows (asserted below)

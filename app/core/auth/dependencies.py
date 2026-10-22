@@ -28,19 +28,13 @@ from app.core.auth.dashboard_access import (
 from app.core.auth.dashboard_mode import DashboardAuthMode, DashboardRequestAuth, get_dashboard_request_auth
 from app.core.auth.dashboard_users_cache import DashboardUsersCache, get_dashboard_users_cache
 from app.core.auth.external_identity import resolve_trusted_header_request
+from app.core.auth.request_api_key import set_authenticated_api_key
 from app.core.auth.step_up import (
     STEP_UP_COOKIE,
     STEP_UP_UNAVAILABLE_MESSAGE,
     account_step_up_methods,
     is_step_up_fresh,
 )
-<<<<<<< 22625a07e
-from app.core.auth.dashboard_mode import DashboardAuthMode, get_dashboard_request_auth
-from app.core.auth.request_api_key import set_authenticated_api_key
-||||||| 84fde5a1e
-from app.core.auth.dashboard_mode import DashboardAuthMode, get_dashboard_request_auth
-=======
->>>>>>> 72630bbfe
 from app.core.clients.proxy import CODEX_LB_REQUIRED_CAPABILITY_HEADER
 from app.core.clients.usage import UsageFetchError, fetch_usage
 from app.core.config.settings import get_settings

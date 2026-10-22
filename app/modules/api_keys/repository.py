@@ -364,13 +364,9 @@ class ApiKeysRepository:
         enforced_service_tier: str | None | _Unset = _UNSET,
         traffic_class: str | _Unset = _UNSET,
         transport_policy_override: str | None | _Unset = _UNSET,
-<<<<<<< 22625a07e
         rate_limit_as_payment_required: bool | _Unset = _UNSET,
         is_shared: bool | _Unset = _UNSET,
-||||||| 84fde5a1e
-=======
         thread_cache_identity_override: str | None | _Unset = _UNSET,
->>>>>>> 72630bbfe
         usage_sections: str | _Unset = _UNSET,
         account_assignment_scope_enabled: bool | _Unset = _UNSET,
         source_assignment_scope_enabled: bool | _Unset = _UNSET,
@@ -417,19 +413,15 @@ class ApiKeysRepository:
         if transport_policy_override is not _UNSET:
             assert transport_policy_override is None or isinstance(transport_policy_override, str)
             row.transport_policy_override = transport_policy_override
-<<<<<<< 22625a07e
         if rate_limit_as_payment_required is not _UNSET:
             assert isinstance(rate_limit_as_payment_required, bool)
             row.rate_limit_as_payment_required = rate_limit_as_payment_required
         if is_shared is not _UNSET:
             assert isinstance(is_shared, bool)
             row.is_shared = is_shared
-||||||| 84fde5a1e
-=======
         if thread_cache_identity_override is not _UNSET:
             assert thread_cache_identity_override is None or isinstance(thread_cache_identity_override, str)
             row.thread_cache_identity_override = thread_cache_identity_override
->>>>>>> 72630bbfe
         if usage_sections is not _UNSET:
             assert isinstance(usage_sections, str)
             row.usage_sections = usage_sections

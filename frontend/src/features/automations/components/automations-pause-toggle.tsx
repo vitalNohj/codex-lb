@@ -6,7 +6,6 @@ import { Switch } from "@/components/ui/switch";
 import { useAuthStore } from "@/features/auth/hooks/use-auth";
 import { InheritBadge } from "@/features/settings/components/inherit-badge";
 import { useSettings } from "@/features/settings/hooks/use-settings";
-import { buildSettingsUpdateRequest } from "@/features/settings/payload";
 import type { SettingsUpdateRequest } from "@/features/settings/schemas";
 
 const SWITCH_ID = "automations-pause-all";
@@ -32,7 +31,8 @@ export function AutomationsPauseToggle() {
   // Shared "busy" for the switch and the badge's reset action, as on the
   // Settings page: a pending write, or no write permission at all.
   const busy = updateSettingsMutation.isPending || !canWrite;
-  const save = (payload: SettingsUpdateRequest) => updateSettingsMutation.mutateAsync(payload).then(() => undefined);
+  // Fork: saves send only the patch (persistSettingsPatch stamps the version).
+  const save = (patch: Partial<SettingsUpdateRequest>) => updateSettingsMutation.mutateAsync(patch).then(() => undefined);
 
   return (
     <div className="flex items-center justify-between gap-3 rounded-lg border bg-card px-3 py-2">
@@ -68,7 +68,7 @@ export function AutomationsPauseToggle() {
         checked={paused}
         disabled={busy}
         onCheckedChange={(checked) =>
-          void save(buildSettingsUpdateRequest(settings, { automationsSchedulerEnabled: !checked }))
+          void save({ automationsSchedulerEnabled: !checked })
         }
       />
     </div>

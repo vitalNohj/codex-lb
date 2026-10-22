@@ -173,7 +173,6 @@ vi.mock("@/features/model-sources/components/model-sources-settings", () => ({
   },
 }));
 
-<<<<<<< 22625a07e
 vi.mock("@/features/settings/components/sidecar-integrations", () => ({
   SidecarIntegrationsCard: () => <div>Sidecar Integrations</div>,
 }));
@@ -181,8 +180,6 @@ vi.mock("@/features/settings/components/sidecar-integrations", () => ({
 vi.mock("@/features/settings/components/free-model-discovery-panel", () => ({
   FreeModelDiscoveryPanel: () => <div>Free Model Discovery</div>,
 }));
-||||||| 84fde5a1e
-=======
 type SettingsQueryState = {
   data: DashboardSettings | undefined;
   error: unknown;
@@ -190,7 +187,6 @@ type SettingsQueryState = {
   isFetching: boolean;
   refetch: Mock;
 };
->>>>>>> 72630bbfe
 
 describe("SettingsPage", () => {
   const settings = createDashboardSettings();
@@ -458,13 +454,7 @@ describe("SettingsPage", () => {
     expect(screen.queryByText("Password Settings")).not.toBeInTheDocument();
     expect(screen.queryByText("Session Settings")).not.toBeInTheDocument();
     expect(importSettingsMock).toHaveBeenCalledWith(expect.objectContaining({ busy: true }));
-<<<<<<< 22625a07e
     expect(aliasSettingsMock).toHaveBeenCalledWith(expect.objectContaining({ busy: true }));
-    expect(apiKeysSectionMock).toHaveBeenCalledWith(expect.objectContaining({ disabled: true }));
-||||||| 84fde5a1e
-    expect(apiKeysSectionMock).toHaveBeenCalledWith(expect.objectContaining({ disabled: true }));
-=======
->>>>>>> 72630bbfe
     expect(telemetrySettingsMock).toHaveBeenCalledWith(expect.objectContaining({ disabled: true }));
     // Backend answers API-key and upstream-proxy reads with 403 for guests, so
     // the section is not mounted and the admin query is never enabled.

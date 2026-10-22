@@ -39,15 +39,9 @@ from app.modules.dashboard.schemas import (
     WeeklyCreditApiKeyAttribution,
     WeeklyCreditPaceResponse,
 )
-<<<<<<< 22625a07e
-from app.modules.dashboard.weekly_pace import build_weekly_credit_pace
+from app.modules.dashboard.weekly_pace import DEMAND_WINDOW, FLEET_BURN_WINDOW, build_weekly_credit_pace
 from app.modules.openai_compat.endpoints import parse_openai_compat_endpoints
 from app.modules.settings.service import parse_claude_sidecar_auth_plans
-||||||| 84fde5a1e
-from app.modules.dashboard.weekly_pace import build_weekly_credit_pace
-=======
-from app.modules.dashboard.weekly_pace import DEMAND_WINDOW, FLEET_BURN_WINDOW, build_weekly_credit_pace
->>>>>>> 72630bbfe
 from app.modules.usage.builders import (
     align_bucket_window_start,
     build_activity_summaries,

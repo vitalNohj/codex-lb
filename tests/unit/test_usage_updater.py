@@ -1164,7 +1164,6 @@ async def test_reset_credit_refresh_clears_block_when_usage_lags_then_periodic_r
 
     lagged = await updater.force_refresh_result(
         account,
-        ignore_refresh_disabled=True,
         ignore_persisted_cooldown=True,
     )
 
@@ -1222,7 +1221,6 @@ async def test_reset_credit_refresh_keeps_runtime_when_newer_block_wins_compare_
 
     await updater.force_refresh_result(
         account,
-        ignore_refresh_disabled=True,
         ignore_persisted_cooldown=True,
     )
 
@@ -1511,103 +1509,6 @@ async def test_force_refresh_bypasses_auth_failure_cooldown(monkeypatch: pytest.
     )
     sync_account.assert_awaited_once_with(account)
     assert usage_updater_module._is_usage_refresh_in_cooldown(account.id) is False
-<<<<<<< 22625a07e
-    get_settings.cache_clear()
-
-
-@pytest.mark.asyncio
-async def test_force_refresh_respects_usage_refresh_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("CODEX_LB_USAGE_REFRESH_ENABLED", "false")
-    from app.core.config.settings import get_settings
-
-    get_settings.cache_clear()
-    updater = UsageUpdater(StubUsageRepository())
-    account = _make_account("acc_force_probe_disabled", "workspace_force_probe_disabled")
-    refresh_account = AsyncMock()
-    monkeypatch.setattr(updater, "_refresh_account", refresh_account)
-
-    refreshed = await updater.force_refresh(account)
-
-    assert refreshed is False
-    refresh_account.assert_not_awaited()
-    get_settings.cache_clear()
-
-
-@pytest.mark.asyncio
-async def test_force_refresh_can_ignore_usage_refresh_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("CODEX_LB_USAGE_REFRESH_ENABLED", "false")
-    from app.core.config.settings import get_settings
-
-    get_settings.cache_clear()
-    updater = UsageUpdater(StubUsageRepository())
-    account = _make_account("acc_force_probe_disabled_override", "workspace_force_probe_disabled_override")
-    refresh_account = AsyncMock(
-        return_value=usage_updater_module.AccountRefreshResult(usage_written=True),
-    )
-    sync_account = AsyncMock()
-    monkeypatch.setattr(updater, "_refresh_account", refresh_account)
-    monkeypatch.setattr(updater, "_sync_account_from_repo", sync_account)
-
-    refreshed = await updater.force_refresh(account, ignore_refresh_disabled=True)
-
-    assert refreshed is True
-    refresh_account.assert_awaited_once_with(
-        account,
-        usage_account_id=account.chatgpt_account_id,
-        access_token_override=None,
-        ignore_persisted_cooldown=False,
-    )
-    sync_account.assert_awaited_once_with(account)
-    get_settings.cache_clear()
-||||||| 84fde5a1e
-    get_settings.cache_clear()
-
-
-@pytest.mark.asyncio
-async def test_force_refresh_respects_usage_refresh_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("CODEX_LB_USAGE_REFRESH_ENABLED", "false")
-    from app.core.config.settings import get_settings
-
-    get_settings.cache_clear()
-    updater = UsageUpdater(StubUsageRepository())
-    account = _make_account("acc_force_probe_disabled", "workspace_force_probe_disabled")
-    refresh_account = AsyncMock()
-    monkeypatch.setattr(updater, "_refresh_account", refresh_account)
-
-    refreshed = await updater.force_refresh(account)
-
-    assert refreshed is False
-    refresh_account.assert_not_awaited()
-    get_settings.cache_clear()
-
-
-@pytest.mark.asyncio
-async def test_force_refresh_can_ignore_usage_refresh_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("CODEX_LB_USAGE_REFRESH_ENABLED", "false")
-    from app.core.config.settings import get_settings
-
-    get_settings.cache_clear()
-    updater = UsageUpdater(StubUsageRepository())
-    account = _make_account("acc_force_probe_disabled_override", "workspace_force_probe_disabled_override")
-    refresh_account = AsyncMock(
-        return_value=usage_updater_module.AccountRefreshResult(usage_written=True),
-    )
-    sync_account = AsyncMock()
-    monkeypatch.setattr(updater, "_refresh_account", refresh_account)
-    monkeypatch.setattr(updater, "_sync_account_from_repo", sync_account)
-
-    refreshed = await updater.force_refresh(account, ignore_refresh_disabled=True)
-
-    assert refreshed is True
-    refresh_account.assert_awaited_once_with(
-        account,
-        usage_account_id=account.chatgpt_account_id,
-        access_token_override=None,
-    )
-    sync_account.assert_awaited_once_with(account)
-    get_settings.cache_clear()
-=======
->>>>>>> 72630bbfe
 
 
 @pytest.mark.asyncio

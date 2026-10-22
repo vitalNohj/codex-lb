@@ -41,6 +41,11 @@ SESSION_EXEMPT_PREFIXES: tuple[str, ...] = (
     "/api/fleet/",
     "/api/codex/",
     "/api/dashboard-auth/",
+    # Fork (vitalNohj/codex-lb): the Anthropic usage bridge authenticates with
+    # a proxy API key like ``/api/codex/``; the whole-file CLIProxyAPI config
+    # editor paths are 404 tombstones that serve nothing.
+    "/api/oauth/usage",
+    "/api/cliproxy/config",
 )
 
 #: Dashboard-auth mutations that are gated by a permission dependency even

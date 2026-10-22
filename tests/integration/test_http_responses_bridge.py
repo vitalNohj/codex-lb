@@ -17247,8 +17247,12 @@ async def test_v1_responses_http_bridge_stops_reinjecting_an_anchor_upstream_den
         json={"model": "gpt-5.1", "instructions": "Return exactly OK.", "input": turn_two_input},
         headers=headers,
     )
-    assert second.status_code == 502
-    assert second.json()["error"]["code"] == "stream_incomplete"
+    # Fork (vitalNohj/codex-lb #132): the turn that discovers the dead anchor
+    # recovers itself with one unanchored fresh resend instead of a 502.
+    assert second.status_code == 200
+    recovery = json.loads(upstream.sent_text[-1])
+    assert recovery.get("previous_response_id") is None
+    assert len(recovery["input"]) == len(turn_two_input)
 
     third = await async_client.post(
         "/backend-api/codex/responses",
@@ -17335,6 +17339,15 @@ def _install_denied_anchor_bridge_fakes(
     monkeypatch.setattr(proxy_module.ProxyService, "_select_account_with_budget", fake_select_account_with_budget)
     monkeypatch.setattr(proxy_module.ProxyService, "_ensure_fresh_with_budget", fake_ensure_fresh_with_budget)
     monkeypatch.setattr(proxy_module, "connect_responses_websocket", fake_connect_responses_websocket)
+    # Fork (vitalNohj/codex-lb #132): a definitive not-found on a proxy-injected
+    # anchor over a full-resend payload is recovered by an unanchored fresh
+    # resend before any local rebind, so the turn succeeds and the fence below
+    # is never reached. These scenarios pin the fence itself (which still guards
+    # every shape the fresh resend does not cover), so they switch the fork's
+    # dead-anchor classification off.
+    monkeypatch.setattr(
+        http_bridge_streaming_module, "_http_bridge_error_is_previous_response_not_found", lambda exc: False
+    )
 
 
 @contextlib.asynccontextmanager

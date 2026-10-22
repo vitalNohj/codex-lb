@@ -49,15 +49,15 @@ from app.core.types import JsonValue
 from app.core.usage.live_hub import publish_live_usage
 from app.core.usage.live_snapshots import EVENT_MARKER, parse_rate_limit_event_text
 from app.core.utils.request_id import reset_request_id, set_request_id
-<<<<<<< 22625a07e
-from app.core.utils.sse import format_sse_data, format_sse_event, parse_websocket_json_text
-||||||| 84fde5a1e
-from app.core.utils.sse import format_sse_event, parse_sse_data_json
-=======
 from app.core.utils.shared_future import wait_on_shared_future
-from app.core.utils.sse import format_sse_event, format_sse_event_from_text, parse_sse_data_json_text
+from app.core.utils.sse import (
+    format_sse_data,
+    format_sse_event,
+    format_sse_event_from_text,
+    parse_sse_data_json_text,
+    parse_websocket_json_text,
+)
 from app.db.models import Account
->>>>>>> 72630bbfe
 from app.modules.proxy._service.api_key_usage import (
     _API_KEY_RESERVATION_HEARTBEAT_SECONDS as _API_KEY_RESERVATION_HEARTBEAT_SECONDS,
 )
@@ -75,7 +75,6 @@ from app.modules.proxy._service.http_bridge.accepted_replay import (
 )
 from app.modules.proxy._service.http_bridge.helpers import (
     _HTTP_BRIDGE_MISSING_RESPONSE_CREATED_TIMEOUT_DETAIL,
-    _HTTP_BRIDGE_UPSTREAM_ANCHOR_NOT_FOUND_DETAIL,
     _await_task_deferring_cancellation,
     _forget_http_bridge_denied_anchor_fence,
     _http_bridge_abandonment_may_settle_circuit,
@@ -134,13 +133,7 @@ from app.modules.proxy._service.http_bridge.service_stubs import (
     _security_work_advisory_event,
     _service_get_settings,
     _service_tier_from_event_payload,
-<<<<<<< 22625a07e
-    _service_time,
     _stream_terminal_captured_error,
-||||||| 84fde5a1e
-    _service_time,
-=======
->>>>>>> 72630bbfe
     _upstream_websocket_disconnect_message,
     _websocket_auth_request_can_switch_account,
     _websocket_downstream_response_id,
@@ -1165,19 +1158,9 @@ async def _wait_before_http_bridge_model_capacity_retry(
             await scheduler.sleep(chunk_seconds)
             remaining_sleep_seconds -= chunk_seconds
             keepalive_countdown_seconds -= chunk_seconds
-<<<<<<< 22625a07e
             if holds_downstream_silently:
                 request_state.silent_capacity_hold.record(chunk_seconds)
-        return (
-            not cancel_when_detached or request_state.event_queue is not None
-        ) and _service_time().monotonic() < deadline
-||||||| 84fde5a1e
-        return (
-            not cancel_when_detached or request_state.event_queue is not None
-        ) and _service_time().monotonic() < deadline
-=======
         return (not cancel_when_detached or request_state.event_queue is not None) and clock.monotonic() < deadline
->>>>>>> 72630bbfe
     finally:
         request_state.account_capacity_waiting = False
         if emit_keepalives:
@@ -1400,60 +1383,6 @@ async def _clear_durable_http_bridge_response_anchor(
         account_id=session.account.id,
         model=session.request_model,
         detail=detail,
-        cache_key_family=session.key.affinity_kind,
-        model_class=_extract_model_class(session.request_model) if session.request_model else None,
-    )
-
-
-async def _invalidate_http_bridge_anchor_after_not_found(
-    service: Any,
-    session: "_HTTPBridgeSession",
-    request_state: "_WebSocketRequestState",
-) -> None:
-    """Drop a proxy-injected anchor that upstream proved dead.
-
-    When upstream rejects the anchored ``previous_response_id`` with a
-    definitive ``previous_response_not_found`` verdict, keeping the anchor
-    (durable row and in-memory completion state) makes every following turn
-    re-inject the same dead id: the session loops on
-    ``bridge_previous_response_not_found`` forever. This is only safe when the
-    proxy itself injected the anchor on top of a preserved full resend payload
-    — the client's own full history is still on the wire, so dropping the
-    anchor leaves the next turn an unanchored request upstream accepts.
-    Client-supplied anchors and delta-only injections are left untouched
-    (documented invariant: a delta-only client has no other way to convey
-    context, so clearing its anchor would silently lose history).
-    """
-    if not (
-        request_state.previous_response_not_found_rewritten
-        and request_state.proxy_injected_previous_response_id
-        and request_state.proxy_injected_anchor_had_full_resend_payload
-    ):
-        return
-    response_id = request_state.previous_response_id
-    if session.durable_session_id and session.durable_owner_epoch:
-        try:
-            await _clear_durable_http_bridge_response_anchor(
-                service,
-                session,
-                detail=_HTTP_BRIDGE_UPSTREAM_ANCHOR_NOT_FOUND_DETAIL,
-            )
-        except Exception:
-            logger.warning(
-                "Failed to clear durable HTTP bridge response anchor after upstream previous_response_not_found",
-                exc_info=True,
-            )
-    session.last_completed_response_id = None
-    session.last_completed_response_account_id = None
-    session.last_completed_input_count = 0
-    session.last_completed_input_prefix_fingerprint = None
-    session.last_pending_tool_calls.clear()
-    _log_http_bridge_event(
-        "session_anchor_invalidated",
-        session.key,
-        account_id=session.account.id,
-        model=session.request_model,
-        detail=f"reason=previous_response_not_found response_id={response_id}",
         cache_key_family=session.key.affinity_kind,
         model_class=_extract_model_class(session.request_model) if session.request_model else None,
     )
@@ -2682,20 +2611,6 @@ class _HTTPBridgeUpstreamEventsMixin:
         scheduler: Scheduler | None = None,
         clock: Clock | None = None,
     ) -> None:
-<<<<<<< 22625a07e
-        # A websocket text frame is one JSON document and may span several
-        # lines (upstream pretty-prints some request errors). Parse it whole;
-        # SSE-framing it as ``data: {text}`` kept only the first line, so the
-        # error matched no request and the client waited 60s for a 502.
-        payload = parse_websocket_json_text(text)
-        multi_line = "\n" in text or "\r" in text
-        event_block = format_sse_data(payload) if payload is not None and multi_line else f"data: {text}\n\n"
-        event_type = classify_event_type(payload)
-||||||| 84fde5a1e
-        event_block = f"data: {text}\n\n"
-        payload = parse_sse_data_json(event_block)
-        event_type = classify_event_type(payload)
-=======
         # The relay loop resolves the collaborators once per session and passes
         # them down; the fallback only serves direct callers (tests).
         if scheduler is None:
@@ -2706,24 +2621,33 @@ class _HTTPBridgeUpstreamEventsMixin:
         # of framing it as SSE and running the line parser over it. The
         # data-only block is what unmatched events relay.
         event_block = f"data: {text}\n\n"
+        multi_line = "\n" in text or "\r" in text
         if (
             message is not None
             and message.responses_interpreted
             and message.payload is not None
             and text.startswith("{")
-            and "\n" not in text
-            and "\r" not in text
+            and not multi_line
         ):
             # Only this shape uses the direct JSON path in the legacy bridge.
             # Preserve its SSE-field semantics for whitespace/multiline text.
             payload = message.payload
             event_type = message.event_type
             routing = message.routing
+        elif multi_line and (whole_frame_payload := parse_websocket_json_text(text)) is not None:
+            # A websocket text frame is one JSON document and may span several
+            # lines (upstream pretty-prints some request errors). SSE-framing it
+            # as ``data: {text}`` keeps only the first line, so the error would
+            # match no request and the client would wait 60s for a 502. Parse it
+            # whole and relay it re-encoded on one line.
+            payload = whole_frame_payload
+            event_block = format_sse_data(payload)
+            event_type = classify_event_type(payload)
+            routing = None
         else:
             payload = parse_sse_data_json_text(text)
             event_type = classify_event_type(payload)
             routing = None
->>>>>>> 72630bbfe
         event = parse_sse_event_payload(payload) if event_type in _LIFECYCLE_EVENT_TYPES else None
         completed_delivery_scope = _HTTPBridgeCompletedDeliveryScope() if event_type == "response.completed" else None
         claimed_terminal_request_states: list[_WebSocketRequestState] = []
@@ -3590,22 +3514,11 @@ class _HTTPBridgeUpstreamEventsMixin:
                 original_text=text,
             )
             event_block = f"data: {rewritten_text}\n\n"
-<<<<<<< 22625a07e
-            # Upstream definitively told us the anchored previous response no
-            # longer exists. When the anchor was injected by the proxy on top
-            # of a preserved full resend, the durable + in-memory anchors
-            # would otherwise re-inject the same dead id on every following
-            # turn (bridge_previous_response_not_found loop). Clear them once,
-            # here, so the next turn dispatches the unanchored full resend.
-            await _invalidate_http_bridge_anchor_after_not_found(self, session, status_request_state)
-||||||| 84fde5a1e
-=======
             await _retire_denied_http_bridge_anchor(
                 self,
                 session,
                 request_states=(status_request_state,),
             )
->>>>>>> 72630bbfe
 
         retry_error_code = _websocket_precreated_retry_error_code(
             status_request_state,
@@ -3762,27 +3675,11 @@ class _HTTPBridgeUpstreamEventsMixin:
                     if suppress_capacity_keepalives_until_retry_finishes:
                         status_request_state.account_capacity_wait_suppress_keepalive = False
                 async with session.pending_lock:
-<<<<<<< 22625a07e
-                    if status_request_state in session.pending_requests:
-                        session.pending_requests.remove(status_request_state)
-                        if _http_bridge_request_counts_against_queue(status_request_state):
-                            session.queued_request_count = max(0, session.queued_request_count - 1)
-                if retry_after_wait or capacity_hold_refused or not status_request_state.propagate_http_errors:
-                    _apply_http_bridge_terminal_error_status(status_request_state)
-||||||| 84fde5a1e
-                    if status_request_state in session.pending_requests:
-                        session.pending_requests.remove(status_request_state)
-                        if _http_bridge_request_counts_against_queue(status_request_state):
-                            session.queued_request_count = max(0, session.queued_request_count - 1)
-                if retry_after_wait or not status_request_state.propagate_http_errors:
-                    status_request_state.error_http_status_override = 502
-=======
                     _relinquish_http_bridge_capacity_wait_ownership(
                         session, status_request_state, claimed_terminal_request_states
                     )
-                if retry_after_wait or not status_request_state.propagate_http_errors:
-                    status_request_state.error_http_status_override = 502
->>>>>>> 72630bbfe
+                if retry_after_wait or capacity_hold_refused or not status_request_state.propagate_http_errors:
+                    _apply_http_bridge_terminal_error_status(status_request_state)
                     (
                         _downstream_text,
                         event_block,
@@ -3950,10 +3847,13 @@ class _HTTPBridgeUpstreamEventsMixin:
                     if status_request_state not in session.pending_requests:
                         session.pending_requests.appendleft(status_request_state)
                         session.queued_request_count += 1
-<<<<<<< 22625a07e
-                    status_request_state.awaiting_response_created = True
-                    status_request_state.response_id = None
-                retried = await self._retry_http_bridge_precreated_request(
+                    staged = await _stage_websocket_request_state_for_replay(
+                        status_request_state,
+                        create_gate=session.response_create_gate,
+                        surface="http_bridge",
+                        trigger="capacity_error",
+                    )
+                retried = staged and await self._retry_http_bridge_precreated_request(
                     session,
                     request_state=status_request_state,
                     triggering_error_payload=payload,
@@ -3963,48 +3863,16 @@ class _HTTPBridgeUpstreamEventsMixin:
                         _websocket_event_error_type(event_type, payload),
                     ),
                 )
-||||||| 84fde5a1e
-                    status_request_state.awaiting_response_created = True
-                    status_request_state.response_id = None
-                retried = await self._retry_http_bridge_precreated_request(session)
-=======
-                    staged = await _stage_websocket_request_state_for_replay(
-                        status_request_state,
-                        create_gate=session.response_create_gate,
-                        surface="http_bridge",
-                        trigger="capacity_error",
-                    )
-                retried = staged and await self._retry_http_bridge_precreated_request(session)
->>>>>>> 72630bbfe
                 if retried:
                     return
                 async with session.pending_lock:
                     if status_request_state in session.pending_requests:
                         session.pending_requests.remove(status_request_state)
                         session.queued_request_count = max(0, session.queued_request_count - 1)
-<<<<<<< 22625a07e
-                _apply_http_bridge_terminal_error_status(status_request_state)
-                (
-                    _downstream_text,
-                    event_block,
-                    event,
-                    payload,
-                    event_type,
-                ) = _build_stream_incomplete_terminal_event_for_request(status_request_state)
-||||||| 84fde5a1e
-                status_request_state.error_http_status_override = 502
-                (
-                    _downstream_text,
-                    event_block,
-                    event,
-                    payload,
-                    event_type,
-                ) = _build_stream_incomplete_terminal_event_for_request(status_request_state)
-=======
                 if staged:
                     # A busy create gate forwards the upstream terminal as-is;
                     # only a replay that was attempted and failed is rewritten.
-                    status_request_state.error_http_status_override = 502
+                    _apply_http_bridge_terminal_error_status(status_request_state)
                     (
                         _downstream_text,
                         event_block,
@@ -4012,7 +3880,6 @@ class _HTTPBridgeUpstreamEventsMixin:
                         payload,
                         event_type,
                     ) = _build_stream_incomplete_terminal_event_for_request(status_request_state)
->>>>>>> 72630bbfe
 
         completed_usage = (
             event.response.usage if event_type == "response.completed" and event and event.response else None

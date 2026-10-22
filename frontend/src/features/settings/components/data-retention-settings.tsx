@@ -4,13 +4,7 @@ import { useTranslation } from "react-i18next";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-<<<<<<< 22625a07e
-||||||| 84fde5a1e
-import { buildSettingsUpdateRequest } from "@/features/settings/payload";
-=======
 import { InheritBadge } from "@/features/settings/components/inherit-badge";
-import { buildSettingsUpdateRequest } from "@/features/settings/payload";
->>>>>>> 72630bbfe
 import type { DashboardSettings, SettingsUpdateRequest } from "@/features/settings/schemas";
 
 export type DataRetentionSettingsProps = {
@@ -136,16 +130,10 @@ export function DataRetentionSettings({ settings, busy, onSave }: DataRetentionS
     if (usageHistoryChanged && parsedUsageHistory.valid) {
       patch.usageHistoryRetentionOverrideDays = parsedUsageHistory.value;
     }
-<<<<<<< 22625a07e
-    void onSave(patch);
-||||||| 84fde5a1e
-    void onSave(buildSettingsUpdateRequest(settings, patch));
-=======
     if (spoolRetentionChanged && parsedSpoolRetention.valid) {
       patch.httpResponsesSessionBridgeOperationSpoolRetentionSeconds = parsedSpoolRetention.value;
     }
-    void onSave(buildSettingsUpdateRequest(settings, patch));
->>>>>>> 72630bbfe
+    void onSave(patch);
   };
 
   const showRequestLogDisabledInfo = settings.requestLogRetentionDays === 0;

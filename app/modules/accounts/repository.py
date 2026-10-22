@@ -318,7 +318,6 @@ class AccountsRepository:
             return dict(summaries)
         return summaries
 
-<<<<<<< 22625a07e
     async def request_usage_summary_for_source(self, source: str) -> AccountRequestUsageSummary:
         summaries = await self.request_usage_summaries_for_sources([source])
         return summaries.get(source, _EMPTY_REQUEST_USAGE_SUMMARY)
@@ -404,15 +403,6 @@ class AccountsRepository:
             return dict(summaries)
         return summaries
 
-    async def exists_active_chatgpt_account_id(self, chatgpt_account_id: str) -> bool:
-        return await self.get_active_by_chatgpt_account_id(chatgpt_account_id) is not None
-
-||||||| 84fde5a1e
-    async def exists_active_chatgpt_account_id(self, chatgpt_account_id: str) -> bool:
-        return await self.get_active_by_chatgpt_account_id(chatgpt_account_id) is not None
-
-=======
->>>>>>> 72630bbfe
     async def get_active_by_chatgpt_account_id(self, chatgpt_account_id: str) -> Account | None:
         result = await self._session.execute(
             select(Account)

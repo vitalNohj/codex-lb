@@ -16,13 +16,9 @@ export type RequestFiltersProps = {
   apiKeyOptions: MultiSelectOption[];
   modelOptions: MultiSelectOption[];
   statusOptions: MultiSelectOption[];
-<<<<<<< 22625a07e
   viewMode: DashboardRequestLogViewMode;
-||||||| 84fde5a1e
-=======
   /** Hide the API key filter (read-only guests receive no key options). */
   showApiKeyFilter?: boolean;
->>>>>>> 72630bbfe
   onSearchChange: (value: string) => void;
   onTimeframeChange: (value: FilterState["timeframe"]) => void;
   onViewModeChange: (value: DashboardRequestLogViewMode) => void;
@@ -40,12 +36,8 @@ export function RequestFilters({
   apiKeyOptions,
   modelOptions,
   statusOptions,
-<<<<<<< 22625a07e
   viewMode,
-||||||| 84fde5a1e
-=======
   showApiKeyFilter = true,
->>>>>>> 72630bbfe
   onSearchChange,
   onTimeframeChange,
   onViewModeChange,

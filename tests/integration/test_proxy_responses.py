@@ -4074,7 +4074,6 @@ async def test_v1_responses_normalizes_tool_messages(async_client, monkeypatch):
     ]
 
 
-<<<<<<< 22625a07e
 _CURSOR_COMPACT_MODELS = ["gpt-5.2", "gpt-5.5", "gpt-5.6-sol"]
 
 _CONTEXT_LIMIT_FAILED_EVENT = (
@@ -4242,8 +4241,8 @@ async def test_backend_codex_responses_cursor_context_limit_streams_synthetic_co
     completed = [event for event in events if event.get("type") == "response.completed"]
     assert completed, events
     assert completed[-1]["response"]["usage"]["input_tokens"] == 1000000
-||||||| 84fde5a1e
-=======
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("stream", [False, True])
 @pytest.mark.parametrize("terminal_includes_output", [False, True])
@@ -4492,4 +4491,3 @@ async def test_v1_responses_disconnect_stamp_reaches_traced_response_through_rea
         "request_id=req_delivery_trace_stamp surface=responses outcome=terminal_after_disconnect "
         "terminal=response.completed"
     ) in records[0].getMessage()
->>>>>>> 72630bbfe

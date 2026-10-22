@@ -110,7 +110,6 @@ class TestAppendStability:
             assert anchor.sticky_key == first, f"key moved on turn {turn}"
             assert anchor.outcome == DERIVATION_OUTCOME_ANCHOR_HIT
 
-<<<<<<< 22625a07e
     def test_json_mode_note_keeps_same_session_key_and_separates_sessions(self):
         def json_mode_turn(first_user: str, *later: JsonValue) -> ResponsesRequest:
             return ResponsesRequest.model_validate(
@@ -125,45 +124,29 @@ class TestAppendStability:
                 }
             )
 
+        def exchanges(count: int) -> list[JsonValue]:
+            later: list[JsonValue] = []
+            for turn in range(count):
+                later += [{"role": "assistant", "content": "{}"}, {"role": "user", "content": f"continue {turn}"}]
+            return later
+
         api_key = _make_api_key()
-        turn1 = json_mode_turn("review file a")
-        turn2 = json_mode_turn(
-            "review file a",
-            {"role": "assistant", "content": "{}"},
-            {"role": "user", "content": "continue"},
-        )
-        other_session = json_mode_turn("review file b")
+        # Past the anchor acceptance floor (see test_key_is_stable_across_a_growing_transcript)
+        # the note sits at the same place every turn, so the key holds.
+        turn2 = json_mode_turn("review file a", *exchanges(2))
+        turn3 = json_mode_turn("review file a", *exchanges(3))
+        turn4 = json_mode_turn("review file a", *exchanges(4))
+        other_session = json_mode_turn("review file b", *exchanges(2))
 
-        assert _derive_prompt_cache_key(turn1, api_key) == _derive_prompt_cache_key(turn2, api_key)
-        assert _derive_prompt_cache_key(turn1, api_key) != _derive_prompt_cache_key(other_session, api_key)
+        first_item = cast(list[dict[str, list[JsonValue]]], turn2.input)[0]
+        assert first_item["content"][0] == {"type": "input_text", "text": "Respond in JSON."}
+        key = _derive_prompt_cache_key(turn2, api_key)
+        assert _derive_prompt_cache_key(turn3, api_key) == key
+        assert _derive_prompt_cache_key(turn4, api_key) == key
+        assert _derive_prompt_cache_key(other_session, api_key) != key
 
-    def test_parallel_sessions_produce_different_keys(self):
-        session_a = ResponsesRequest(
-            model="gpt-5.4",
-            instructions="You are a helpful assistant",
-            input=_json_value([{"role": "user", "content": "build a server"}]),
-        )
-        session_b = ResponsesRequest(
-            model="gpt-5.4",
-            instructions="You are a helpful assistant",
-            input=_json_value([{"role": "user", "content": "write tests"}]),
-        )
-||||||| 84fde5a1e
-    def test_parallel_sessions_produce_different_keys(self):
-        session_a = ResponsesRequest(
-            model="gpt-5.4",
-            instructions="You are a helpful assistant",
-            input=_json_value([{"role": "user", "content": "build a server"}]),
-        )
-        session_b = ResponsesRequest(
-            model="gpt-5.4",
-            instructions="You are a helpful assistant",
-            input=_json_value([{"role": "user", "content": "write tests"}]),
-        )
-=======
     def test_transcript_longer_than_the_retained_window_stays_stable(self):
         """The window slides; the anchor does not."""
->>>>>>> 72630bbfe
         api_key = _make_api_key()
         items: list[object] = [_env_item(), _user("start"), _assistant("a0"), _user("u0")]
         first = _derive_prompt_cache_key(_request(items), api_key)

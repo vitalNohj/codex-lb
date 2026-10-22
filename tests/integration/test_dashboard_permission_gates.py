@@ -264,7 +264,8 @@ async def test_guest_reads_masked_account_identity(
 
     listing = await async_client.get("/api/accounts")
     assert listing.status_code == 200, listing.text
-    [account] = listing.json()["accounts"]
+    # Fork: the listing also carries the synthetic sidecar accounts (public hosts only).
+    [account] = [item for item in listing.json()["accounts"] if item["accountId"] == "acc-1"]
     assert account["email"] == "a***@example.com"
     assert account["displayName"] == "a***@example.com"
     assert account["chatgptAccountId"] is None
@@ -289,7 +290,8 @@ async def test_account_writer_reads_full_account_identity(
 
     listing = await async_client.get("/api/accounts")
     assert listing.status_code == 200
-    [account] = listing.json()["accounts"]
+    # Fork: the listing also carries the synthetic sidecar accounts (public hosts only).
+    [account] = [item for item in listing.json()["accounts"] if item["accountId"] == "acc-1"]
     assert account["email"] == "alice.smith@example.com"
     assert account["chatgptAccountId"] == "chatgpt-account-123"
     assert account["workspaceLabel"] == "Acme Workspace"

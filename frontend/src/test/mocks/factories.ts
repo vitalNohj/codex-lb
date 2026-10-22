@@ -1064,13 +1064,10 @@ export function createDashboardSettings(
 		guestAccessEnabled: false,
 		guestPasswordConfigured: false,
 		limitWarmupStaggeredIdleEnabled: false,
-<<<<<<< 22625a07e
 		requestLogRetentionDays: 0,
 		usageHistoryRetentionDays: 0,
 		requestLogRetentionOverrideDays: null,
 		usageHistoryRetentionOverrideDays: null,
-||||||| 84fde5a1e
-=======
 		softDrainEnabled: true,
 		deterministicFailoverEnabled: true,
 		circuitBreakerEnabled: false,
@@ -1085,7 +1082,6 @@ export function createDashboardSettings(
 		// R2 spool retention: the 7-day default and the floor at shipped defaults.
 		httpResponsesSessionBridgeOperationSpoolRetentionSeconds: 604800,
 		httpResponsesSessionBridgeOperationSpoolRetentionFloorSeconds: 7200,
->>>>>>> 72630bbfe
 		...overrides,
 	});
 }

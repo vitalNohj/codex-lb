@@ -58,7 +58,7 @@ describe("BackgroundJobsSettings", () => {
     await user.click(screen.getByRole("switch", { name: "Automations scheduler" }));
 
     expect(onSave).toHaveBeenCalledWith(
-      buildSettingsUpdateRequest(settings, { automationsSchedulerEnabled: false }),
+      { automationsSchedulerEnabled: false },
     );
   });
 
@@ -69,7 +69,7 @@ describe("BackgroundJobsSettings", () => {
 
     await user.click(screen.getByRole("button", { name: "Reset to inherited" }));
 
-    const payload = buildSettingsUpdateRequest(settings, { automationsSchedulerEnabled: null });
+    const payload = { automationsSchedulerEnabled: null };
     expect(payload.automationsSchedulerEnabled).toBeNull();
     expect(onSave).toHaveBeenCalledWith(payload);
   });

@@ -57,125 +57,25 @@ export function TelemetrySettings({ disabled }: TelemetrySettingsProps) {
 
       <p className="text-[13px] leading-relaxed text-muted-foreground">{t("settings.telemetry.optOutNotice")}</p>
 
-      {envControlled ? (
+      {envFallback ? (
         <div className="rounded-lg border border-primary/25 bg-primary/8 px-4 py-3 text-sm font-medium text-foreground">
           {t("settings.telemetry.envNotice")}
         </div>
       ) : null}
 
-<<<<<<< 22625a07e
       <SettingsRowGroup>
         <SettingsRow
           label={t("settings.telemetry.collectedData.label")}
           description={t("settings.telemetry.collectedData.description")}
         >
-          <Button
-            type="button"
-            size="sm"
-            variant="outline"
-            className="h-9 text-xs"
-            disabled={!consent}
-            onClick={() => setPreviewOpen(true)}
-          >
-            {t("settings.telemetry.collectedData.view")}
-          </Button>
-        </SettingsRow>
-      </SettingsRowGroup>
-
-      <Dialog open={previewOpen} onOpenChange={setPreviewOpen}>
-        {previewOpen ? (
-          <DialogContent className="sm:max-w-2xl">
-            <DialogHeader>
-              <DialogTitle>{t("settings.telemetry.previewDialog.title")}</DialogTitle>
-              <DialogDescription>
-                {t("settings.telemetry.previewDialog.description")}
-              </DialogDescription>
-            </DialogHeader>
-            {previewEnvelope ? (
-              <TelemetryPayloadPreview preview={previewEnvelope} />
-            ) : telemetryPreviewQuery.error ? (
-              <AlertMessage variant="error">{telemetryPreviewQuery.error.message}</AlertMessage>
-            ) : (
-              <Skeleton className="h-64 w-full rounded-lg" />
-            )}
-            <DialogFooter showCloseButton />
-          </DialogContent>
-        ) : null}
-      </Dialog>
-    </SettingsSection>
-||||||| 84fde5a1e
-        <p className="text-xs text-muted-foreground">{t("settings.telemetry.optOutNotice")}</p>
-
-        {envControlled ? (
-          <div className="rounded-lg border border-primary/20 bg-primary/5 px-3 py-2 text-xs font-medium text-foreground">
-            {t("settings.telemetry.envNotice")}
-          </div>
-        ) : null}
-
-        <div className="flex items-center justify-between gap-3 rounded-lg border p-3">
-          <div>
-            <p className="text-sm font-medium">{t("settings.telemetry.collectedData.label")}</p>
-            <p className="text-xs text-muted-foreground">
-              {t("settings.telemetry.collectedData.description")}
-            </p>
-          </div>
-          <Button
-            type="button"
-            size="sm"
-            variant="outline"
-            className="h-8 text-xs"
-            disabled={!consent}
-            onClick={() => setPreviewOpen(true)}
-          >
-            {t("settings.telemetry.collectedData.view")}
-          </Button>
-        </div>
-      </div>
-
-      <Dialog open={previewOpen} onOpenChange={setPreviewOpen}>
-        {previewOpen ? (
-          <DialogContent className="sm:max-w-2xl">
-            <DialogHeader>
-              <DialogTitle>{t("settings.telemetry.previewDialog.title")}</DialogTitle>
-              <DialogDescription>
-                {t("settings.telemetry.previewDialog.description")}
-              </DialogDescription>
-            </DialogHeader>
-            {previewEnvelope ? (
-              <TelemetryPayloadPreview preview={previewEnvelope} />
-            ) : telemetryPreviewQuery.error ? (
-              <AlertMessage variant="error">{telemetryPreviewQuery.error.message}</AlertMessage>
-            ) : (
-              <Skeleton className="h-64 w-full rounded-lg" />
-            )}
-            <DialogFooter showCloseButton />
-          </DialogContent>
-        ) : null}
-      </Dialog>
-    </section>
-=======
-        <p className="text-xs text-muted-foreground">{t("settings.telemetry.optOutNotice")}</p>
-
-        {envFallback ? (
-          <div className="rounded-lg border border-primary/20 bg-primary/5 px-3 py-2 text-xs font-medium text-foreground">
-            {t("settings.telemetry.envNotice")}
-          </div>
-        ) : null}
-
-        <div className="flex items-center justify-between gap-3 rounded-lg border p-3">
-          <div>
-            <p className="text-sm font-medium">{t("settings.telemetry.collectedData.label")}</p>
-            <p className="text-xs text-muted-foreground">
-              {t("settings.telemetry.collectedData.description")}
-            </p>
-          </div>
+          {/* DialogTrigger hands focus back to this button on close (upstream #1883). */}
           <Dialog open={previewOpen} onOpenChange={setPreviewOpen}>
             <DialogTrigger asChild>
               <Button
                 type="button"
                 size="sm"
                 variant="outline"
-                className="h-8 text-xs"
+                className="h-9 text-xs"
                 disabled={!consent}
               >
                 {t("settings.telemetry.collectedData.view")}
@@ -200,9 +100,8 @@ export function TelemetrySettings({ disabled }: TelemetrySettingsProps) {
               </DialogContent>
             ) : null}
           </Dialog>
-        </div>
-      </div>
-    </section>
->>>>>>> 72630bbfe
+        </SettingsRow>
+      </SettingsRowGroup>
+    </SettingsSection>
   );
 }

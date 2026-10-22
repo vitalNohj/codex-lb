@@ -152,7 +152,7 @@ describe("DataRetentionSettings", () => {
     await user.click(reset);
 
     expect(onSave).toHaveBeenCalledWith(
-      buildSettingsUpdateRequest(settings, { requestLogRetentionOverrideDays: null }),
+      { requestLogRetentionOverrideDays: null },
     );
     expect(onSave.mock.calls[0][0]).not.toHaveProperty("usageHistoryRetentionOverrideDays");
   });

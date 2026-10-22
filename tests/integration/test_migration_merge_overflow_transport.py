@@ -83,9 +83,18 @@ def _seed_overflow(connection: Connection) -> None:
     )
 
 
+# Fork (vitalNohj/codex-lb): the fork's own migration chain joins this lineage
+# only at 20261022_000000_merge_fork_and_upstream_1_25_heads, after this merge.
+# Downgrading from head to this merge (or its parents) therefore leaves the
+# fork chain's head stamped beside it; it is not a fact about the two branches
+# this test covers, so it is left out of the stamped-revision comparison.
+_FORK_LINEAGE_HEAD = "20261021_010000_add_dashboard_layout"
+
+
 def _revisions(engine: Engine) -> tuple[str, ...]:
     with engine.connect() as connection:
-        return tuple(connection.execute(text("SELECT version_num FROM alembic_version ORDER BY version_num")).scalars())
+        stamped = connection.execute(text("SELECT version_num FROM alembic_version ORDER BY version_num")).scalars()
+        return tuple(revision for revision in stamped if revision != _FORK_LINEAGE_HEAD)
 
 
 def _state(engine: Engine) -> dict[str, Any]:

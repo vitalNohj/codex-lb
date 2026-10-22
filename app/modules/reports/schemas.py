@@ -72,7 +72,6 @@ class ReportComparison(DashboardModel):
     previous: ReportComparisonPrevious
 
 
-<<<<<<< 22625a07e
 class MonthlyModelEntry(DashboardModel):
     """One model's share of a month (NULL-model rows are excluded from the
     split; they still count toward the month totals)."""
@@ -94,12 +93,15 @@ class MonthlyUsageEntry(DashboardModel):
     cached_input_tokens: int = 0
     cost_usd: float = 0.0
     models: list[MonthlyModelEntry] = Field(default_factory=list)
-||||||| 84fde5a1e
-=======
+
+
 class ReportsOptionsResponse(DashboardModel):
     models: list[str]
     useragents: list[str]
->>>>>>> 72630bbfe
+    # Fork: lifetime All-time origin for the account/API-key scope (model and
+    # user-agent blanked, rollup-backed once raw logs are pruned). The Reports
+    # page reads it here so a model/UA filter cannot move the All-time start.
+    earliest_activity_at: str | None = None
 
 
 class ReportsResponse(DashboardModel):
@@ -112,7 +114,6 @@ class ReportsResponse(DashboardModel):
     by_model: list[ModelCostEntry] = Field(default_factory=list)
     by_account: list[AccountCostEntry] = Field(default_factory=list)
     by_useragent: list[UserAgentCostEntry] = Field(default_factory=list)
-<<<<<<< 22625a07e
     monthly: list[MonthlyUsageEntry] = Field(default_factory=list)
     # Inclusive UTC date from which the request-log window is guaranteed
     # (None when retention is disabled): raw-only measures — per-request
@@ -130,8 +131,6 @@ class ReportsResponse(DashboardModel):
     # Inclusive UTC date of the earliest countable activity (rollup-backed
     # once raw is pruned); the All-time range origin.
     earliest_activity_at: str | None = None
-||||||| 84fde5a1e
-=======
 
 
 class ThreadIdentityFacet(DashboardModel):
@@ -166,4 +165,3 @@ class ThreadIdentityResponse(DashboardModel):
     unkeyed_request_share: float = 0.0
     keyed: ThreadIdentityFacet = Field(default_factory=ThreadIdentityFacet)
     unkeyed: ThreadIdentityFacet = Field(default_factory=ThreadIdentityFacet)
->>>>>>> 72630bbfe

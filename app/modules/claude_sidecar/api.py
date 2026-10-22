@@ -2,7 +2,11 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends
 
-from app.core.auth.dependencies import set_dashboard_error_format, validate_dashboard_session
+from app.core.auth.dependencies import (
+    require_dashboard_write_access,
+    set_dashboard_error_format,
+    validate_dashboard_session,
+)
 from app.dependencies import ClaudeSidecarContext, get_claude_sidecar_context
 from app.modules.claude_sidecar.schemas import (
     ClaudeSidecarAccountExcludedModelsUpdate,
@@ -31,7 +35,7 @@ async def get_status(
     return await context.service.get_status()
 
 
-@router.post("/test", response_model=ClaudeSidecarTestResponse)
+@router.post("/test", response_model=ClaudeSidecarTestResponse, dependencies=[Depends(require_dashboard_write_access)])
 async def test_connection(
     context: ClaudeSidecarContext = Depends(get_claude_sidecar_context),
 ) -> ClaudeSidecarTestResponse:
@@ -59,7 +63,11 @@ async def get_routing(
     return await context.service.get_routing()
 
 
-@router.put("/routing/strategy", response_model=ClaudeSidecarRoutingResponse)
+@router.put(
+    "/routing/strategy",
+    response_model=ClaudeSidecarRoutingResponse,
+    dependencies=[Depends(require_dashboard_write_access)],
+)
 async def set_routing_strategy(
     body: ClaudeSidecarRoutingStrategyUpdate,
     context: ClaudeSidecarContext = Depends(get_claude_sidecar_context),
@@ -67,7 +75,11 @@ async def set_routing_strategy(
     return await context.service.set_routing_strategy(body.strategy)
 
 
-@router.put("/routing/session-affinity", response_model=ClaudeSidecarRoutingResponse)
+@router.put(
+    "/routing/session-affinity",
+    response_model=ClaudeSidecarRoutingResponse,
+    dependencies=[Depends(require_dashboard_write_access)],
+)
 async def set_session_affinity(
     body: ClaudeSidecarSessionAffinityUpdate,
     context: ClaudeSidecarContext = Depends(get_claude_sidecar_context),
@@ -75,7 +87,11 @@ async def set_session_affinity(
     return await context.service.set_session_affinity(body.session_affinity)
 
 
-@router.put("/routing/priority", response_model=ClaudeSidecarRoutingResponse)
+@router.put(
+    "/routing/priority",
+    response_model=ClaudeSidecarRoutingResponse,
+    dependencies=[Depends(require_dashboard_write_access)],
+)
 async def set_account_priority(
     body: ClaudeSidecarAccountPriorityUpdate,
     context: ClaudeSidecarContext = Depends(get_claude_sidecar_context),
@@ -83,7 +99,11 @@ async def set_account_priority(
     return await context.service.set_account_priority(body.name, body.priority)
 
 
-@router.put("/routing/paused", response_model=ClaudeSidecarRoutingResponse)
+@router.put(
+    "/routing/paused",
+    response_model=ClaudeSidecarRoutingResponse,
+    dependencies=[Depends(require_dashboard_write_access)],
+)
 async def set_account_paused(
     body: ClaudeSidecarAccountPausedUpdate,
     context: ClaudeSidecarContext = Depends(get_claude_sidecar_context),
@@ -91,7 +111,11 @@ async def set_account_paused(
     return await context.service.set_account_paused(body.name, body.paused)
 
 
-@router.put("/routing/excluded-models", response_model=ClaudeSidecarRoutingResponse)
+@router.put(
+    "/routing/excluded-models",
+    response_model=ClaudeSidecarRoutingResponse,
+    dependencies=[Depends(require_dashboard_write_access)],
+)
 async def set_account_excluded_models(
     body: ClaudeSidecarAccountExcludedModelsUpdate,
     context: ClaudeSidecarContext = Depends(get_claude_sidecar_context),

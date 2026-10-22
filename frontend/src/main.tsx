@@ -25,35 +25,13 @@ if (!closeFlowWindowOnReturn()) {
   useThemeStore.getState().initializeTheme();
   useDashboardPreferencesStore.getState().initializePreferences();
 
-<<<<<<< 22625a07e
-createRoot(document.getElementById("root")!).render(
-  <StrictMode>
-    <QueryClientProvider client={queryClient}>
-      <BrowserRouter basename="/codex">
-        <App />
-      </BrowserRouter>
-    </QueryClientProvider>
-  </StrictMode>,
-)
-||||||| 84fde5a1e
-createRoot(document.getElementById("root")!).render(
-  <StrictMode>
-    <QueryClientProvider client={queryClient}>
-      <BrowserRouter>
-        <App />
-      </BrowserRouter>
-    </QueryClientProvider>
-  </StrictMode>,
-)
-=======
   createRoot(document.getElementById("root")!).render(
     <StrictMode>
       <QueryClientProvider client={queryClient}>
-        <BrowserRouter>
+        <BrowserRouter basename="/codex">
           <App />
         </BrowserRouter>
       </QueryClientProvider>
     </StrictMode>,
   );
 }
->>>>>>> 72630bbfe

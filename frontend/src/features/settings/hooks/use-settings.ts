@@ -10,7 +10,6 @@ import {
   addUpstreamProxyPoolMember,
   createUpstreamProxyEndpoint,
   createUpstreamProxyPool,
-<<<<<<< 22625a07e
   getClaudeSidecarQuota,
   getClaudeSidecarRouting,
   getClaudeSidecarStatus,
@@ -31,11 +30,8 @@ import {
   getOpenRouterSidecarStatus,
   getOpenAICompatStatus,
   getOrcaRouterSidecarStatus,
-||||||| 84fde5a1e
-=======
   deleteModelContextWindowOverride,
   getModelContextWindowOverrides,
->>>>>>> 72630bbfe
   getSettings,
   listClaudeSidecarModels,
   listOllamaSidecarModels,
@@ -47,7 +43,6 @@ import {
   getTelemetryConsent,
   getUpstreamProxyAdmin,
   putAccountProxyBinding,
-<<<<<<< 22625a07e
   setClaudeSidecarAccountExcludedModels,
   setClaudeSidecarAccountPaused,
   setClaudeSidecarAccountPriority,
@@ -60,10 +55,7 @@ import {
   testOpenRouterSidecarConnection,
   testOpenAICompatConnection,
   testOrcaRouterSidecarConnection,
-||||||| 84fde5a1e
-=======
   putModelContextWindowOverride,
->>>>>>> 72630bbfe
   testUpstreamProxyEndpoint,
   updateSettings,
   updateTelemetryConsent,
@@ -380,7 +372,6 @@ export function useUpstreamProxyAdmin(options?: { enabled?: boolean }) {
   };
 }
 
-<<<<<<< 22625a07e
 export type SidecarConnectionProvider =
   | "claude"
   | "openrouter"
@@ -848,8 +839,8 @@ export function useOpenCodeGoSidecar(options?: { modelsEnabled?: boolean }) {
   });
   const testMutation = useSidecarConnectionTest("opencodeGo");
   return { statusQuery, modelsQuery, testMutation };
-||||||| 84fde5a1e
-=======
+}
+
 // M4 model catalogue: per-model context window overrides. The list merges
 // dashboard rows with the environment fallback per slug; writes go to one slug.
 export function useModelContextWindowOverrides() {
@@ -887,5 +878,4 @@ export function useModelContextWindowOverrides() {
   });
 
   return { overridesQuery, upsertMutation, deleteMutation };
->>>>>>> 72630bbfe
 }

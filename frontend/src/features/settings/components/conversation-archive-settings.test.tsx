@@ -64,7 +64,7 @@ describe("ConversationArchiveSettings", () => {
 
     expect(onSave).toHaveBeenCalledTimes(1);
     expect(onSave).toHaveBeenCalledWith(
-      buildSettingsUpdateRequest(settings, { conversationArchiveEnabled: true }),
+      { conversationArchiveEnabled: true },
     );
   });
 
@@ -84,7 +84,7 @@ describe("ConversationArchiveSettings", () => {
 
     expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
     expect(onSave).toHaveBeenCalledWith(
-      buildSettingsUpdateRequest(settings, { conversationArchiveEnabled: false }),
+      { conversationArchiveEnabled: false },
     );
   });
 
@@ -114,7 +114,7 @@ describe("ConversationArchiveSettings", () => {
 
     await user.click(screen.getByRole("button", { name: "Reset to inherited" }));
 
-    const payload = buildSettingsUpdateRequest(settings, { conversationArchiveEnabled: null });
+    const payload = { conversationArchiveEnabled: null };
     expect(payload.conversationArchiveEnabled).toBeNull();
     expect(onSave).toHaveBeenCalledWith(payload);
   });

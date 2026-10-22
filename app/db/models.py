@@ -2444,7 +2444,6 @@ class DashboardSettings(Base):
         Integer,
         nullable=True,
     )
-<<<<<<< 22625a07e
     hourly_rollup_retention_days: Mapped[int | None] = mapped_column(
         Integer,
         nullable=True,
@@ -2457,8 +2456,6 @@ class DashboardSettings(Base):
         server_default=literal_column(sql_dashboard_layout_default()),
         nullable=False,
     )
-||||||| 84fde5a1e
-=======
     # C2-3 resilience toggles: NULL inherits the deprecated ``CODEX_LB_*`` env
     # alias (then the code default); a non-NULL value is dashboard-owned.
     soft_drain_enabled: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
@@ -2485,7 +2482,6 @@ class DashboardSettings(Base):
         Float, nullable=True
     )
     # end R2 spool retention
->>>>>>> 72630bbfe
     version: Mapped[int] = mapped_column(
         Integer,
         default=1,
@@ -2503,7 +2499,6 @@ class DashboardSettings(Base):
     __mapper_args__ = {"version_id_col": version}
 
 
-<<<<<<< 22625a07e
 class ClaudeOpus55PinOwnership(Base):
     """Settings rows whose full-model list the Opus 5.5 pin migration appended.
 
@@ -2538,8 +2533,8 @@ class ClaudeHaiku55PinOwnership(Base):
     __tablename__ = "claude_haiku_5_5_pin_ownership"
 
     settings_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=False)
-||||||| 84fde5a1e
-=======
+
+
 # M4 model catalogue: dashboard-managed per-model context window overrides.
 class ModelContextWindowOverride(Base):
     """One dashboard-stored context window override for a model slug.
@@ -2563,7 +2558,6 @@ class ModelContextWindowOverride(Base):
 
 
 # end M4 model catalogue
->>>>>>> 72630bbfe
 
 
 class RuntimeSentinel(Base):

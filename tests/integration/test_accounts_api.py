@@ -234,22 +234,8 @@ async def test_account_usage_reset_consume_consumes_credit_and_refreshes(async_c
         def __init__(self, *args: object, **kwargs: object) -> None:
             pass
 
-<<<<<<< 22625a07e
-        async def force_refresh(
-            self,
-            account: Account,
-            *,
-            ignore_refresh_disabled: bool = False,
-            ignore_persisted_cooldown: bool = False,
-        ) -> bool:
-            refreshed_account_ids.append(f"{account.id}:{ignore_refresh_disabled}:{ignore_persisted_cooldown}")
-||||||| 84fde5a1e
-        async def force_refresh(self, account: Account, *, ignore_refresh_disabled: bool = False) -> bool:
-            refreshed_account_ids.append(f"{account.id}:{ignore_refresh_disabled}")
-=======
-        async def force_refresh(self, account: Account) -> bool:
-            refreshed_account_ids.append(account.id)
->>>>>>> 72630bbfe
+        async def force_refresh(self, account: Account, *, ignore_persisted_cooldown: bool = False) -> bool:
+            refreshed_account_ids.append(f"{account.id}:{ignore_persisted_cooldown}")
             return True
 
     monkeypatch.setattr(
@@ -273,13 +259,7 @@ async def test_account_usage_reset_consume_consumes_credit_and_refreshes(async_c
     assert call["redeem_request_id"]
     assert call["route"] is None
     assert call["allow_direct_egress"] is True
-<<<<<<< 22625a07e
-    assert refreshed_account_ids == [f"{expected_account_id}:True:True"]
-||||||| 84fde5a1e
     assert refreshed_account_ids == [f"{expected_account_id}:True"]
-=======
-    assert refreshed_account_ids == [expected_account_id]
->>>>>>> 72630bbfe
     assert get_rate_limit_reset_credits_store().get(expected_account_id) is None
 
 
@@ -332,22 +312,8 @@ async def test_account_usage_reset_consume_refreshes_usage_with_post_401_account
         def __init__(self, *args: object, **kwargs: object) -> None:
             pass
 
-<<<<<<< 22625a07e
-        async def force_refresh(
-            self,
-            account: Account,
-            *,
-            ignore_refresh_disabled: bool = False,
-            ignore_persisted_cooldown: bool = False,
-        ) -> bool:
-            assert ignore_refresh_disabled is True
+        async def force_refresh(self, account: Account, *, ignore_persisted_cooldown: bool = False) -> bool:
             assert ignore_persisted_cooldown is True
-||||||| 84fde5a1e
-        async def force_refresh(self, account: Account, *, ignore_refresh_disabled: bool = False) -> bool:
-            assert ignore_refresh_disabled is True
-=======
-        async def force_refresh(self, account: Account) -> bool:
->>>>>>> 72630bbfe
             refreshed_access_tokens.append(encryptor.decrypt(account.access_token_encrypted))
             return True
 

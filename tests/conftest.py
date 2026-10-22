@@ -151,10 +151,16 @@ def _reset_test_database(sync_conn) -> None:
 @pytest_asyncio.fixture
 async def _reset_db_state():
     from app.db.session import close_db
+    from app.modules.usage.repository import _clear_bulk_history_since_sqlite_cache
 
     await close_db()
     async with engine.begin() as conn:
         await conn.run_sync(_reset_test_database)
+    # The SQLite bulk-history snapshot cache is keyed by database path and
+    # validated by the trigger-maintained mutation generation. Recreating the
+    # schema at the same path resets that generation and reuses row ids, which
+    # no running deployment ever does, so drop entries from the previous test.
+    _clear_bulk_history_since_sqlite_cache()
     return True
 
 
@@ -567,7 +573,6 @@ def _reset_global_state() -> None:
     except Exception:
         pass
     try:
-<<<<<<< 22625a07e
         from app.modules.claude_sidecar.usage_event_cache import get_claude_usage_event_cache
 
         get_claude_usage_event_cache().clear()
@@ -577,12 +582,9 @@ def _reset_global_state() -> None:
         from app.modules.request_logs.cliproxy_identity import get_cliproxy_identity_resolver
 
         get_cliproxy_identity_resolver().clear()
-||||||| 84fde5a1e
-=======
         from app.core.config.context_window_overrides import get_model_context_window_overrides_cache
 
         get_model_context_window_overrides_cache().clear()
->>>>>>> 72630bbfe
     except Exception:
         pass
     try:
@@ -856,11 +858,6 @@ def _reap_leaked_audit_log_tasks_fence():
     yield
     if not _pending_audit_log_tasks():
         return
-<<<<<<< 22625a07e
-    loop = _SESSION_LOOP
-||||||| 84fde5a1e
-=======
     loop = _session_loop
->>>>>>> 72630bbfe
     if loop is not None and not loop.is_closed() and not loop.is_running():
         loop.run_until_complete(_reap_leaked_audit_log_tasks())

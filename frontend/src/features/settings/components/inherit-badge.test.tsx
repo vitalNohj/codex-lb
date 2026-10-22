@@ -3,7 +3,6 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
 import { InheritBadge } from "@/features/settings/components/inherit-badge";
-import { buildSettingsUpdateRequest } from "@/features/settings/payload";
 import { createDashboardSettings } from "@/test/mocks/factories";
 
 function renderBadge(provenance: Record<string, { source: "dashboard" | "env" | "default"; envValue: number; default: number }>) {
@@ -36,14 +35,14 @@ describe("InheritBadge", () => {
 
   it("offers a reset that clears the dashboard value with an explicit null", async () => {
     const user = userEvent.setup();
-    const { settings, onSave } = renderBadge({
+    const { onSave } = renderBadge({
       proxy_account_stream_limit: { source: "dashboard", envValue: 8, default: 8 },
     });
     expect(screen.queryByText(/Inherited|Default/)).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Reset to inherited" }));
 
-    expect(onSave).toHaveBeenCalledWith(buildSettingsUpdateRequest(settings, { proxyAccountStreamLimit: null }));
+    expect(onSave).toHaveBeenCalledWith({ proxyAccountStreamLimit: null });
   });
 
   it("disables the reset with the reason when clearing would be rejected", () => {

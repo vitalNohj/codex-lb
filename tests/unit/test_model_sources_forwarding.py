@@ -92,7 +92,6 @@ def test_chat_stream_usage_parser_handles_crlf_split_across_chunks() -> None:
     assert holder.usage.output_tokens == 1
 
 
-<<<<<<< 22625a07e
 def test_chat_stream_usage_parser_reads_a_frame_holding_a_line_separator() -> None:
     """JSON strings may hold U+2028 unescaped; SSE lines end only at CR or LF.
 
@@ -132,8 +131,8 @@ def test_stream_usage_parser_reads_usage_after_an_oversize_frame() -> None:
 
     assert holder.usage is not None
     assert holder.usage.input_tokens == 2
-||||||| 84fde5a1e
-=======
+
+
 def test_chat_stream_usage_parser_keeps_a_crlf_split_inside_a_frame_as_one_line_ending() -> None:
     """A CRLF whose CR closes one chunk and whose LF opens the next is one line ending, not a frame boundary."""
 
@@ -175,7 +174,6 @@ def test_stream_usage_parser_bare_cr_before_a_crlf_chunk_is_still_two_line_endin
     assert holder.usage is not None
     assert holder.usage.input_tokens == 5
     assert holder.usage.output_tokens == 4
->>>>>>> 72630bbfe
 
 
 def test_stream_usage_parser_bounds_buffer_without_frame_boundaries() -> None:
@@ -185,7 +183,7 @@ def test_stream_usage_parser_bounds_buffer_without_frame_boundaries() -> None:
     for _ in range(600):
         parser.feed(b"x" * 4096)
 
-    assert parser._events.held_chars <= SourceStreamUsageParser._MAX_BUFFER_CHARS
+    assert len(parser._buffer) <= SourceStreamUsageParser._MAX_BUFFER_CHARS
 
 
 def test_chat_stream_usage_parser_rejects_negative_tokens() -> None:

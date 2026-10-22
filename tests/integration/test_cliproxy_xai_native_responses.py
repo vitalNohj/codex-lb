@@ -460,9 +460,12 @@ async def test_a_session_header_becomes_the_cache_key(async_client, fake_cliprox
 
 
 @pytest.mark.asyncio
-async def test_a_request_with_nothing_to_key_on_still_sends_a_cache_key(async_client, fake_cliproxy, monkeypatch):
-    monkeypatch.setenv("CODEX_LB_OPENAI_PROMPT_CACHE_KEY_DERIVATION_ENABLED", "false")
-    get_settings.cache_clear()
+async def test_a_request_without_a_key_of_its_own_still_sends_a_cache_key(async_client, fake_cliproxy):
+    # Upstream made prompt-cache-key derivation always on (the
+    # CODEX_LB_OPENAI_PROMPT_CACHE_KEY_DERIVATION_ENABLED switch is retired), so a
+    # keyless request reaches CLIProxyAPI with the derived key. The random
+    # ``codex-lb-`` fallback for a request with nothing at all to key on is
+    # covered by tests/unit/test_cliproxy_xai_native_responses_unit.py.
     request = _xai_request()
     del request["prompt_cache_key"]
 
@@ -470,7 +473,7 @@ async def test_a_request_with_nothing_to_key_on_still_sends_a_cache_key(async_cl
 
     assert response.status_code == 200
     key = fake_cliproxy.responses_payloads[0].get("prompt_cache_key")
-    assert isinstance(key, str) and key.startswith("codex-lb-")
+    assert isinstance(key, str) and key
 
 
 # --- stateful fields --------------------------------------------------------------

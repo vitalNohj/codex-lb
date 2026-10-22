@@ -3901,7 +3901,6 @@ def test_state_from_account_does_not_restore_runtime_block_after_reset_credit_wa
     now = 1_700_000_000.0
     old_blocked_at = now - 3600
     persisted_reset = int(now + 4 * 24 * 3600)
-    monkeypatch.setattr("app.modules.proxy.load_balancer.time.time", lambda: now)
     monkeypatch.setattr("app.core.usage.quota.time.time", lambda: now)
     monkeypatch.setattr("app.modules.proxy.load_balancer.utcnow", lambda: _epoch_to_naive_utc(now))
 
@@ -3934,6 +3933,7 @@ def test_state_from_account_does_not_restore_runtime_block_after_reset_credit_wa
             cooldown_until=float(persisted_reset),
             reset_at=float(persisted_reset),
         ),
+        now=now,
     )
 
     assert state.blocked_at is None

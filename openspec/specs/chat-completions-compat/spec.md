@@ -278,7 +278,6 @@ When a Responses-shaped chat payload uses a flat Responses function tool, strict
 - **THEN** the proxy returns `HTTP 400` with `error.code = "invalid_function_parameters"` and `error.param = "tools[<index>].parameters"`
 - **AND** no upstream connection is opened
 
-<<<<<<< 22625a07e
 ### Requirement: Claude Fable 5.1 sidecar requests keep the 5.1 wire model
 
 The Claude sidecar chat-completions forward path MUST send `claude-fable-5-1` when routing produced that id, and MUST NOT rewrite it to `claude-fable-5`. A different spelling, including dotted `claude-fable-5.1` and a trailing thinking or effort suffix, MUST be forwarded as that spelling after routing. The exact id `claude-fable-5-1` MUST use a 32,768-token output floor, a 128,000-token output cap, and a 1,000,000-token context window. The estimated remaining context MUST constrain the output ceiling even when it falls below the floor.
@@ -604,8 +603,6 @@ The Claude sidecar chat-completions forward path MUST forward the model id produ
 - **GIVEN** the Claude routing prefix `cp-` strips and CLIProxyAPI model discovery returns `cp-claude-sonnet`
 - **WHEN** a client lists models
 - **THEN** `GET /v1/models` does not include `cp-claude-sonnet`
-||||||| 84fde5a1e
-=======
 ### Requirement: Chat Completions reject truncated upstream Responses streams
 
 `POST /v1/chat/completions` MUST classify upstream Responses iterator
@@ -802,4 +799,3 @@ model.
 - **THEN** the source receives model `gpt-5.6-sol`
 - **AND** it receives `reasoning_effort: "xhigh"`
 
->>>>>>> 72630bbfe

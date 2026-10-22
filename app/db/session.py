@@ -1414,15 +1414,11 @@ async def close_db() -> bool:
             # deferred bookkeeping close) run via call_soon; yield once so
             # the registry reflects them before the next stability check.
             await asyncio.sleep(0)
-<<<<<<< 22625a07e
-    await _drain_abandoned_sqlite_opens(_SQLITE_TEARDOWN_TIMEOUT_SECONDS)
-||||||| 84fde5a1e
-=======
 
     # Drain work already registered before disposal, then give disposal a
     # chance to schedule late cleanup before taking the final bounded snapshot.
     await _drain_wedged_teardown_registry()
->>>>>>> 72630bbfe
+    await _drain_abandoned_sqlite_opens(_SQLITE_TEARDOWN_TIMEOUT_SECONDS)
     await engine.dispose()
     if _background_engine is not None:
         await _background_engine.dispose()

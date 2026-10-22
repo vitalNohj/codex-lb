@@ -515,17 +515,7 @@ class AccountsService:
 
         usage_written = False
         if upstream_response.code in ("reset", "already_redeemed") and self._usage_repo and self._usage_updater:
-<<<<<<< 22625a07e
-            usage_written = await self._usage_updater.force_refresh(
-                account,
-                ignore_refresh_disabled=True,
-                ignore_persisted_cooldown=True,
-            )
-||||||| 84fde5a1e
-            usage_written = await self._usage_updater.force_refresh(account, ignore_refresh_disabled=True)
-=======
-            usage_written = await self._usage_updater.force_refresh(account)
->>>>>>> 72630bbfe
+            usage_written = await self._usage_updater.force_refresh(account, ignore_persisted_cooldown=True)
             get_account_selection_cache().invalidate()
 
         refreshed = await self._repo.get_by_id(account_id) or account

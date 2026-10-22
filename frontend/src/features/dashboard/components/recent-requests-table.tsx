@@ -27,18 +27,9 @@ import {
 import { PaginationControls } from "@/features/dashboard/components/filters/pagination-controls";
 import { RequestArchivePanel } from "@/features/conversation-archive/components/request-archive-panel";
 import type { AccountSummary, RequestLog } from "@/features/dashboard/schemas";
-<<<<<<< 22625a07e
+import { usePermission } from "@/features/auth/hooks/use-auth";
 import type { DashboardRequestLogViewMode } from "@/hooks/use-dashboard-preferences";
 import { isDisabledCapabilityRequestSource } from "@/lib/product-capabilities";
-||||||| 84fde5a1e
-import { useAuthStore } from "@/features/auth/hooks/use-auth";
-import { useDateDisplayFormatStore } from "@/hooks/use-date-format";
-import { cn } from "@/lib/utils";
-=======
-import { usePermission } from "@/features/auth/hooks/use-auth";
-import { useDateDisplayFormatStore } from "@/hooks/use-date-format";
-import { cn } from "@/lib/utils";
->>>>>>> 72630bbfe
 import { REQUEST_STATUS_LABELS } from "@/utils/constants";
 import {
   formatDateTimeInline,
@@ -425,15 +416,8 @@ export function RecentRequestsTable({
   const { t } = useTranslation();
   const [selectedRequest, setSelectedRequest] = useState<RequestLog | null>(null);
   const blurred = usePrivacyStore((s) => s.blurred);
-<<<<<<< 22625a07e
-||||||| 84fde5a1e
-  const isAdmin = useAuthStore((state) => state.role === "admin");
-  const dateDisplayFormat = useDateDisplayFormatStore((state) => state.dateDisplayFormat);
-=======
   // User agent, client IP and the archive panel are served only with `conversations:read`.
   const canReadConversations = usePermission("conversations:read");
-  const dateDisplayFormat = useDateDisplayFormatStore((state) => state.dateDisplayFormat);
->>>>>>> 72630bbfe
   const selectedRequestCostSummary = formatRequestCostSummary(selectedRequest, t);
   const selectedRequestError = visibleRequestError(selectedRequest);
   const selectedRoutedModel = routedModelFor(selectedRequest);
@@ -769,52 +753,6 @@ export function RecentRequestsTable({
                 <RequestDetailField label={t("dashboard.requests.columns.time")} value={selectedRequest ? formatDateTimeInline(selectedRequest.requestedAt) : "—"} />
                 <RequestDetailField label={t("dashboard.requestDetails.errorCode")} value={selectedRequestError.errorCode ?? "—"} mono />
               </div>
-<<<<<<< 22625a07e
-              <RequestDetailField
-                label={t("dashboard.requestDetails.userAgent")}
-                value={selectedRequest?.useragent ?? "—"}
-                copyValue={selectedRequest?.useragent ?? undefined}
-                copyLabel={t("dashboard.requestDetails.copyUserAgent")}
-                compactCopy
-              />
-              <div className="grid gap-3 sm:grid-cols-2">
-||||||| 84fde5a1e
-              {selectedRequest?.upstreamProxyRouteMode ||
-              selectedRequest?.upstreamProxyPoolId ||
-              selectedRequest?.upstreamProxyEndpointId ||
-              selectedRequest?.upstreamProxyFallbackUsed != null ||
-              selectedRequest?.upstreamProxyFailClosedReason ? (
-                <div className="grid gap-3 sm:grid-cols-3">
-                  {selectedRequest.upstreamProxyRouteMode ? (
-                    <RequestDetailField label={t("dashboard.requestDetails.routeMode")} value={selectedRequest.upstreamProxyRouteMode} mono />
-                  ) : null}
-                  {selectedRequest.upstreamProxyPoolId ? (
-                    <RequestDetailField label={t("dashboard.requestDetails.routePool")} value={selectedRequest.upstreamProxyPoolId} mono />
-                  ) : null}
-                  {selectedRequest.upstreamProxyEndpointId ? (
-                    <RequestDetailField label={t("dashboard.requestDetails.routeEndpoint")} value={selectedRequest.upstreamProxyEndpointId} mono />
-                  ) : null}
-                  {selectedRequest.upstreamProxyFallbackUsed != null ? (
-                    <RequestDetailField
-                      label={t("dashboard.requestDetails.routeFallback")}
-                      value={t(
-                        selectedRequest.upstreamProxyFallbackUsed
-                          ? "dashboard.requestDetails.routeFallbackUsed"
-                          : "dashboard.requestDetails.routeFallbackNotUsed",
-                      )}
-                    />
-                  ) : null}
-                  {selectedRequest.upstreamProxyFailClosedReason ? (
-                    <RequestDetailField
-                      label={t("dashboard.requestDetails.routeFailClosedReason")}
-                      value={selectedRequest.upstreamProxyFailClosedReason}
-                      mono
-                    />
-                  ) : null}
-                </div>
-              ) : null}
-              {isAdmin ? (
-=======
               {selectedRequest?.upstreamProxyRouteMode ||
               selectedRequest?.upstreamProxyPoolId ||
               selectedRequest?.upstreamProxyEndpointId ||
@@ -850,39 +788,13 @@ export function RecentRequestsTable({
                 </div>
               ) : null}
               {canReadConversations ? (
->>>>>>> 72630bbfe
                 <RequestDetailField
-                  label={t("dashboard.requestDetails.clientIp")}
-                  value={selectedRequest?.clientIp ?? "—"}
-                  copyValue={selectedRequest?.clientIp ?? undefined}
-                  copyLabel={t("dashboard.requestDetails.copyClientIp")}
+                  label={t("dashboard.requestDetails.userAgent")}
+                  value={selectedRequest?.useragent ?? "—"}
+                  copyValue={selectedRequest?.useragent ?? undefined}
+                  copyLabel={t("dashboard.requestDetails.copyUserAgent")}
                   compactCopy
                 />
-<<<<<<< 22625a07e
-                <div className="space-y-1">
-                  <div className="flex items-center gap-2">
-                    <div className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground/80">
-                      {t("dashboard.requestDetails.conversationId")}
-||||||| 84fde5a1e
-              ) : null}
-              {isAdmin ? (
-                <div className="grid gap-3 sm:grid-cols-2">
-                  <RequestDetailField
-                    label={t("dashboard.requestDetails.clientIp")}
-                    value={selectedRequest?.clientIp ?? "—"}
-                    copyValue={selectedRequest?.clientIp ?? undefined}
-                    copyLabel={t("dashboard.requestDetails.copyClientIp")}
-                    compactCopy
-                  />
-                  <div className="space-y-1">
-                    <div className="flex items-center gap-2">
-                      <div className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground/80">
-                        {t("dashboard.requestDetails.conversationId")}
-                      </div>
-                      {selectedRequest?.conversationId ? (
-                        <CopyButton value={selectedRequest.conversationId} label={t("dashboard.requestDetails.copyConversationId")} iconOnly />
-                      ) : null}
-=======
               ) : null}
               {canReadConversations ? (
                 <div className="grid gap-3 sm:grid-cols-2">
@@ -901,60 +813,42 @@ export function RecentRequestsTable({
                       {selectedRequest?.conversationId ? (
                         <CopyButton value={selectedRequest.conversationId} label={t("dashboard.requestDetails.copyConversationId")} iconOnly />
                       ) : null}
->>>>>>> 72630bbfe
                     </div>
-                    {selectedRequest?.conversationId ? (
-                      <CopyButton value={selectedRequest.conversationId} label={t("dashboard.requestDetails.copyConversationId")} iconOnly />
-                    ) : null}
-                  </div>
-                  <div className="flex flex-col items-start gap-2">
-                    {selectedRequest?.conversationId ? (
-                      onConversationClick ? (
-                        <button
-                          type="button"
-                          className="max-w-[200px] truncate text-left text-sm leading-relaxed text-primary hover:text-primary/80 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring rounded-sm"
-                          title={selectedRequest.conversationId}
-                          onClick={() => {
-                            setSelectedRequest(null);
-                            onConversationClick(selectedRequest?.conversationId ?? "");
-                          }}
-                          aria-label={t("dashboard.filters.conversationFilterAria", { id: selectedRequest.conversationId })}
-                        >
-                          {selectedRequest.conversationId}
-                        </button>
+                    <div className="flex flex-col items-start gap-2">
+                      {selectedRequest?.conversationId ? (
+                        onConversationClick ? (
+                          <button
+                            type="button"
+                            className="max-w-[200px] truncate text-left text-sm leading-relaxed text-primary hover:text-primary/80 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring rounded-sm"
+                            title={selectedRequest.conversationId}
+                            onClick={() => {
+                              setSelectedRequest(null);
+                              onConversationClick(selectedRequest?.conversationId ?? "");
+                            }}
+                            aria-label={t("dashboard.filters.conversationFilterAria", { id: selectedRequest.conversationId })}
+                          >
+                            {selectedRequest.conversationId}
+                          </button>
+                        ) : (
+                          <p className="max-w-[200px] truncate text-sm leading-relaxed" title={selectedRequest.conversationId ?? undefined}>
+                            {selectedRequest.conversationId}
+                          </p>
+                        )
                       ) : (
-                        <p className="max-w-[200px] truncate text-sm leading-relaxed" title={selectedRequest.conversationId ?? undefined}>
-                          {selectedRequest.conversationId}
-                        </p>
-                      )
-                    ) : (
-                      <p className="min-w-0 flex-1 break-all text-sm leading-relaxed">—</p>
-                    )}
+                        <p className="min-w-0 flex-1 break-all text-sm leading-relaxed">—</p>
+                      )}
+                    </div>
                   </div>
                 </div>
-              </div>
+              ) : null}
             </div>
 
-<<<<<<< 22625a07e
-            <RequestArchivePanel
-              requestId={selectedRequest?.archiveRequestId ?? selectedRequest?.requestId}
-              requestedAt={selectedRequest?.requestedAt}
-            />
-||||||| 84fde5a1e
-            {isAdmin ? (
-              <RequestArchivePanel
-                requestId={selectedRequest?.archiveRequestId ?? selectedRequest?.requestId}
-                requestedAt={selectedRequest?.requestedAt}
-              />
-            ) : null}
-=======
             {canReadConversations ? (
               <RequestArchivePanel
                 requestId={selectedRequest?.archiveRequestId ?? selectedRequest?.requestId}
                 requestedAt={selectedRequest?.requestedAt}
               />
             ) : null}
->>>>>>> 72630bbfe
 
             {selectedRequestCostSummary ? (
               <div className="space-y-2">
