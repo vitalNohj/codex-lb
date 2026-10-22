@@ -613,7 +613,8 @@ def test_chat_stream_options_include_obfuscation_passthrough():
     assert dumped.get("stream_options") == {"include_obfuscation": True}
 
 
-def test_chat_oversized_image_is_dropped():
+def test_chat_oversized_image_is_forwarded_unchanged():
+    # A router does not enforce a provider's image limit; the provider answers.
     oversized_data = "A" * (11 * 1024 * 1024)
     payload = {
         "model": "gpt-5.2",
@@ -630,7 +631,168 @@ def test_chat_oversized_image_is_dropped():
     req = ChatCompletionsRequest.model_validate(payload)
     responses = req.to_responses_request()
     assert responses.input == [
-        {"role": "user", "content": [{"type": "input_text", "text": "hi"}]},
+        {
+            "role": "user",
+            "content": [
+                {"type": "input_image", "image_url": f"data:image/png;base64,{oversized_data}"},
+                {"type": "input_text", "text": "hi"},
+            ],
+        },
+    ]
+
+
+def test_chat_string_image_url_is_forwarded():
+    url = "https://example.com/cat.png"
+    req = ChatCompletionsRequest.model_validate(
+        {
+            "model": "gpt-5.2",
+            "messages": [{"role": "user", "content": [{"type": "image_url", "image_url": url}]}],
+        }
+    )
+    assert req.to_responses_request().input == [
+        {"role": "user", "content": [{"type": "input_image", "image_url": url}]},
+    ]
+
+
+def test_chat_tool_message_with_image_maps_to_content_part_output():
+    image = "data:image/png;base64,AAAA"
+    req = ChatCompletionsRequest.model_validate(
+        {
+            "model": "gpt-5.2",
+            "messages": [
+                {"role": "user", "content": "look"},
+                {
+                    "role": "assistant",
+                    "tool_calls": [
+                        {"id": "call_1", "type": "function", "function": {"name": "shot", "arguments": "{}"}}
+                    ],
+                },
+                {
+                    "role": "tool",
+                    "tool_call_id": "call_1",
+                    "content": [
+                        {"type": "text", "text": "screenshot"},
+                        {"type": "image_url", "image_url": {"url": image, "detail": "high"}},
+                    ],
+                },
+            ],
+        }
+    )
+    output_item = req.to_responses_request().input[-1]
+    assert output_item == {
+        "type": "function_call_output",
+        "call_id": "call_1",
+        "output": [
+            {"type": "input_text", "text": "screenshot"},
+            {"type": "input_image", "image_url": image, "detail": "high"},
+        ],
+    }
+
+
+def test_chat_tool_message_image_only_is_accepted():
+    image = "data:image/png;base64,AAAA"
+    req = ChatCompletionsRequest.model_validate(
+        {
+            "model": "gpt-5.2",
+            "messages": [
+                {
+                    "role": "assistant",
+                    "tool_calls": [
+                        {"id": "call_1", "type": "function", "function": {"name": "shot", "arguments": "{}"}}
+                    ],
+                },
+                {"role": "tool", "tool_call_id": "call_1", "content": [{"type": "image_url", "image_url": image}]},
+            ],
+        }
+    )
+    output_item = req.to_responses_request().input[-1]
+    assert isinstance(output_item, dict)
+    assert output_item["output"] == [{"type": "input_image", "image_url": image}]
+
+
+def test_chat_tool_message_text_parts_keep_string_output():
+    req = ChatCompletionsRequest.model_validate(
+        {
+            "model": "gpt-5.2",
+            "messages": [
+                {
+                    "role": "assistant",
+                    "tool_calls": [
+                        {"id": "call_1", "type": "function", "function": {"name": "read", "arguments": "{}"}}
+                    ],
+                },
+                {
+                    "role": "tool",
+                    "tool_call_id": "call_1",
+                    "content": [{"type": "text", "text": "a"}, {"type": "text", "text": "b"}],
+                },
+            ],
+        }
+    )
+    output_item = req.to_responses_request().input[-1]
+    assert isinstance(output_item, dict)
+    assert output_item["output"] == "ab"
+
+
+def test_anthropic_tool_result_with_image_keeps_image_on_codex():
+    req = ChatCompletionsRequest.model_validate(
+        {
+            "model": "gpt-5.2",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "toolu_1",
+                            "content": [
+                                {"type": "text", "text": "page"},
+                                {
+                                    "type": "image",
+                                    "source": {"type": "base64", "media_type": "image/png", "data": "AAAA"},
+                                },
+                            ],
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+    assert req.to_responses_request().input == [
+        {
+            "type": "function_call_output",
+            "call_id": "toolu_1",
+            "output": [
+                {"type": "input_text", "text": "page"},
+                {"type": "input_image", "image_url": "data:image/png;base64,AAAA"},
+            ],
+        }
+    ]
+
+
+def test_anthropic_image_block_maps_to_input_image_on_codex():
+    req = ChatCompletionsRequest.model_validate(
+        {
+            "model": "gpt-5.2",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "image", "source": {"type": "url", "url": "https://example.com/a.png"}},
+                        {"type": "text", "text": "what"},
+                    ],
+                }
+            ],
+        }
+    )
+    assert req.to_responses_request().input == [
+        {
+            "role": "user",
+            "content": [
+                {"type": "input_image", "image_url": "https://example.com/a.png"},
+                {"type": "input_text", "text": "what"},
+            ],
+        }
     ]
 
 

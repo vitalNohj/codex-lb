@@ -25,6 +25,7 @@ from app.core.config.settings_cache import get_settings_cache
 from app.core.crypto import TokenEncryptor
 from app.core.errors import OpenAIErrorEnvelope, openai_error
 from app.core.openai.chat_requests import ChatCompletionsRequest
+from app.core.openai.message_coercion import chat_tool_content_parts
 from app.core.types import JsonValue
 from app.core.usage.logs import CANCELLED_STATUS, CLIENT_DISCONNECT_ERROR_CODE
 from app.core.usage.pricing import UsageTokens
@@ -855,12 +856,17 @@ def _sidecar_text_from_content_parts(parts: list[JsonValue]) -> str:
     return "".join(text)
 
 
-def _sidecar_tool_result_output(content: JsonValue) -> str:
+def _sidecar_tool_result_output(content: JsonValue) -> JsonValue:
     if content is None:
         return ""
     if isinstance(content, str):
         return content
     if isinstance(content, list):
+        # CLIProxyAPI maps chat tool-message image_url parts onto Anthropic
+        # tool_result image blocks, so a screenshot result keeps its image.
+        image_content = chat_tool_content_parts(content)
+        if image_content is not None:
+            return image_content
         output = _sidecar_text_from_content_parts(content)
         return output if output or not content else json.dumps(content, ensure_ascii=False, separators=(",", ":"))
     if is_json_mapping(content):

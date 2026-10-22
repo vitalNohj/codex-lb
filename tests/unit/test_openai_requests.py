@@ -3555,6 +3555,36 @@ def test_responses_normalizes_tool_role_input_item_uses_content_when_output_is_n
     assert request.input == [{"type": "function_call_output", "call_id": "call_1", "output": '{"ok":true}'}]
 
 
+def test_responses_tool_role_input_item_keeps_image_parts():
+    image = "data:image/png;base64,AAAA"
+    payload = {
+        "model": "gpt-5.1",
+        "instructions": "hi",
+        "input": [
+            {
+                "role": "tool",
+                "call_id": "call_1",
+                "content": [
+                    {"type": "input_text", "text": "shot"},
+                    {"type": "input_image", "image_url": image},
+                ],
+            }
+        ],
+    }
+    request = ResponsesRequest.model_validate(payload)
+
+    assert request.input == [
+        {
+            "type": "function_call_output",
+            "call_id": "call_1",
+            "output": [
+                {"type": "input_text", "text": "shot"},
+                {"type": "input_image", "image_url": image},
+            ],
+        }
+    ]
+
+
 def test_v1_tool_messages_normalize_to_function_call_output():
     payload = {
         "model": "gpt-5.1",

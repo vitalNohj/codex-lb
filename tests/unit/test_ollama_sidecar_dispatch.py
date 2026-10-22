@@ -5,6 +5,7 @@ import pytest
 from app.core.clients.claude_sidecar import SidecarPrefix
 from app.core.clients.ollama_sidecar import OllamaSidecarConfig
 from app.core.openai.chat_requests import ChatCompletionsRequest
+from app.core.openai.exceptions import ClientPayloadError
 from app.modules.proxy.claude_sidecar_dispatch import SidecarUsage
 from app.modules.proxy.ollama_sidecar_dispatch import (
     OLLAMA_SIDECAR_SOURCE,
@@ -283,3 +284,58 @@ async def test_log_ollama_request_records_source_tokens_and_null_cost(monkeypatc
             "reference_cost_usd": None,
         }
     ]
+
+
+def test_build_ollama_chat_payload_sends_data_url_images_inline() -> None:
+    request = ChatCompletionsRequest.model_validate(
+        {
+            "model": "ollama-gpt-oss:120b-cloud",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "what is this"},
+                        {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
+                        {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "BBBB"}},
+                    ],
+                }
+            ],
+        }
+    )
+
+    payload = build_ollama_chat_payload(request, "gpt-oss:120b-cloud")
+
+    assert payload.body["messages"] == [{"role": "user", "content": "what is this", "images": ["AAAA", "BBBB"]}]
+
+
+def test_build_ollama_chat_payload_text_message_has_no_images_field() -> None:
+    request = ChatCompletionsRequest.model_validate(
+        {"model": "ollama-gpt-oss:120b-cloud", "messages": [{"role": "user", "content": "hi"}]}
+    )
+
+    payload = build_ollama_chat_payload(request, "gpt-oss:120b-cloud")
+
+    assert payload.body["messages"] == [{"role": "user", "content": "hi"}]
+
+
+def test_build_ollama_chat_payload_rejects_remote_image_url_naming_the_part() -> None:
+    request = ChatCompletionsRequest.model_validate(
+        {
+            "model": "ollama-gpt-oss:120b-cloud",
+            "messages": [
+                {"role": "user", "content": "hi"},
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "what is this"},
+                        {"type": "image_url", "image_url": {"url": "https://example.com/a.png"}},
+                    ],
+                },
+            ],
+        }
+    )
+
+    with pytest.raises(ClientPayloadError) as excinfo:
+        build_ollama_chat_payload(request, "gpt-oss:120b-cloud")
+
+    assert excinfo.value.param == "messages[1].content[1].image_url"

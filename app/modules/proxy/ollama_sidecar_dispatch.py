@@ -21,6 +21,7 @@ from app.core.config.settings_cache import get_settings_cache
 from app.core.crypto import TokenEncryptor
 from app.core.errors import OpenAIErrorEnvelope, openai_error
 from app.core.openai.chat_requests import ChatCompletionsRequest
+from app.core.openai.exceptions import ClientPayloadError
 from app.core.types import JsonObject, JsonValue
 from app.core.usage.logs import CANCELLED_STATUS, CLIENT_DISCONNECT_ERROR_CODE
 from app.core.utils.cancellation import await_deferring_cancellation, complete_despite_cancellation
@@ -114,7 +115,11 @@ def build_ollama_chat_payload(
         "stream": bool(payload.stream),
     }
     if payload.messages is not None:
-        body["messages"] = [_ollama_message(message) for message in payload.messages if is_json_mapping(message)]
+        body["messages"] = [
+            _ollama_message(message, param=f"messages[{index}]")
+            for index, message in enumerate(payload.messages)
+            if is_json_mapping(message)
+        ]
     tools = _ollama_tools(payload.tools)
     if tools:
         body["tools"] = tools
@@ -156,10 +161,25 @@ async def proxy_chat_to_ollama(
     cursor_compat: bool = False,
     wire_model: str | None = None,
 ) -> Response:
-    sidecar_payload = build_ollama_chat_payload(
-        payload, wire_model or effective_model, client.config.default_reasoning_effort
-    )
     requested_at = time.monotonic()
+    try:
+        sidecar_payload = build_ollama_chat_payload(
+            payload, wire_model or effective_model, client.config.default_reasoning_effort
+        )
+    except ClientPayloadError as exc:
+        await _release_ollama_reservation(reservation, api_key=api_key)
+        await _log_ollama_request(
+            api_key=api_key,
+            model=effective_model,
+            started_at=requested_at,
+            status="error",
+            error_code="invalid_request_error",
+            error_message=str(exc),
+        )
+        error = openai_error("invalid_request_error", str(exc), error_type="invalid_request_error")
+        if exc.param:
+            error["error"]["param"] = exc.param
+        return JSONResponse(status_code=400, content=error, headers=dict(rate_limit_headers))
     if payload.stream:
         _ensure_ollama_stream_usage_requested(sidecar_payload.body)
         settling = SettlingStream(
@@ -469,13 +489,17 @@ async def _ollama_stream_iterator(
             await complete_despite_cancellation(_settle_and_log())
 
 
-def _ollama_message(message: Mapping[str, JsonValue]) -> JsonObject:
+def _ollama_message(message: Mapping[str, JsonValue], *, param: str = "messages") -> JsonObject:
     role = message.get("role")
     role_name = role if role in {"system", "user", "assistant", "tool"} else "user"
+    content = message.get("content")
     normalized: dict[str, JsonValue] = {
         "role": cast(str, role_name),
-        "content": _content_text(message.get("content")),
+        "content": _content_text(content),
     }
+    images = _content_images(content, param=f"{param}.content")
+    if images:
+        normalized["images"] = cast(JsonValue, images)
     if role_name == "tool":
         tool_name = message.get("name")
         if isinstance(tool_name, str) and tool_name:
@@ -506,6 +530,51 @@ def _content_text(content: JsonValue) -> str:
                     parts.append(text)
         return "".join(parts)
     return json.dumps(content, ensure_ascii=False, separators=(",", ":"))
+
+
+def _content_images(content: JsonValue, *, param: str) -> list[str]:
+    """Base64 payloads of the image parts, for the Ollama message ``images``.
+
+    Ollama's chat API takes images only inline as base64. A data URL is sent
+    as its payload unchanged; an image Ollama cannot receive (a remote URL)
+    is a client error naming the part rather than a silently dropped image.
+    """
+
+    if not is_json_list(content):
+        return []
+    images: list[str] = []
+    for index, part in enumerate(content):
+        if not is_json_mapping(part):
+            continue
+        part_type = part.get("type")
+        part_param = f"{param}[{index}]"
+        if part_type == "image":
+            source = part.get("source")
+            if is_json_mapping(source) and source.get("type") == "base64" and isinstance(source.get("data"), str):
+                images.append(cast(str, source["data"]))
+                continue
+            raise ClientPayloadError(_OLLAMA_INLINE_IMAGE_ONLY, param=f"{part_param}.source")
+        if part_type not in ("image_url", "input_image"):
+            continue
+        image_url = part.get("image_url")
+        url = image_url.get("url") if is_json_mapping(image_url) else image_url
+        data = _base64_data_url_payload(url) if isinstance(url, str) else None
+        if data is None:
+            raise ClientPayloadError(_OLLAMA_INLINE_IMAGE_ONLY, param=f"{part_param}.image_url")
+        images.append(data)
+    return images
+
+
+_OLLAMA_INLINE_IMAGE_ONLY = "Ollama accepts images only as base64 data URLs; send the image inline."
+
+
+def _base64_data_url_payload(url: str) -> str | None:
+    if not url.startswith("data:"):
+        return None
+    header, separator, data = url.partition(",")
+    if not separator or not header.endswith(";base64") or not data:
+        return None
+    return data
 
 
 def _ollama_tools(tools: list[JsonValue]) -> JsonValue | None:

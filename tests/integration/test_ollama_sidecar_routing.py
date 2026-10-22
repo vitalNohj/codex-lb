@@ -334,3 +334,76 @@ async def test_ollama_model_list_includes_configured_only(lifespan_free_client, 
     sidecar_entry = next(item for item in data if item["id"] == "gpt-oss:120b-cloud")
     assert sidecar_entry["owned_by"] == "ollama"
     assert sidecar_entry["context_length"] == 200_000
+
+
+@pytest.mark.asyncio
+async def test_ollama_receives_data_url_image_inline(async_client, ollama_enabled, fake_ollama):
+    await async_client.put(
+        "/api/settings",
+        json={
+            "ollamaSidecarEnabled": True,
+            "ollamaSidecarApiKey": "ollama-key",
+            "ollamaSidecarFullModels": ["gpt-oss:120b-cloud"],
+        },
+    )
+
+    response = await async_client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "gpt-oss:120b-cloud",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "what is this"},
+                        {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
+                    ],
+                }
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    assert fake_ollama.chat_payloads[0]["messages"] == [{"role": "user", "content": "what is this", "images": ["AAAA"]}]
+
+
+@pytest.mark.asyncio
+async def test_ollama_remote_image_url_is_a_400_and_releases_the_reservation(
+    async_client,
+    ollama_enabled,
+    fake_ollama,
+):
+    await async_client.put(
+        "/api/settings",
+        json={
+            "ollamaSidecarEnabled": True,
+            "ollamaSidecarApiKey": "ollama-key",
+            "ollamaSidecarFullModels": ["gpt-oss:120b-cloud"],
+        },
+    )
+    await _enable_api_key_auth(async_client)
+    key = await _create_api_key(
+        "ollama-image-key",
+        limits=[LimitRuleInput(limit_type="total_tokens", limit_window="weekly", max_value=1000)],
+    )
+
+    response = await async_client.post(
+        "/v1/chat/completions",
+        headers={"Authorization": f"Bearer {key.key}"},
+        json={
+            "model": "gpt-oss:120b-cloud",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [{"type": "image_url", "image_url": {"url": "https://example.com/a.png"}}],
+                }
+            ],
+        },
+    )
+
+    assert response.status_code == 400
+    error = response.json()["error"]
+    assert error["param"] == "messages[0].content[0].image_url"
+    assert "base64 data URLs" in error["message"]
+    assert fake_ollama.chat_payloads == []
+    assert await _reservation_statuses() == ["released"]

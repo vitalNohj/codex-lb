@@ -195,15 +195,20 @@ def _convert_tool_message(message: OpenAIMessage) -> FunctionCallOutputInputItem
     if not isinstance(resolved_call_id, str) or not resolved_call_id:
         raise ClientPayloadError("tool messages must include 'tool_call_id'.", param="messages")
     content = message.get("content")
+    output: str | list[JsonValue]
     if isinstance(content, str):
         output = content
     elif is_json_list(content):
-        output = _concat_text_parts(content)
-        if not output and content:
-            raise ClientPayloadError(
-                "tool message content array contains no valid text parts.",
-                param="messages",
-            )
+        image_output = tool_output_content_parts(content)
+        if image_output is not None:
+            output = image_output
+        else:
+            output = _concat_text_parts(content)
+            if not output and content:
+                raise ClientPayloadError(
+                    "tool message content array contains no valid text parts.",
+                    param="messages",
+                )
     elif content is None:
         raise ClientPayloadError("tool message content is required.", param="messages")
     else:
@@ -264,12 +269,15 @@ def _convert_user_tool_result_part(part: dict[str, JsonValue]) -> FunctionCallOu
     )
 
 
-def _tool_result_output(content: JsonValue) -> str:
+def _tool_result_output(content: JsonValue) -> str | list[JsonValue]:
     if content is None:
         return ""
     if isinstance(content, str):
         return content
     if is_json_list(content):
+        image_output = tool_output_content_parts(content)
+        if image_output is not None:
+            return image_output
         output = _concat_text_parts(content)
         return output if output or not content else json.dumps(content, ensure_ascii=False, separators=(",", ":"))
     content_dict = _json_dict_or_none(content)
@@ -278,6 +286,113 @@ def _tool_result_output(content: JsonValue) -> str:
         if isinstance(text, str):
             return text
     return json.dumps(content, ensure_ascii=False, separators=(",", ":"))
+
+
+def tool_output_content_parts(content: list[JsonValue]) -> list[JsonValue] | None:
+    """Responses ``function_call_output`` content for a tool result with images.
+
+    ``None`` when no part is an image: those results keep their joined-text
+    string, so text-only requests stay byte-identical. With an image, every
+    part is kept in order: text as ``input_text``, images as ``input_image``
+    with the same URL, and any other part as its JSON text, so the router
+    never drops what the tool returned.
+    """
+
+    if not tool_content_has_image(content):
+        return None
+    parts: list[JsonValue] = []
+    for part in content:
+        image = _image_part_url(part)
+        if image is not None:
+            url, detail = image
+            parts.append({"type": "input_image", "image_url": url, **({"detail": detail} if detail else {})})
+            continue
+        parts.append(cast(JsonValue, TextContentPart(type="input_text", text=_tool_part_text(part))))
+    return parts
+
+
+def chat_tool_content_parts(content: list[JsonValue]) -> list[JsonValue] | None:
+    """Chat ``tool`` message content for a tool result with images.
+
+    The Chat Completions counterpart of :func:`tool_output_content_parts`:
+    text as ``text`` parts and images as ``image_url`` parts with the same
+    URL, in order. ``None`` when no part is an image.
+    """
+
+    if not tool_content_has_image(content):
+        return None
+    parts: list[JsonValue] = []
+    for part in content:
+        image = _image_part_url(part)
+        if image is not None:
+            url, detail = image
+            image_url: dict[str, JsonValue] = {"url": url}
+            if detail:
+                image_url["detail"] = detail
+            parts.append({"type": "image_url", "image_url": image_url})
+            continue
+        parts.append({"type": "text", "text": _tool_part_text(part)})
+    return parts
+
+
+def tool_content_has_image(content: list[JsonValue]) -> bool:
+    return any(_image_part_url(part) is not None for part in content)
+
+
+def _tool_part_text(part: JsonValue) -> str:
+    if isinstance(part, str):
+        return part
+    part_dict = _json_dict_or_none(part)
+    if part_dict is not None and part_dict.get("type", "text") in _TEXT_CONTENT_PART_TYPES:
+        text = part_dict.get("text")
+        if isinstance(text, str):
+            return text
+    return json.dumps(part, ensure_ascii=False, separators=(",", ":"))
+
+
+def _image_part_url(part: JsonValue) -> tuple[str, str | None] | None:
+    """``(url, detail)`` of an ``image_url``, ``input_image`` or Anthropic ``image`` part."""
+
+    part_dict = _json_dict_or_none(part)
+    if part_dict is None:
+        return None
+    part_type = part_dict.get("type")
+    if part_type == "image":
+        url = anthropic_image_source_url(part_dict.get("source"))
+        return (url, None) if url is not None else None
+    if part_type not in ("image_url", "input_image"):
+        return None
+    image_url = part_dict.get("image_url")
+    detail = part_dict.get("detail")
+    if isinstance(image_url, str) and image_url:
+        return image_url, detail if isinstance(detail, str) and detail else None
+    image_url_dict = _json_dict_or_none(image_url)
+    if image_url_dict is None:
+        return None
+    url = image_url_dict.get("url")
+    nested_detail = image_url_dict.get("detail")
+    if not isinstance(url, str) or not url:
+        return None
+    return url, nested_detail if isinstance(nested_detail, str) and nested_detail else None
+
+
+def anthropic_image_source_url(source: JsonValue) -> str | None:
+    """URL for an Anthropic image ``source``: a data URL for base64, else its URL."""
+
+    source_dict = _json_dict_or_none(source)
+    if source_dict is None:
+        return None
+    source_type = source_dict.get("type")
+    if source_type == "base64":
+        media_type = source_dict.get("media_type")
+        data = source_dict.get("data")
+        if isinstance(media_type, str) and isinstance(data, str):
+            return f"data:{media_type};base64,{data}"
+        return None
+    if source_type == "url":
+        url = source_dict.get("url")
+        return url if isinstance(url, str) else None
+    return None
 
 
 def _concat_text_parts(content: list[JsonValue]) -> str:
@@ -389,6 +504,12 @@ def _normalize_content_part(part: dict[str, JsonValue], role: str = "user") -> J
             return {"type": "input_image", "image_url": url, **({"detail": detail} if detail is not None else {})}
         return part
     if part_type == "input_image":
+        return part
+    if part_type == "image":
+        # Anthropic image block (Cursor vision input); Codex reads input_image.
+        anthropic_url = anthropic_image_source_url(part.get("source"))
+        if anthropic_url is not None:
+            return {"type": "input_image", "image_url": anthropic_url}
         return part
     if part_type == "input_audio":
         data_url = _audio_input_to_data_url(part.get("input_audio"))

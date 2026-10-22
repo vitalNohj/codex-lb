@@ -169,7 +169,6 @@ class ChatCompletionsRequest(BaseModel):
 
         tools = _normalize_chat_tools(raw_tools)
         tool_choice = _normalize_tool_choice(raw_tool_choice)
-        messages = _sanitize_user_messages(messages)
         existing_instructions = data.pop("instructions", "") or ""
         data.pop("input", None)
         instructions, input_items = coerce_messages(
@@ -378,10 +377,13 @@ def _validate_user_content(content: JsonValue) -> None:
                 raise ValueError("Text content parts must include a string 'text'.")
             continue
         if part_type == "image_url":
-            image_url = _json_mapping(part_mapping.get("image_url"))
-            if image_url is None:
-                raise ValueError("Image content parts must include image_url.url.")
-            if not isinstance(image_url.get("url"), str):
+            image_url = part_mapping.get("image_url")
+            # A bare URL string is a common client shorthand; the coercion to
+            # Responses and every chat provider accept it as-is.
+            if isinstance(image_url, str):
+                continue
+            image_url_mapping = _json_mapping(image_url)
+            if image_url_mapping is None or not isinstance(image_url_mapping.get("url"), str):
                 raise ValueError("Image content parts must include image_url.url.")
             continue
         if part_type == "input_audio":
@@ -455,54 +457,3 @@ def _validate_assistant_tool_calls(message: Mapping[str, JsonValue]) -> None:
         name = function.get("name")
         if not isinstance(name, str) or not name:
             raise ValueError(f"assistant tool_calls[{index}].function must include a non-empty 'name'.")
-
-
-def _sanitize_user_messages(messages: list[OpenAIMessage]) -> list[OpenAIMessage]:
-    sanitized: list[OpenAIMessage] = []
-    for message in messages:
-        role = message.get("role")
-        if role != "user":
-            sanitized.append(message)
-            continue
-        content = message.get("content")
-        sanitized_content = _drop_oversized_images(content)
-        new_message = dict(message)
-        if sanitized_content is not None:
-            new_message["content"] = sanitized_content
-        sanitized.append(cast(OpenAIMessage, new_message))
-    return sanitized
-
-
-def _drop_oversized_images(content: JsonValue) -> JsonValue | None:
-    if content is None or isinstance(content, str):
-        return content
-    sanitized_parts: list[JsonValue] = []
-    for part in _content_parts(content):
-        part_mapping = _json_mapping(part)
-        if part_mapping is None:
-            sanitized_parts.append(part)
-            continue
-        part_type = _part_type(part_mapping)
-        if part_type == "image_url":
-            image_url = _json_mapping(part_mapping.get("image_url"))
-            url = image_url.get("url") if image_url is not None else None
-            if isinstance(url, str) and _is_oversized_data_url(url):
-                continue
-        sanitized_parts.append(part)
-    if is_json_list(content):
-        return sanitized_parts
-    return sanitized_parts[0] if sanitized_parts else ""
-
-
-def _is_oversized_data_url(url: str) -> bool:
-    if not url.startswith("data:"):
-        return False
-    try:
-        header, data = url.split(",", 1)
-    except ValueError:
-        return False
-    if ";base64" not in header:
-        return False
-    padding = data.count("=")
-    size = (len(data) * 3) // 4 - padding
-    return size > 8 * 1024 * 1024
