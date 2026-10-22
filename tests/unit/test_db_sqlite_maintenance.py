@@ -366,6 +366,50 @@ def test_recover_replace_fails_closed_on_partial_sidecar_cleanup(
     assert not (tmp_path / "store.db-journal").exists()
 
 
+def test_recover_replace_returns_journals_when_the_backup_rename_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed source-to-backup rename leaves the WAL with the original, not with a missing backup."""
+    db_path = tmp_path / "store.db"
+    output_path = tmp_path / "recovered.db"
+    with closing(sqlite3.connect(db_path)) as connection, connection:
+        connection.execute("CREATE TABLE items (name TEXT NOT NULL)")
+        connection.execute("INSERT INTO items (name) VALUES ('base')")
+
+    idle = sqlite3.connect(db_path)
+    idle.execute("PRAGMA journal_mode=WAL")
+    idle.execute("PRAGMA wal_autocheckpoint=0")
+    idle.execute("INSERT INTO items (name) VALUES ('only-in-wal')")
+    idle.commit()
+
+    path_type = type(db_path)
+    real_replace = path_type.replace
+
+    def fail_backup_rename(path: Path, target: str | Path) -> Path:
+        if path == db_path and Path(target).name.startswith(f"{db_path.name}.corrupt-"):
+            raise PermissionError("simulated backup rename failure")
+        return real_replace(path, target)
+
+    monkeypatch.setattr(path_type, "replace", fail_backup_rename)
+
+    try:
+        with pytest.raises(PermissionError, match="simulated backup rename failure"):
+            recover_module.recover_sqlite_db(
+                recover_module.RecoveryOptions(source=db_path, output=output_path, replace=True)
+            )
+
+        assert not list(tmp_path.glob("store.db.corrupt-*"))
+        assert Path(f"{db_path}-wal").exists()
+        with closing(sqlite3.connect(db_path)) as connection:
+            assert connection.execute("SELECT name FROM items ORDER BY rowid").fetchall() == [
+                ("base",),
+                ("only-in-wal",),
+            ]
+    finally:
+        idle.close()
+
+
 def test_recover_replace_keeps_source_wal_commits_when_install_fails(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

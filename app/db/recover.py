@@ -145,7 +145,12 @@ def _move_sqlite_journals(from_db: Path, to_db: Path) -> None:
 
 
 def _replace_recovered_database(source: Path, output: Path, backup: Path) -> None:
-    source.replace(backup)
+    try:
+        source.replace(backup)
+    except OSError:
+        # The original never moved: its journals go back to it.
+        _move_sqlite_journals(backup, source)
+        raise
     try:
         # A writer can recreate source sidecars after the probe closes and just
         # before the source rename. Remove those orphaned entries while the
@@ -212,6 +217,8 @@ def recover_sqlite_db(options: RecoveryOptions) -> RecoveryOutcome:
             # Nothing was moved yet: put the journals back with the original.
             _move_sqlite_journals(backup, options.source)
             raise
+        # From here on, ``_replace_recovered_database`` owns the journals: a
+        # failure at any step returns them to whichever path holds the original.
         _replace_recovered_database(options.source, options.output, backup)
         return RecoveryOutcome(
             source=backup,
