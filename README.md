@@ -4,648 +4,273 @@ Codex/ChatGPT account load balancer & proxy with usage tracking, dashboard, and 
 
 Topics
 python oauth sqlalchemy dashboard load-balancer openai rate-limit api-proxy codex fastapi usage-tracking chatgpt opencode
-
-Resources
 -->
 
-# codex-lb fork
-
-<p align="center">
-  <strong>codex-lb's ChatGPT account-balancing foundation, extended with external integrations and predictable model routing.</strong>
-</p>
+# codex-lb fork (Codex LB++)
 
 <p align="center">
   <a href="https://github.com/Soju06/codex-lb"><img alt="Fork of Soju06/codex-lb" src="https://img.shields.io/badge/fork%20of-Soju06%2Fcodex--lb-2563eb"></a>
-  <img alt="External integrations" src="https://img.shields.io/badge/external%20integrations-CLIProxyAPI%20%7C%20OpenRouter%20%7C%20OrcaRouter%20%7C%20Ollama%20Cloud-059669">
+  <img alt="External integrations" src="https://img.shields.io/badge/integrations-CLIProxyAPI%20%7C%20OpenRouter%20%7C%20OrcaRouter%20%7C%20Ollama%20Cloud%20%7C%20OpenCode%20Go-059669">
   <img alt="Cursor compatible" src="https://img.shields.io/badge/Cursor-compatible-7c3aed">
 </p>
 
-> [Upstream codex-lb](https://github.com/Soju06/codex-lb) is a “Load balancer for ChatGPT accounts. Pool multiple accounts, track usage, manage API keys, view everything in a dashboard.”
->
-> This fork keeps that native Codex path and adds a model-resolution layer in front of it. Aliases can target native or external models; configured exact-model and prefix matches route selected requests to CLIProxyAPI, OpenRouter, OrcaRouter, or Ollama Cloud. Requests without an external match continue through codex-lb's native account pool.
+**English** | [简体中文](./README.zh-CN.md) (upstream's README, not translated for this fork)
 
-Build from this repository when you want the integration and routing additions described below. Official upstream packages, images, and charts track upstream codex-lb rather than this fork.
+## What codex-lb does
 
-## How Requests Flow
+[codex-lb](https://github.com/Soju06/codex-lb) is a load balancer for ChatGPT accounts: pool several accounts, track their usage, hand out API keys, and watch everything in a dashboard. Clients such as Codex CLI, Cursor, OpenCode, OpenClaw, Hermes Agent and any OpenAI SDK call one endpoint, and codex-lb picks an account with quota left.
 
-Clients still call codex-lb. The fork resolves aliases, checks configured integration matches, then either enters an external integration or falls through to the upstream-native Codex path.
+This fork keeps that native Codex path and puts a model-routing layer in front of it. A model name can resolve to a native Codex model or to an external integration (CLIProxyAPI, OpenRouter, OrcaRouter, Ollama Cloud, OpenCode Go, or any OpenAI-compatible endpoint). Requests that match nothing continue to the native account pool exactly as upstream handles them.
+
+The fork has no published packages, images or charts. `ghcr.io/soju06/codex-lb`, `uvx codex-lb` and the upstream Helm chart install upstream codex-lb without any of the features below. Build from this repository instead.
+
+## What this fork changes
+
+### Compared with upstream
+
+Upstream column: [Soju06/codex-lb `main`](https://github.com/Soju06/codex-lb). Fork column: this repository's `main`.
+
+| Area | Upstream codex-lb | This fork |
+| --- | --- | --- |
+| ChatGPT/Codex account pooling, sticky sessions, quota-aware selection | Yes | Yes, unchanged |
+| OpenAI-compatible model sources (`/api/model-sources`) | Yes | Yes, unchanged |
+| External integrations | None | CLIProxyAPI, OpenRouter, OrcaRouter, Ollama Cloud, OpenCode Go, and up to 32 generic OpenAI-compatible endpoints, each configured in **Settings → Integrations** |
+| Routing by model name | Native catalog and model sources | Full-model and prefix rules per integration, optional prefix stripping, explicit `integration::model` targets |
+| User-defined model aliases | No | Aliases to native or external models, plus multi-target alias pools with failover for Chat Completions |
+| CLIProxyAPI accounts | — | Listed, signed in, uploaded, refreshed, edited and deleted from the dashboard; API-key accounts edited through CLIProxyAPI's v8 config API |
+| CLIProxyAPI account routing | — | Picks the credential from measured quota and keeps each conversation on it with a sticky prefix |
+| Claude prompt caching | — | Every Claude turn goes to its pinned credential; no pinned credential means `503`, never a cache-breaking fallback |
+| xAI (Grok) through CLIProxyAPI | — | Responses requests go to CLIProxyAPI's native `/v1/responses`, so encrypted reasoning and prompt caching survive |
+| Cost tracking | Native model prices and per-model rates on model sources | Same, plus external integration prices, paid-equivalent reference cost and savings, and `codex-lb model-prices refresh` |
+| API key limit windows | Daily, weekly, monthly, 5h, 7d | Same, plus a one-time budget that never resets |
+| Shared API keys | No | **Shared key** toggle: the holder sees only its own usage |
+| What a key may see (usage sections) | Upstream limits, Account pool usage; any key may list and redeem its accounts' reset credits | Same sections, plus **Reset credits**, which gates `/v1/reset-credit` and is off by default |
+| `402` instead of `429` for rate limits | No | Per-key toggle for clients that retry every `429` |
+| Quota feed for agents | No | `GET /v1/quota-feed` with Codex and CLIProxyAPI headroom |
+| Dashboard layout | No card or section switches | Show or hide each card and section in **Settings → Dashboard**; split view on wide screens |
+| Free model discovery | No | Finds and pins free OpenRouter and OrcaRouter models that answer |
+| Cursor compatibility | OpenAI-compatible clients | Also Anthropic-style image parts, per-integration reasoning-effort overrides, DeepSeek V4 thinking repair |
+| Dashboard accounts, roles, OIDC sign-in, SCIM | Yes (v1.25) | Yes, unchanged |
+| Install | Published Docker image, `uvx`, `nix run`, Helm chart, docs site | Build from this repository (source, Docker or the Nix flake) |
+
+The fork tracks upstream by merging it, so upstream fixes and features arrive here too. The rows marked "unchanged" behave as documented upstream.
+
+### Integrations
+
+Configure every integration in **Settings → Integrations → External Integrations**. Each one has its own tab with a connection test, the models it discovered, its prefixes and full-model rules, and, except OpenCode Go, an optional reasoning-effort override that replaces the client's value. All of them are off until you turn them on. Their environment defaults (`CODEX_LB_CLAUDE_SIDECAR_*`, `CODEX_LB_OPENROUTER_SIDECAR_*`, `CODEX_LB_ORCAROUTER_SIDECAR_*`, `CODEX_LB_OLLAMA_SIDECAR_*`, `CODEX_LB_OPENCODE_GO_SIDECAR_*`) are listed in the [settings reference](docs/reference/settings.md); keys entered in the dashboard are stored encrypted.
+
+| Integration | Reaches | Who routes after the match |
+| --- | --- | --- |
+| **Native Codex** | ChatGPT/Codex accounts | codex-lb's own account pool, as upstream |
+| **CLIProxyAPI** | Claude, Gemini, Codex, xAI Grok, Qwen and other providers CLIProxyAPI supports | codex-lb picks the CLIProxyAPI credential; CLIProxyAPI handles OAuth, token refresh, translation and the provider call |
+| **OpenRouter** | OpenRouter's catalog | OpenRouter |
+| **OrcaRouter** | OrcaRouter models, including `orcarouter/auto` (Chat Completions only) | OrcaRouter |
+| **Ollama Cloud** | Ollama-hosted cloud models | Ollama |
+| **OpenCode Go** | OpenCode Go models, with its five-hour and weekly usage on the Accounts page | OpenCode Go |
+| **OpenAI-compatible endpoints** | Any endpoint that speaks the OpenAI API, added with **Add OpenAI-compatible endpoint** | That endpoint |
+
+### CLIProxyAPI
+
+CLIProxyAPI runs as a sidecar next to codex-lb (default `http://127.0.0.1:8317`). With its Management API key configured in the CLIProxyAPI tab, the dashboard manages CLIProxyAPI's accounts directly:
+
+- **Accounts.** Sign in with OAuth, upload or delete auth files, refresh a credential, and edit each account's prefix, weight, priority and paused state. Claude, Gemini, Codex and xAI API keys and OpenAI-compatible groups are read and written through CLIProxyAPI's v8 config API, so they need CLIProxyAPI v8. Each edit changes only the field you touched.
+- **Excluded models.** Stop one account from serving models it cannot access, by family switch or wildcard such as `claude-sonnet-*`. On CLIProxyAPI 7.2.135 this needs codex-lb on the same host, with auth files under `~/.cli-proxy-api`; if the list cannot be read safely the editor locks instead of overwriting it. Contract tests: [`tests/contract/cliproxy_exclusions`](tests/contract/cliproxy_exclusions/README.md).
+- **Quota.** Claude OAuth usage and xAI Grok credits are polled, shown on the dashboard, and used for routing. An exhausted credential is held as rate limited until its reset.
+- **Capacity routing.** With **Settings → Advanced settings → Routing → CLIProxyAPI capacity routing** on (the default), codex-lb chooses the credential from measured usage, priority and weight, and sends the request with that credential's prefix. The conversation stays pinned to it. A transient `401`, `403` or `429` keeps the pin and adds a fallback. Turn it off to send the plain model id and let CLIProxyAPI choose.
+- **Session affinity and prompt cache keys.** An OpenAI-compatible group is one CLIProxyAPI provider, so codex-lb pins the group and CLIProxyAPI picks the key. Turn on **Session affinity** to keep a conversation on one key, and **Send prompt cache key** on the group for upstreams such as OpenAI and OpenRouter that route by `prompt_cache_key`.
+- **xAI Responses.** xAI models on `/v1/responses` go to CLIProxyAPI's native `/v1/responses` instead of the Responses→Chat bridge, which drops encrypted reasoning and makes every later turn a full cache write. `CODEX_LB_CLIPROXY_XAI_NATIVE_RESPONSES_ENABLED=false` returns to the bridge.
+
+#### Claude prompt caching
+
+Anthropic keeps a prompt cache per account, so a Claude conversation keeps its cache only while every turn goes to the same credential with an unchanged prefix. codex-lb therefore always sends a Claude request with its credential prefix. When no prefixed credential can serve it (capacity routing is off, no credential serves the model, or selection fails), codex-lb answers `503 cliproxy_claude_route_unavailable` and sends nothing, rather than letting CLIProxyAPI pick an account. Other CLIProxyAPI model families fall back to the plain model name.
+
+CLIProxyAPI must reach `api.anthropic.com` directly. For Claude Code OAuth credentials it puts a per-request hash in the first system block, and only `api.anthropic.com` strips that block before the cache lookup ([Claude Code gateway protocol](https://code.claude.com/docs/en/llm-gateway-protocol)). A gateway that rewrites request bodies between CLIProxyAPI and Anthropic turns every turn into a full cache write; a forward proxy set as `proxy-url` (HTTP CONNECT or SOCKS5) is fine.
+
+Cache writes are priced at the 1-hour cache-write rate ([Model pricing](docs/model-pricing.md#notes)). `codex_lb_cliproxy_claude_sticky_cache_total{result="hit"|"miss"}` counts pinned Claude turns of at least 4,096 prompt tokens by whether they read the cache; a miss also logs `cliproxy_claude_sticky_cache_miss`, and the Helm chart's `CodexLBClaudeStickyCacheMiss` alert fires when more than half of at least 10 such turns in 30 minutes miss, for 15 minutes.
+
+### API keys and sharing
+
+Everything upstream's API keys do still applies: expiry, model allowlists, token and cost limits, assigned accounts, and reasoning-effort policies. The fork adds:
+
+- **Shared key.** For a key you give to a friend or client. The holder sees only its own usage, limits and expiry in `/v1/usage` and `/api/codex/usage`. `/v1/reset-credit`, `/v1/quota-feed`, `/api/oauth/usage` and `/v1/warmup` answer `403 shared_api_key_not_allowed`, `/api/fleet/*` answers `403 permission_denied`, and responses carry no `x-codex-*` quota headers. Shared keys show a **Shared** badge.
+- **One-time budgets.** The **One-time (never resets)** window (`lifetime` in the API) is spent once. **Reset usage** does not refill it; raise its maximum to top it up. When it runs out, requests get `402 insufficient_quota`. A shared key with a cost limit refuses models without a known price (`403 model_not_priced`), since their spend could not be measured.
+- **Reset credits off by default.** The **Reset credits** usage section lets a key list and redeem the ChatGPT reset credits of its accounts at `/v1/reset-credit`, and the listing includes account emails. New keys do not get it; enable it only on keys you hold yourself.
+- **Send 402 instead of 429.** For clients such as the Vercel AI SDK that retry every `429` before falling back, this per-key toggle returns rate limits as `402` with the same body and headers.
+- **Quota privacy.** **Settings → API keys & telemetry → Quota privacy** hides pool quota from every key, including the `x-codex-*` headers. It does not change Reset credits.
+
+The full matrix of what each key can reach is in [API keys](docs/api-keys.md). The agent-facing headroom feed is in [Quota feed](docs/quota-feed.md).
+
+### Cost, reference cost and savings
+
+Each request records `cost_usd` (what it actually cost), `reference_cost_usd` (the paid-equivalent price when one is known) and `savings_usd` (the difference, never below zero). A free OpenRouter or OrcaRouter model shows `$0.00` spent and still reports what the same tokens would have cost. Unknown prices stay empty rather than pretending to be free. Prices come from the provider's billed cost where it reports one and from catalogs otherwise; `codex-lb model-prices refresh` re-checks stored prices once. Details: [Model pricing](docs/model-pricing.md).
+
+### Dashboard
+
+- **Settings → Dashboard** shows or hides each card (Requests, Tokens, Estimated cost, Active conversations, Error rate) and section (Usage, Accounts, Request logs). The choice is stored on the server and applies in every browser. Active conversations is hidden until you turn it on.
+- **Split view** puts the dashboard's panels side by side on wide screens.
+- **Reports** has an All-time range backed by daily usage rollups that outlive request-log retention.
+- **Free model discovery** (Settings → Integrations) compares OpenRouter and OrcaRouter free models against the pinned lists, probes them, and pins every model that answers.
+- Request logs show native and external requests together, with the routed model for aliased requests, requested and effective reasoning effort, cost and savings.
+
+### Cursor and Codex compatibility
+
+- Cursor's Anthropic-style image parts (`{"type": "image", "source": {...}}`, base64 or URL) are converted to OpenAI `image_url` parts, so screenshots reach Claude without breaking tool calls.
+- Raw Codex control endpoints such as `POST /backend-api/codex/memories/trace_summarize` pass through without model rewriting, reasoning injection or API-key model enforcement.
+- External models advertise context-window metadata so clients compact long conversations at the right time.
+- DeepSeek V4 thinking mode is repaired server-side on the Chat Completions paths that need it.
+
+## How requests flow
 
 ```mermaid
 flowchart TB
-    Clients["Codex CLI · Cursor · OpenCode<br/>OpenClaw · OpenAI SDKs"]
+    Clients["Codex CLI · Cursor · OpenCode · OpenClaw<br/>Hermes Agent · OpenAI SDKs"]
+    Gateway["codex-lb gateway<br/>/v1 · /backend-api/codex"]
+    Keys["API key checks<br/>model allowlist · limits · budgets"]
+    Alias["Model aliases and alias pools"]
+    Route{"Integration routing<br/>1. full model · 2. integration::model · 3. longest prefix"}
+    Native["Native Codex account pool<br/>(upstream behavior)"]
+    CLI["CLIProxyAPI<br/>capacity routing + sticky prefix"]
+    Ext["OpenRouter · OrcaRouter · Ollama Cloud<br/>OpenCode Go · OpenAI-compatible endpoints"]
+    Up1["Claude · Gemini · Codex · xAI · Qwen …"]
+    Up2["Provider catalogs"]
 
-    subgraph Foundation["codex-lb · upstream foundation"]
-        direction TB
-        Gateway["OpenAI-compatible gateway"]
-        Core["Pool and load balance multiple ChatGPT accounts<br/>track usage · manage API keys · dashboard<br/>automatic model sync"]
-        Gateway --> Core
-    end
-
-    subgraph Additions["Added by this fork"]
-        direction TB
-        Resolve["Cross-provider model routing<br/>aliases may target native or external models<br/>exact-model and prefix rules select external integrations"]
-        Controls["External integration controls<br/>unified request, cost, and savings visibility<br/>Cursor compatibility · reasoning-effort overrides"]
-        Resolve --- Controls
-    end
-
-    Clients --> Gateway
-    Core --> Resolve
-
-    subgraph Native["codex-lb · upstream foundation"]
-        direction TB
-        NativePath["Native Codex path"]
-        NativeRouting["codex-lb account selection<br/>quota awareness · sticky sessions · failover"]
-        NativeModels["ChatGPT / Codex account pool<br/>OpenAI Codex API"]
-        NativePath --> NativeRouting --> NativeModels
-    end
-
-    CLI["CLIProxyAPI integration"]
-    CLIRouting["CLIProxyAPI-owned provider management<br/>translation · OAuth · account rotation · proxying<br/>token refresh · routing · failover"]
-    CLIModels["Claude · Gemini · Codex · Grok · Qwen<br/>and other CLIProxyAPI-supported providers"]
-    CLI --> CLIRouting --> CLIModels
-
-    OpenRouter["OpenRouter integration"]
-    ORRouting["OpenRouter-owned catalog and provider routing<br/>automatic fallback · pass-through pricing<br/>single billing and usage surface"]
-    ORModels["Hundreds of models across 70+ providers<br/>major labs · specialist inference providers<br/>open-model hosts"]
-    OpenRouter --> ORRouting --> ORModels
-
-    OrcaRouter["OrcaRouter integration"]
-    OrcaRouting["OrcaRouter-owned catalog and channel selection<br/>Chat Completions only · billed per-request cost<br/>seeded orcarouter/ prefix forwarded unchanged"]
-    OrcaModels["OrcaRouter-hosted models<br/>including the orcarouter/auto channel"]
-    OrcaRouter --> OrcaRouting --> OrcaModels
-
-    Ollama["Ollama Cloud integration"]
-    OllamaRouting["Ollama API and hosted model execution"]
-    OllamaModels["Ollama-hosted cloud models"]
-    Ollama --> OllamaRouting --> OllamaModels
-
-    Resolve -->|"No external match<br/>or alias targets native Codex"| NativePath
-    Resolve -->|"CLIProxyAPI match"| CLI
-    Resolve -->|"OpenRouter match"| OpenRouter
-    Resolve -->|"OrcaRouter match"| OrcaRouter
-    Resolve -->|"Ollama Cloud match"| Ollama
+    Clients --> Gateway --> Keys --> Alias --> Route
+    Route -->|"no match"| Native
+    Route -->|"CLIProxyAPI match"| CLI --> Up1
+    Route -->|"other integration match"| Ext --> Up2
 ```
 
-The fork selects the path; it does not absorb the integrated projects' internal responsibilities:
+1. **Aliases resolve first.** An alias such as `custom_r1` becomes its first target, or, for an alias pool on Chat Completions, each target in order until one answers ([Alias pools](docs/alias-pools.md)).
+2. **A full-model match wins.** A model listed as a full model on one integration routes there, unchanged. If several integrations list it, the starred one wins; with no star it stays unrouted, and you pick one with `integration::model` (for example `openrouter::z-ai/glm-5.3`).
+3. **Otherwise the longest prefix wins.** Each prefix decides whether it is stripped before the upstream call, so `or-deepseek/deepseek-chat` can reach OpenRouter as `deepseek/deepseek-chat`.
+4. **No match goes native.** The request continues through upstream's model sources and Codex account pool.
+5. **The client's model name stays visible.** API-key allowlists, limit reservations, request logs and quota accounting use the name the client asked for.
 
-| Resolved path | Who owns routing after the match | What it reaches |
-| --- | --- | --- |
-| **Native Codex** | **Upstream codex-lb:** ChatGPT account pooling, quota-aware selection, sticky sessions, and failover | ChatGPT/Codex accounts and the OpenAI Codex API |
-| **CLIProxyAPI Integration** | **CLIProxyAPI:** provider and account management, translation, OAuth, account rotation, proxying, token refresh, routing, and failover | Claude, Gemini, Codex, Grok, Qwen, and other CLIProxyAPI-supported providers |
-| **OpenRouter Integration** | **OpenRouter:** large model catalog, provider selection, automatic fallback, pass-through inference pricing, and one billing/usage surface | Hundreds of models across 70+ providers, including major labs, specialist inference providers, and open-model hosts |
-| **OrcaRouter Integration** | **OrcaRouter:** catalog and channel selection behind an OpenAI-compatible Chat Completions API, with the billed per-request cost reported back to codex-lb | OrcaRouter-hosted models, including the `orcarouter/auto` channel |
-| **Ollama Cloud Integration** | **Ollama:** hosted model execution through the Ollama API | Ollama-hosted cloud models |
-
-## What This Fork Adds
-
-| Upgrade | What you get |
-| --- | --- |
-| **Unified provider routing** | Exact model matches and configurable prefixes select CLIProxyAPI, OpenRouter, OrcaRouter, or Ollama Cloud without changing client base URLs; unmatched models retain the native Codex path. |
-| **Prefix stripping controls** | Use ergonomic client-facing names like `or-deepseek/deepseek-chat` or `ollama-gpt-oss:120b-cloud`, then strip the prefix only on the upstream wire request. |
-| **Cursor image (vision) input** | Accepts the Anthropic-native `image` content parts Cursor sends and converts them to the shape CLIProxyAPI expects, so screenshots and pasted images work against Claude models without breaking tool calls. |
-| **User-configurable model aliases** | Map friendly client-facing names to concrete native or external models (for example `custom_r1` → `cc/claude-opus-4-8`) from the dashboard. |
-| **Per-provider reasoning effort** | Configure a true reasoning-effort override for CLIProxyAPI, OpenRouter, OrcaRouter, or Ollama Cloud. The configured value replaces client-supplied effort; request logs retain requested and effective values. |
-| **External Integrations dashboard** | Configure CLIProxyAPI, OpenRouter, OrcaRouter, and Ollama Cloud from one tabbed dashboard card with provider-specific labels, connection tests, discovered models, prefixes, and full-model rules. |
-| **Cost and savings telemetry** | Track actual spend, paid-equivalent reference cost, and derived savings for free or discounted external models. |
-| **Cursor and Codex compatibility** | Preserve raw Codex control endpoints, compaction behavior, context-window metadata, model aliases, and sidecar tool/reasoning quirks that real clients depend on. |
-| **Integrated operator UI** | Synthetic provider accounts, normal request-log rows, provider-specific labels, and account-level controls for integrations that expose them. |
-
-## The Routing Engine
-
-The fork ships a shared resolver for all external integrations. The rules are simple and predictable:
-
-1. **Full model exact match wins globally.** If `orcarouter/auto` is configured as an OrcaRouter full model, it routes to OrcaRouter even if another provider owns a broader prefix.
-2. **Longest prefix wins next.** If one provider owns `deepseek/` and another owns `deepseek/deepseek-`, the more specific prefix gets the request.
-3. **Each prefix chooses whether to strip.** `or-deepseek/deepseek-chat` can be logged and rate-limited as `or-deepseek/deepseek-chat`, while OpenRouter receives `deepseek/deepseek-chat`.
-4. **Full model matches are never stripped.** Exact model IDs are forwarded as the operator configured them.
-5. **The client-facing model stays visible.** API-key restrictions, request-limit reservations, request logs, and quota accounting use the effective model the client asked for.
-
-That means one model list can safely mix official Codex models, external provider models, friendly aliases, and provider-prefixed names without moving native account selection into the fork's integration layer.
-
-## Routing Examples
-
-| Client model | Configuration | Upstream lane | Wire model |
+| Client model | Rule | Goes to | Wire model |
 | --- | --- | --- | --- |
-| `gpt-5.4` | no external match | Native Codex account pool | `gpt-5.4` |
-| `claude-sonnet-4-5` | CLIProxyAPI prefix `claude`, strip off | CLIProxyAPI | `claude-sonnet-4-5` |
-| `or-deepseek/deepseek-chat` | OpenRouter prefix `or-`, strip on | OpenRouter | `deepseek/deepseek-chat` |
-| `orcarouter/auto` | OrcaRouter prefix `orcarouter/`, strip off | OrcaRouter | `orcarouter/auto` |
-| `ollama-gpt-oss:120b-cloud` | Ollama prefix `ollama-`, strip on | Ollama Cloud | `gpt-oss:120b-cloud` |
+| `gpt-5.6-sol` | no match | Native Codex pool | `gpt-5.6-sol` |
+| `claude-sonnet-4-5` | CLIProxyAPI prefix `claude`, not stripped | CLIProxyAPI, pinned credential | `claude-sonnet-4-5` |
+| `or-deepseek/deepseek-chat` | OpenRouter prefix `or-`, stripped | OpenRouter | `deepseek/deepseek-chat` |
+| `orcarouter/auto` | OrcaRouter prefix `orcarouter/`, not stripped | OrcaRouter | `orcarouter/auto` |
+| `ollama-gpt-oss:120b-cloud` | Ollama prefix `ollama-`, stripped | Ollama Cloud | `gpt-oss:120b-cloud` |
 
-## What You Can Do With It
+## Setup
 
-- Put Codex CLI, Cursor, OpenCode, OpenClaw, and OpenAI SDK clients behind one local or hosted endpoint.
-- Keep official Codex account pooling for GPT/Codex models while sending selected models to external providers.
-- Apply each API key's model allowlist, expiration, and token/cost limits across native and external request paths.
-- Test, enable, disable, and tune external integrations from the dashboard instead of editing client configs everywhere.
-- Compare free and discounted external model usage against paid-equivalent reference cost.
-- See native and external requests in one log stream with provider, model, transport, usage, errors, and savings.
+### Run from source
 
-## External Integrations
-
-Configure integrations in **Settings -> External Integrations**. Each provider - CLIProxyAPI, OpenRouter, OrcaRouter, and Ollama Cloud - gets its own tab, but the routing rules are shared. Every integration is disabled until you enable it; the `CODEX_LB_*_SIDECAR_*` defaults (enable flag, base URL, prefixes, timeouts) are listed in the [settings reference](docs/reference/settings.md).
-
-The dashboard stores API keys encrypted at rest, runs connection tests, shows discovered models, and prevents duplicate full-model or prefix ownership across providers.
-
-For a CLIProxyAPI Claude account that cannot access a model, open its **Excluded models** editor in the CLIProxyAPI routing section, Accounts detail, or dashboard card. Turn on a family switch or add a custom wire model ID or wildcard pattern such as `claude-sonnet-*`, without the `cc/` alias prefix. Changes save immediately for that account. Remove a chip or turn off a family switch to restore eligibility. Pause still disables the whole account.
-
-Exclusion editing requires a configured Management API key and readable CLIProxyAPI auth data. On CLIProxyAPI 7.2.135, codex-lb must be colocated with the auth files, whose paths must resolve beneath `~/.cli-proxy-api` for the user running codex-lb. If the list cannot be read safely, the editor locks and shows a read error rather than risking overwriting existing exclusions. Usage-only rows without an auth file are not editable.
-
-CLIProxyAPI, not codex-lb, applies the list when it selects an account: entries are matched against the wire model ID, exactly or by an explicit wildcard, so `claude-opus-4-6` alone does not cover `claude-opus-4-7` while `claude-opus-4-*` covers both. The opt-in contracts in [`tests/contract/cliproxy_exclusions`](tests/contract/cliproxy_exclusions/README.md) verify eight native cases covering exact and wildcard matching, retry and exhaustion, alias handling, and saved-file add/clear delivery through the real watcher and update consumer against a pinned CLIProxyAPI revision. A separate real-handler HTTP contract passed the Python route and sidecar-client save, read-back and clear path with synthetic accounts, real FileTokenStore persistence, an independent account, and response token privacy. Its adapted public launcher has not been executed. The legacy `tests/integration/test_claude_sidecar_excluded_models_contract.py` full-main fixture remains preserved and unexecuted. This evidence does not cover the full CLIProxyAPI main executable, application lifespan, live providers, production behavior, or IPv6 endpoints.
-
-CLIProxyAPI API-key accounts (Claude, Gemini, Codex, and xAI keys, plus OpenAI-compatible groups) are read and written through CLIProxyAPI's v8 config API, so it requires CLIProxyAPI v8. Each edit changes only the field you touched. Group names, shared fields, and other keys are kept. A write made while another writer changed the file is redone on the fresh file. codex-lb pins each credential with its own sticky prefix, and a prefix for one key of a multi-key group is stored on that key. An OpenAI-compatible group is one CLIProxyAPI provider, so it is pinned as a group. Which of its keys serves a conversation is CLIProxyAPI's choice: turn on **Session affinity** to keep a conversation on one key. Turn on **Send prompt cache key** on the group to have CLIProxyAPI send a stable `prompt_cache_key` upstream, which OpenAI and OpenRouter use to route requests to the same prompt cache. Leave it off for an upstream that rejects unknown fields.
-
-### Claude prompt caching through CLIProxyAPI
-
-Anthropic keeps a prompt cache per account, so a Claude conversation keeps its cache only while every turn goes to the same credential with an unchanged prefix. codex-lb therefore sends every Claude request with its credential prefix. When no prefixed credential can serve the request, because capacity routing is off, no prefixed credential serves the model, or the selection fails, codex-lb answers `503` with error code `cliproxy_claude_route_unavailable` and sends nothing. It does not forward the plain model name and let CLIProxyAPI pick an account. Other CLIProxyAPI families keep the plain name in that case.
-
-CLIProxyAPI must reach `api.anthropic.com` directly. For Claude Code OAuth credentials it puts a per-request hash in the first system block, and only `api.anthropic.com` strips that block before it looks up the prompt cache ([Claude Code gateway protocol](https://code.claude.com/docs/en/llm-gateway-protocol)). A gateway or caching proxy that rewrites the request body between CLIProxyAPI and Anthropic, or a Claude OAuth credential pointed at another base URL, turns every turn into a full cache write. A forward proxy set as `proxy-url` (HTTP CONNECT or SOCKS5) is fine: the encrypted request passes through it unchanged.
-
-Cache writes are recorded per request and priced at the 1-hour cache-write rate; see [Model Pricing](docs/model-pricing.md#notes). To catch a lost cache, `codex_lb_cliproxy_claude_sticky_cache_total{result="hit"|"miss"}` counts Claude turns that were served on their conversation's existing pin with a prompt of at least 4,096 tokens, by whether they read anything from the cache. A miss also logs `cliproxy_claude_sticky_cache_miss`, at most once every ten minutes per credential. The Helm chart's `CodexLBClaudeStickyCacheMiss` alert fires when more than half of at least 10 such turns in 30 minutes miss, for 15 minutes. A conversation idle past the cache TTL misses once, which does not reach that rate.
-
-## Cost, Reference Cost, And Savings
-
-This fork separates actual spend from reference value:
-
-- `cost_usd` is what the request actually cost.
-- `reference_cost_usd` is the paid-equivalent price when codex-lb can resolve one.
-- `savings_usd` is `reference_cost_usd - cost_usd`, floored at zero.
-
-Free models accessed through OpenRouter or OrcaRouter, including curated opaque-free IDs, can show `$0.00` actual spend while still reporting the paid-equivalent reference value. Unknown pricing stays null instead of pretending the request was free.
-
-See [Model Pricing](docs/model-pricing.md) for authoritative billed costs, catalog lookup, and price retention. Native model rates do not replace external integration prices.
-
-## Cursor And Codex Compatibility
-
-This fork includes practical compatibility work for Codex CLI, Cursor, and OpenAI-style clients:
-
-- **Image (vision) input from Cursor works.** Cursor sends vision content as Anthropic-native parts (`{"type": "image", "source": {"type": "base64", "media_type": ..., "data": ...}}`). The fork accepts these in request validation and converts them to the OpenAI `image_url` data-URL shape (`data:<media_type>;base64,<data>`) before forwarding to the Claude sidecar, so screenshots and pasted images reach Claude without disturbing the tool-call path. Both `base64` and `url` sources are supported for any image media type.
-- **Model aliasing.** Map friendly client-facing model names to concrete native or external models (for example `custom_r1` → `cc/claude-opus-4-8`) so Cursor can target a stable name regardless of the underlying provider model.
-- **Reasoning-effort overrides per provider.** Each integration can force a configured effort over client-supplied values; logs record both the requested and effective effort.
-- Raw Codex control endpoints, including `POST /backend-api/codex/memories/trace_summarize`, pass through without model rewriting, reasoning injection, API-key model enforcement, or service-tier injection.
-- Compact response handling accepts the official Codex compact shape `{"output": [...]}`.
-- External model entries advertise context-window metadata so local-provider clients can make better compaction decisions.
-- Context-limit and terminal-compaction paths are tuned so clients can compact long conversations instead of misclassifying the event as an API-key or rate-limit failure.
-- DeepSeek V4 thinking-mode repair is handled server-side for the external chat-completions dispatch paths that need it.
-
-## Quick Start From This Fork
+Needs Python with [uv](https://docs.astral.sh/uv/) and [Bun](https://bun.sh/) for the dashboard.
 
 ```bash
 git clone https://github.com/vitalNohj/codex-lb.git
 cd codex-lb
-
-# Docker from this source checkout
-docker build -t codex-lb-fork:local .
-docker volume create codex-lb-data
-docker network inspect codex-lb-net >/dev/null 2>&1 || docker network create codex-lb-net
-docker run -d --name codex-lb \
-  --network codex-lb-net \
-  -p 2455:2455 -p 1455:1455 \
-  -v codex-lb-data:/var/lib/codex-lb \
-  codex-lb-fork:local
-
-# or run from source
 uv sync
-cd frontend && bun install && bun run build && cd ..
+(cd frontend && bun install && bun run build)   # builds the dashboard into app/static
 uv run codex-lb --host 127.0.0.1 --port 2455
 ```
 
-Open [localhost:2455](http://localhost:2455) → Add account → Done.
+Open [localhost:2455](http://localhost:2455) → Add account → Done. Data lives in `~/.codex-lb/` (database, encryption key, archives); back it up.
 
-If you install from upstream package or image names before this fork publishes its own artifacts, expect upstream behavior rather than the fork-only features listed above.
-
-## Remote Setup
-
-When accessing the dashboard remotely for the first time, a bootstrap token is required to set the initial password.
-
-**Auto-generated (default):** On first startup (no password configured), the server generates a one-time token and prints it to logs:
+### Docker from this checkout
 
 ```bash
-docker logs codex-lb
-# ============================================
-#   Dashboard bootstrap token (first-run):
-#   <token>
-# ============================================
-```
-
-Open the dashboard → enter the token + new password → done. The token is shared across replicas and remains valid until a password is set. In multi-replica setups, replicas must share the same encryption key (the Helm chart default) for restart recovery to work.
-
-**Manual token:** To use a fixed token instead, set the env var before starting:
-
-```bash
-docker network inspect codex-lb-net >/dev/null 2>&1 || docker network create codex-lb-net
+docker build -t codex-lb-fork:local .
+docker volume create codex-lb-data
 docker run -d --name codex-lb \
-  --network codex-lb-net \
-  -e CODEX_LB_DASHBOARD_BOOTSTRAP_TOKEN=your-secret-token \
   -p 2455:2455 -p 1455:1455 \
   -v codex-lb-data:/var/lib/codex-lb \
   codex-lb-fork:local
 ```
 
-**Local access** (localhost) bypasses bootstrap entirely — no token needed.
+In Docker the data directory is `/var/lib/codex-lb/`. A CLIProxyAPI sidecar must be reachable from inside the container, and on CLIProxyAPI 7.2.135 the excluded-models editor also needs its auth files mounted. [Docker deployment](docs/deployment/docker.md) covers Compose and network switching; [Database](docs/database.md) covers PostgreSQL.
 
-## Client Setup
+### Nix from this checkout
 
-Point any OpenAI-compatible client at codex-lb. If [API key auth](#api-key-authentication) is enabled, pass a key from the dashboard as a Bearer token.
+`nix run .` builds and runs the fork from the repository's flake, and `nix develop` opens a dev shell. `nix run github:Soju06/codex-lb` runs upstream, not this fork.
 
-Model availability is discovered from the upstream Codex model catalog and can vary by account plan, workspace, rollout, and upstream deprecation state. Prefer the live `GET /v1/models` or `GET /backend-api/codex/models` response over a copied static table when configuring clients or API-key model allowlists.
+### A single host with systemd user services
 
-| Logo | Client | Endpoint | Config |
-|---|--------|----------|--------|
-| <img src="https://avatars.githubusercontent.com/u/14957082?s=200" width="32" alt="OpenAI"> | **Codex CLI** | `http://127.0.0.1:2455/backend-api/codex` | `~/.codex/config.toml` |
-| <img src="https://avatars.githubusercontent.com/u/208539476?s=200" width="32" alt="OpenCode"> | **OpenCode** | `http://127.0.0.1:2455/v1` | `~/.config/opencode/opencode.json` |
-| <img src="https://avatars.githubusercontent.com/u/252820863?s=200" width="32" alt="OpenClaw"> | **OpenClaw** | `http://127.0.0.1:2455/v1` | `~/.openclaw/openclaw.json` |
-| <img src="https://cdn.jsdelivr.net/gh/devicons/devicon/icons/python/python-original.svg" width="32" alt="Python"> | **OpenAI Python SDK** | `http://127.0.0.1:2455/v1` | Code |
+The deployment this fork is built for runs everything as one user on one Linux host:
 
-<details>
-<summary><img src="https://avatars.githubusercontent.com/u/14957082?s=200" width="20" align="center" alt="OpenAI">&ensp;<b>Codex CLI / IDE Extension</b></summary>
-<br>
+- **codex-lb** as a systemd user service, from a git checkout of this repository, listening on `127.0.0.1:2455` behind a reverse proxy that terminates TLS and forwards WebSocket upgrades.
+- **CLIProxyAPI** as a second user service on `127.0.0.1:8317`, with its auth files under `~/.cli-proxy-api` of the same user, so codex-lb can read them.
+- Configuration in `.env.local` at the checkout root (see [`.env.example`](.env.example)) or in the dashboard. Integrations are usually configured in the dashboard; the env file holds what must exist before the first start.
 
-`~/.codex/config.toml`:
+An example unit, `~/.config/systemd/user/codex-lb.service`:
+
+```ini
+[Unit]
+Description=codex-lb
+After=network-online.target
+
+[Service]
+WorkingDirectory=%h/codex-lb
+ExecStart=%h/.local/bin/uv run --frozen codex-lb --host 127.0.0.1 --port 2455
+Restart=on-failure
+
+[Install]
+WantedBy=default.target
+```
+
+```bash
+systemctl --user daemon-reload
+systemctl --user enable --now codex-lb.service
+loginctl enable-linger "$USER"   # keep user services running after logout
+```
+
+[`scripts/deploy-codex-lb.sh`](scripts/deploy-codex-lb.sh) updates such a host: it fetches `main`, preserves any local changes on a backup branch or stash, runs `uv sync --frozen`, rebuilds the dashboard only when `frontend/` changed, restarts the service and waits for `/health/live`. Set `CODEX_LB_DEPLOY_DIR` to the checkout and `CODEX_LB_SERVICE` to the unit name; the other overrides are listed at the top of the script. Run it by hand or from a push webhook.
+
+### First remote login
+
+Local requests to the dashboard need no setup. The first remote visit asks for a one-time bootstrap token, printed to the logs on first start (`journalctl --user -u codex-lb` or `docker logs codex-lb`), or fixed with `CODEX_LB_DASHBOARD_BOOTSTRAP_TOKEN`. Enter it with a new password. Reverse-proxy header auth and disabled auth are described in [Authentication](docs/authentication.md).
+
+### Kubernetes
+
+The Helm chart in [`deploy/helm/codex-lb`](deploy/helm/codex-lb/README.md) works with this fork when you build and push your own image and set `image.registry`, `image.repository` and `image.tag`; the published chart and image are upstream's. See [Kubernetes deployment](docs/deployment/kubernetes.md).
+
+## Client setup
+
+Point any OpenAI-compatible client at codex-lb. Codex CLI, `~/.codex/config.toml`:
 
 ```toml
-model = "gpt-5.3-codex"
+model = "gpt-5.6-sol"
 model_reasoning_effort = "xhigh"
 model_provider = "codex-lb"
 
 [model_providers.codex-lb]
-name = "openai"  # required — enables remote /responses/compact. Lowercase since Codex 2026-05-23; older "OpenAI" stops resolving gpt-5.5
+name = "openai"  # required — enables remote /responses/compact
 base_url = "http://127.0.0.1:2455/backend-api/codex"
 wire_api = "responses"
+env_key = "CODEX_LB_API_KEY"  # only when API key auth is on
 supports_websockets = true
-supports_standalone_web_search = true # requires codex-lb >= 1.22.0
-requires_openai_auth = true # required for codex app
+supports_standalone_web_search = true
+requires_openai_auth = true   # required for the Codex app
 ```
 
-Optional: enable native upstream WebSockets for Codex streaming while keeping `codex-lb` pooling:
+| Client | Endpoint |
+| --- | --- |
+| Codex CLI / IDE extension | `http://127.0.0.1:2455/backend-api/codex` |
+| Cursor, OpenCode, OpenClaw, Hermes Agent, OpenAI SDKs | `http://127.0.0.1:2455/v1` |
 
-```bash
-export CODEX_LB_UPSTREAM_STREAM_TRANSPORT=websocket
-```
+External models use the same endpoint: ask for the name your routing rules or aliases define, such as `claude-sonnet-4-5` or `or-deepseek/deepseek-chat`. `GET /v1/models` lists native models, configured external models and aliases. Per-client configs, WebSocket transport, the 872k context window, and moving old Codex sessions over with `codex-lb codex-sessions retag` are in [Client setup](docs/client-setup.md).
 
-`auto` is the default and uses native WebSockets for native Codex headers or models that prefer them.
-You can also switch this in the dashboard under Settings -> Routing -> Upstream stream transport.
-
-Note: Codex itself does not currently expose a stable documented `wire_api = "websocket"` provider mode.
-If you want to experiment on the Codex side, the current CLI exposes under-development feature flags:
-
-```toml
-[features]
-responses_websockets = true
-# or
-responses_websockets_v2 = true
-```
-
-These flags are experimental and do not replace `wire_api = "responses"`.
-
-Upstream websocket handshakes automatically honor standard proxy environment variables when they are
-present. `wss://` handshakes check `wss_proxy`, `socks_proxy`, `https_proxy`, and `all_proxy`;
-plain `ws://` handshakes also check `ws_proxy` and `http_proxy`. Set
-`CODEX_LB_UPSTREAM_WEBSOCKET_TRUST_ENV=false` only when websocket handshakes must bypass those
-environment proxies and connect directly.
-
-**With [API key auth](#api-key-authentication):**
-
-```toml
-[model_providers.codex-lb]
-name = "openai"
-base_url = "http://127.0.0.1:2455/backend-api/codex"
-wire_api = "responses"
-env_key = "CODEX_LB_API_KEY"
-supports_websockets = true
-requires_openai_auth = true # required for codex app
-```
-
-```bash
-export CODEX_LB_API_KEY="sk-clb-..."   # key from dashboard
-codex
-```
-
-**Verify WebSocket transport**
-
-Use a one-off debug run:
-
-```bash
-RUST_LOG=debug codex exec "Reply with OK only."
-```
-
-Healthy websocket signals:
-
-- CLI logs contain `connecting to websocket` and `successfully connected to websocket`
-- `codex-lb` logs show `WebSocket /backend-api/codex/responses`
-- `codex-lb` logs do **not** show fallback `POST /backend-api/codex/responses` for the same run
-
-If you run `codex-lb` behind a reverse proxy, make sure it forwards WebSocket upgrades.
-
-**Migrating from direct OpenAI** — `codex resume` filters by `model_provider`;
-old sessions won't appear until you re-tag them. Use the built-in retag command
-instead of editing Codex files by hand; see
-[Codex session retagging](openspec/specs/runtime-portability/context.md#codex-session-retagging) for backups, Docker, WSL,
-and rollback details.
-
-```bash
-# Preview what will change first.
-codex-lb codex-sessions retag --from openai --to codex-lb --dry-run
-
-# Then close Codex/Codex CLI and apply the retag.
-codex-lb codex-sessions retag --from openai --to codex-lb --yes
-```
-
-</details>
-
-<details>
-<summary><img src="https://avatars.githubusercontent.com/u/208539476?s=200" width="20" align="center" alt="OpenCode">&ensp;<b>OpenCode</b></summary>
-<br>
-
-> **Important**: Use the built-in `openai` provider with `baseURL` override — not a custom provider with `@ai-sdk/openai-compatible`. Custom providers use the Chat Completions API which **drops reasoning/thinking content**. The built-in `openai` provider uses the Responses API, which properly preserves `encrypted_content` and multi-turn reasoning state.
-
-Before starting, please ensure that all existing OpenAI credentials is cleared in `~/.local/share/opencode/auth.json`
-You can clean the config by using this one-liner
-`jq 'del(.openai)' ~/.local/share/opencode/auth.json > auth.json.tmp && mv auth.json.tmp ~/.local/share/opencode/auth.json`
-
-`~/.config/opencode/opencode.json`:
-
-```jsonc
-{
-  "$schema": "https://opencode.ai/config.json",
-  "provider": {
-    "openai": {
-      "options": {
-        "baseURL": "http://127.0.0.1:2455/v1",
-        "apiKey": "{env:CODEX_LB_API_KEY}"
-      },
-      "models": {
-        "gpt-5.4": {
-          "name": "GPT-5.4",
-          "reasoning": true,
-          "options": { "reasoningEffort": "high", "reasoningSummary": "detailed" },
-          "limit": { "context": 1050000, "output": 128000 }
-        },
-        "gpt-5.3-codex": {
-          "name": "GPT-5.3 Codex",
-          "reasoning": true,
-          "options": { "reasoningEffort": "high", "reasoningSummary": "detailed" },
-          "limit": { "context": 272000, "output": 65536 }
-        },
-        "gpt-5.1-codex-mini": {
-          "name": "GPT-5.1 Codex Mini",
-          "reasoning": true,
-          "options": { "reasoningEffort": "high", "reasoningSummary": "detailed" },
-          "limit": { "context": 272000, "output": 65536 }
-        },
-        "gpt-5.3-codex-spark": {
-          "name": "GPT-5.3 Codex Spark",
-          "reasoning": true,
-          "options": { "reasoningEffort": "xhigh", "reasoningSummary": "detailed" },
-          "limit": { "context": 128000, "output": 65536 }
-        }
-      }
-    }
-  },
-  "model": "openai/gpt-5.3-codex"
-}
-```
-
-This overrides the built-in `openai` provider's endpoint to point at codex-lb while keeping the Responses API code path that handles reasoning properly.
-
-```bash
-export CODEX_LB_API_KEY="sk-clb-..."   # key from dashboard
-opencode
-```
-
-</details>
-
-<details>
-<summary><img src="https://avatars.githubusercontent.com/u/252820863?s=200" width="20" align="center" alt="OpenClaw">&ensp;<b>OpenClaw</b></summary>
-<br>
-
-`~/.openclaw/openclaw.json`:
-
-```jsonc
-{
-  "agents": {
-    "defaults": {
-      "model": { "primary": "codex-lb/gpt-5.4" },
-      "models": {
-        "codex-lb/gpt-5.4": { "params": { "cacheRetention": "short" } }
-        "codex-lb/gpt-5.4-mini": { "params": { "cacheRetention": "short" } }
-        "codex-lb/gpt-5.3-codex": { "params": { "cacheRetention": "short" } }
-      }
-    }
-  },
-  "models": {
-    "mode": "merge",
-    "providers": {
-      "codex-lb": {
-        "baseUrl": "http://127.0.0.1:2455/v1",
-        "apiKey": "${CODEX_LB_API_KEY}",   // or "dummy" if API key auth is disabled
-        "api": "openai-responses",
-        "models": [
-          {
-            "id": "gpt-5.4",
-            "name": "gpt-5.4 (codex-lb)",
-            "contextWindow": 1050000,
-            "contextTokens": 272000,
-            "maxTokens": 4096,
-            "input": ["text"],
-            "reasoning": false
-          },
-          {
-            "id": "gpt-5.4-mini",
-            "name": "gpt-5.4-mini (codex-lb)",
-            "contextWindow": 400000,
-            "contextTokens": 272000,
-            "maxTokens": 4096,
-            "input": ["text"],
-            "reasoning": false
-          },
-          {
-            "id": "gpt-5.3-codex",
-            "name": "gpt-5.3-codex (codex-lb)",
-            "contextWindow": 400000,
-            "contextTokens": 272000,
-            "maxTokens": 4096,
-            "input": ["text"],
-            "reasoning": false
-          }
-        ]
-      }
-    }
-  }
-}
-```
-
-Set the env var or replace `${CODEX_LB_API_KEY}` with a key from the dashboard. If API key auth is disabled,
-local requests can omit the key, but non-local requests are still rejected until proxy authentication is configured.
-
-The `/v1` route is the simplest OpenAI-compatible setup. If your OpenClaw build uses a Codex-native provider path such as `openai-codex-responses` and needs Codex-style usage/accounting behavior, point that provider at `http://127.0.0.1:2455/backend-api/codex` instead. For third-party Codex-compatible backends, the client must allow opaque bearer-token passthrough and should only send `chatgpt-account-id` when it actually decoded one from an official ChatGPT/Codex token.
-
-</details>
-
-<details>
-<summary><img src="https://cdn.jsdelivr.net/gh/devicons/devicon/icons/python/python-original.svg" width="20" align="center" alt="Python">&ensp;<b>OpenAI Python SDK</b></summary>
-<br>
-
-```python
-from openai import OpenAI
-
-client = OpenAI(
-    base_url="http://127.0.0.1:2455/v1",
-    api_key="sk-clb-...",  # from dashboard, or any non-empty string if auth is disabled
-)
-
-response = client.chat.completions.create(
-    model="gpt-5.3-codex",
-    messages=[{"role": "user", "content": "Hello!"}],
-)
-print(response.choices[0].message.content)
-```
-
-</details>
-
-## API Key Authentication
-
-API key auth is **disabled by default**. In that mode, only local requests to the protected proxy routes can
-proceed without a key; non-local requests are rejected until proxy authentication is configured. Enable it in
-**Settings → API Key Auth** on the dashboard when clients connect remotely or through Docker, VM, or container
-networking that appears non-local to the service.
-
-When enabled, clients must pass a valid API key as a Bearer token:
-
-```
-Authorization: Bearer sk-clb-...
-```
-
-The protected proxy routes covered by this setting are:
-
-- `/v1/*` (except `/v1/usage`, which always requires a valid key)
-- `/backend-api/codex/*`
-- `/backend-api/transcribe`
-
-**Creating keys**: Dashboard → API Keys → Create. The full key is shown **only once** at creation. Keys support optional expiration, model restrictions, and rate limits (tokens / cost per day / week / month).
+API key auth is off by default, which lets only local requests through. Turn it on in **Settings → API keys & telemetry** before exposing codex-lb, create keys on the **APIs** page, and send them as `Authorization: Bearer sk-clb-...`.
 
 ## Configuration
 
-Environment variables with `CODEX_LB_` prefix or `.env.local`. See [`.env.example`](.env.example).
-SQLite is the default database backend; PostgreSQL is optional via `CODEX_LB_DATABASE_URL` (for example `postgresql+asyncpg://...`).
+Settings come from `CODEX_LB_`-prefixed environment variables, `.env` / `.env.local` at the checkout root, and the dashboard. SQLite is the default; set `CODEX_LB_DATABASE_URL` for PostgreSQL. The handful of settings that matter are in [Configuration](docs/configuration.md); every setting is listed in [the settings reference](docs/reference/settings.md).
 
-The Docker Compose `postgres` profile uses the Postgres 18 image and mounts the named data volume at
-`/var/lib/postgresql`, the parent of the image's versioned `PGDATA` directory.
+## Documentation
 
-Existing Postgres 16 compose volumes must be upgraded before the Postgres 18 container starts:
+- [Getting started](docs/getting-started.md) and [Client setup](docs/client-setup.md)
+- [Configuration](docs/configuration.md), [Authentication](docs/authentication.md), [Company sign-in](docs/sso.md), [Database](docs/database.md)
+- [API keys](docs/api-keys.md), [Quota feed](docs/quota-feed.md)
+- [Routing](docs/routing.md) (native account selection), [Alias pools](docs/alias-pools.md)
+- [Model pricing](docs/model-pricing.md), [Usage reporting](docs/usage-reporting.md), [Conversations](docs/conversations.md)
+- [Docker](docs/deployment/docker.md), [Kubernetes](docs/deployment/kubernetes.md), [Remote access](docs/deployment/remote.md)
+- [Telemetry](docs/telemetry.md), [Troubleshooting](docs/troubleshooting.md)
+- [Traffic parity](docs/traffic-parity.md), [Rust architecture](docs/rust-architecture.md)
 
-```bash
-docker compose --profile postgres stop postgres
-docker run --rm -v codex-lb-postgres-data:/var/lib/postgresql -v "$PWD:/backup" alpine \
-  tar -C /var/lib/postgresql -czf /backup/codex-lb-postgres-data-before-pg18.tgz .
-docker compose --profile postgres-upgrade run --rm postgres-upgrade
-docker compose --profile postgres up -d postgres
-```
-
-The `postgres-upgrade` profile runs `pg_upgrade` in one-shot mode against the same named volume and exits after the
-data directory has been upgraded to the Postgres 18 layout. Because that helper mounts and rewrites the operator's
-database volume, Compose pins the helper image by digest; refresh and review the digest deliberately when changing the
-helper image tag. Keep the backup until the application has started and `codex-lb-db check` succeeds against the
-upgraded database.
-
-The normal `postgres` service refuses to start when it detects the old root-level `PG_VERSION` file from a pre-18
-Compose volume. If that guard fires, run the `postgres-upgrade` profile above before starting Postgres again.
-It also refuses nested `/var/lib/postgresql/data` directories that still report a pre-18 major version, because those
-layouts need an explicit pg_upgrade before the Postgres 18 container can safely open them.
-
-### Dashboard authentication modes
-
-`codex-lb` supports three dashboard auth modes via environment variables:
-
-- `CODEX_LB_DASHBOARD_AUTH_MODE=standard` — built-in dashboard password with optional TOTP from the Settings page.
-- `CODEX_LB_DASHBOARD_AUTH_MODE=trusted_header` — trust a reverse-proxy auth header such as Authelia's `Remote-User`, but only from `CODEX_LB_FIREWALL_TRUSTED_PROXY_CIDRS`. Built-in password/TOTP remain available as an optional fallback, and password/TOTP management still requires a fallback password session.
-- `CODEX_LB_DASHBOARD_AUTH_MODE=disabled` — fully bypass dashboard auth. Use only behind network restrictions or external auth. Built-in password/TOTP management is disabled in this mode.
-
-`trusted_header` mode also requires:
-
-```bash
-CODEX_LB_FIREWALL_TRUST_PROXY_HEADERS=true
-CODEX_LB_FIREWALL_TRUSTED_PROXY_CIDRS=172.18.0.0/16
-CODEX_LB_DASHBOARD_AUTH_PROXY_HEADER=Remote-User
-```
-
-If the trusted header is missing and no fallback password is configured, the dashboard fails closed and shows a reverse-proxy-required message instead of loading the UI.
-
-### Docker examples
-
-**Authelia / trusted header**
-
-```bash
-docker network inspect codex-lb-net >/dev/null 2>&1 || docker network create codex-lb-net
-docker run -d --name codex-lb \
-  --network codex-lb-net \
-  -p 2455:2455 -p 1455:1455 \
-  -e CODEX_LB_DASHBOARD_AUTH_MODE=trusted_header \
-  -e CODEX_LB_DASHBOARD_AUTH_PROXY_HEADER=Remote-User \
-  -e CODEX_LB_FIREWALL_TRUST_PROXY_HEADERS=true \
-  -e CODEX_LB_FIREWALL_TRUSTED_PROXY_CIDRS=172.18.0.0/16 \
-  -v codex-lb-data:/var/lib/codex-lb \
-  codex-lb-fork:local
-```
-
-**Hard override / no app-level dashboard auth**
-
-```bash
-docker network inspect codex-lb-net >/dev/null 2>&1 || docker network create codex-lb-net
-docker run -d --name codex-lb \
-  --network codex-lb-net \
-  -p 2455:2455 -p 1455:1455 \
-  -e CODEX_LB_DASHBOARD_AUTH_MODE=disabled \
-  -v codex-lb-data:/var/lib/codex-lb \
-  codex-lb-fork:local
-```
-
-For Helm, pass the same values through `extraEnv`.
-
-## Data
-
-| Environment | Path |
-|-------------|------|
-| Local / source | `~/.codex-lb/` |
-| Docker | `/var/lib/codex-lb/` |
-
-Backup this directory to preserve your data.
-
-## Troubleshooting
-
-- [Usage and quota - why does codex-lb still say `rate_limited` when Codex Desktop says reset?](openspec/specs/usage-refresh-policy/context.md)
-
-## Kubernetes
-
-When testing fork-only features with Helm, override the image repository/tag to an image built from this fork. The upstream chart and image examples may not include these changes unless fork artifacts have been published.
-
-```bash
-helm install codex-lb oci://ghcr.io/soju06/charts/codex-lb \
-  --set postgresql.auth.password=changeme \
-  --set config.databaseMigrateOnStartup=true \
-  --set migration.schemaGate.enabled=false
-kubectl port-forward svc/codex-lb 2455:2455
-```
-
-Open [localhost:2455](http://localhost:2455) → Add account → Done.
-
-The Helm chart auto-configures HTTP `/responses` owner handoff for multi-replica installs using a headless-service DNS name per pod. The default cluster domain is `cluster.local`; set Helm `clusterDomain` if your cluster uses a different suffix. Override `config.sessionBridgeAdvertiseBaseUrl` only if pods must be reached through a different internal address.
-
-For external database, production config, ingress, observability, and more see the [Helm chart README](deploy/helm/codex-lb/README.md).
-
-Fast Mode and service-tier behavior is documented in [Responses API compatibility context](openspec/specs/responses-api-compat/context.md#fast-mode-and-service-tiers).
-
-### Community companions
-
-Independent projects that consume the dashboard API, maintained outside codex-lb
-(see [the docs listing](https://soju06.github.io/codex-lb/#community-companions)
-for access guidance):
-
-- [Codex LB Status Bar](https://github.com/sm1ee/codex-lb-statusbar) — native macOS app: account status, quota details, account controls
-- [codex-lb SwiftBar](https://github.com/joschi655/codex-lb-swiftbar) — read-only SwiftBar/Bun monitor for pool status and quota headroom
-- [Codex LB Status](https://github.com/VictorStatko/codex-lb-status) — read-only Ubuntu tray monitor for pooled quota, account health, reset credits, and update state
-- [Codex LB for Omarchy](https://github.com/janaki-sasidhar/omarchy-codex-lb) — read-only Linux/Omarchy Quattro bar plugin for account quotas, usage totals, reset times, and optional desktop alerts
-- [Codex-LB Rates](https://github.com/uniskela/codex-lb-rates) — Home Assistant integration for pool and per-account quota remaining sensors (5h / weekly / monthly)
+Pages shared with upstream still link to upstream's docs site and specs in places; behavior that differs in this fork is described in this README and the fork-only pages above. Normative behavior lives in [`openspec/specs`](openspec/specs).
 
 ## Development
 
@@ -654,10 +279,16 @@ for access guidance):
 docker compose watch
 
 # Local
-uv sync && cd frontend && bun install && cd ..
-uv run fastapi run app/main.py --reload --no-proxy-headers  # backend :2455
-cd frontend && bun run dev                     # frontend :5173
+uv sync && (cd frontend && bun install)
+uv run codex-lb                 # backend :2455
+(cd frontend && bun run dev)    # frontend :5173
 ```
+
+Changes follow the spec-driven workflow in [`openspec/`](openspec).
+
+## License and attribution
+
+codex-lb is MIT-licensed, copyright Soju06; see [LICENSE](LICENSE). This fork builds on the work of the upstream maintainers and contributors listed below.
 
 ## Contributors ✨
 
