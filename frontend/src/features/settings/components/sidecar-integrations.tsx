@@ -296,7 +296,7 @@ export function SidecarIntegrationsCard({
               value={tab.value}
               aria-label={tab.enabled ? `${tab.label} (enabled)` : tab.label}
               className={cn(
-                "h-auto min-w-0 flex-none justify-start gap-2.5 rounded-lg border bg-background/40 px-3 py-2.5 text-sm text-muted-foreground",
+                "h-auto min-w-0 flex-none items-center justify-start gap-2.5 rounded-lg border bg-background/40 px-3 py-2.5 text-sm text-muted-foreground",
                 "hover:border-border hover:bg-accent/70 hover:text-foreground",
                 "data-[state=active]:border-primary/50 data-[state=active]:bg-primary/10 data-[state=active]:text-foreground data-[state=active]:shadow-none data-[state=active]:ring-1 data-[state=active]:ring-primary/30",
                 "dark:data-[state=active]:border-primary/50 dark:data-[state=active]:bg-primary/10",

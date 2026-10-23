@@ -49,6 +49,8 @@ import {
   OrcaRouterSidecarModelsResponseSchema,
   OrcaRouterSidecarStatusResponseSchema,
   OrcaRouterSidecarTestResponseSchema,
+  ModelContextWindowOverrideUpsertRequestSchema,
+  ModelContextWindowOverridesSchema,
   SettingsUpdateRequestSchema,
   TelemetryConsentSchema,
   TelemetryConsentUpdateRequestSchema,
@@ -76,6 +78,7 @@ const OLLAMA_SIDECAR_PATH = "/api/ollama-sidecar";
 const OPENCODE_GO_SIDECAR_PATH = "/api/opencode-go-sidecar";
 const TELEMETRY_PATH = `${SETTINGS_PATH}/telemetry`;
 const ALIAS_POOLS_HEALTH_PATH = `${SETTINGS_PATH}/alias-pools/health`;
+const MODEL_CONTEXT_WINDOW_OVERRIDES_PATH = `${SETTINGS_PATH}/model-context-window-overrides`;
 
 export function getSettings() {
   return get(SETTINGS_PATH, DashboardSettingsSchema);
@@ -376,4 +379,20 @@ export function testOpenCodeGoSidecarConnection() {
 
 export function listOpenCodeGoSidecarModels() {
   return get(`${OPENCODE_GO_SIDECAR_PATH}/models`, OpenCodeGoSidecarModelsResponseSchema);
+}
+
+// M4 model catalogue: per-model context window overrides (one dashboard row per slug).
+export function getModelContextWindowOverrides() {
+  return get(MODEL_CONTEXT_WINDOW_OVERRIDES_PATH, ModelContextWindowOverridesSchema);
+}
+
+export function putModelContextWindowOverride(slug: string, payload: unknown) {
+  const validated = ModelContextWindowOverrideUpsertRequestSchema.parse(payload);
+  return put(`${MODEL_CONTEXT_WINDOW_OVERRIDES_PATH}/${encodeURIComponent(slug)}`, ModelContextWindowOverridesSchema, {
+    body: validated,
+  });
+}
+
+export function deleteModelContextWindowOverride(slug: string) {
+  return del(`${MODEL_CONTEXT_WINDOW_OVERRIDES_PATH}/${encodeURIComponent(slug)}`, ModelContextWindowOverridesSchema);
 }

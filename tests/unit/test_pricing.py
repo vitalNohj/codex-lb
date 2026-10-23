@@ -230,6 +230,9 @@ def test_get_pricing_for_model_claude_opus_5_5_does_not_collapse_to_opus_5():
 
     dated = get_pricing_for_model("claude-opus-5-5-20260922", DEFAULT_PRICING_MODELS, DEFAULT_MODEL_ALIASES)
     assert dated is None
+    # Upstream's hyphenated release-date fallback must not reach Claude either.
+    for dashed in ("claude-opus-5-5-2026-09-22", "cc/claude-opus-5-5-2026-09-22", "cp-claude-opus-5-5-2026-09-22"):
+        assert get_pricing_for_model(dashed, DEFAULT_PRICING_MODELS, DEFAULT_MODEL_ALIASES) is None, dashed
 
     family = ModelPrice(input_per_1m=7, output_per_1m=11)
     assert get_pricing_for_model("cc/claude-opus-5-5", {"claude-opus-5": family}) is None

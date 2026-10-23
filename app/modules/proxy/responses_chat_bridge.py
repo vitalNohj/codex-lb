@@ -449,7 +449,10 @@ def _flush_pending_tool_calls(messages: list[JsonValue], pending: list[JsonValue
             previous["tool_calls"] = tool_calls
         messages[-1] = previous
         return
-    messages.append({"role": "assistant", "content": None, "tool_calls": tool_calls})
+    # No ``content`` key: ``messages`` is a passthrough field (upstream 972a7341f),
+    # so ``model_dump(exclude_none=True)`` no longer strips a ``None`` here and it
+    # would reach the provider as ``"content": null``.
+    messages.append({"role": "assistant", "tool_calls": tool_calls})
 
 
 def _message_item_to_message(item: Mapping[str, JsonValue], *, param: str) -> _Json | None:

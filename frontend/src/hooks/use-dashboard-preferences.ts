@@ -10,10 +10,13 @@ const ACCOUNT_TYPE_VISIBILITY_STORAGE_KEY = "codex-lb-dashboard-account-type-vis
 const ACCOUNT_LIST_SORT_STORAGE_KEY = "codex-lb-dashboard-account-list-sort";
 const ACCOUNT_PANEL_HEIGHT_STORAGE_KEY = "codex-lb-dashboard-account-panel-height";
 const SPLIT_VIEW_STORAGE_KEY = "codex-lb-dashboard-split-view";
+const DASHBOARD_REFRESH_STORAGE_KEY = "codex-lb-dashboard-refresh-seconds";
 
 /** Bounds for the operator-resized accounts panel, in px. */
 export const ACCOUNT_PANEL_MIN_HEIGHT_PX = 160;
 export const ACCOUNT_PANEL_MAX_HEIGHT_PX = 2400;
+
+export type DashboardRefreshSeconds = 5 | 15 | 30 | 60;
 
 export type DashboardAccountViewMode = "cards" | "list";
 export type DashboardRequestLogViewMode = "simplified" | "expanded";
@@ -67,6 +70,7 @@ type DashboardPreferencesState = {
   accountPanelHeight: number | null;
   /** Wide-screen layout: page spans the viewport and sections sit side by side. */
   splitViewEnabled: boolean;
+  refreshSeconds: DashboardRefreshSeconds;
   initialized: boolean;
   initializePreferences: () => void;
   setAccountBurnrateEnabled: (enabled: boolean) => void;
@@ -76,6 +80,7 @@ type DashboardPreferencesState = {
   setAccountListSort: (sort: AccountListSort) => void;
   setAccountPanelHeight: (height: number | null) => void;
   setSplitViewEnabled: (enabled: boolean) => void;
+  setRefreshSeconds: (seconds: DashboardRefreshSeconds) => void;
 };
 
 const ACCOUNT_LIST_SORT_KEYS: AccountListSortKey[] = [
@@ -187,6 +192,16 @@ function persistSplitViewEnabled(enabled: boolean): void {
   window.localStorage.setItem(SPLIT_VIEW_STORAGE_KEY, String(enabled));
 }
 
+function readStoredRefreshSeconds(): DashboardRefreshSeconds | null {
+  if (typeof window === "undefined") {
+    return null;
+  }
+  const numeric = Number(window.localStorage.getItem(DASHBOARD_REFRESH_STORAGE_KEY));
+  return numeric === 5 || numeric === 15 || numeric === 30 || numeric === 60
+    ? numeric
+    : null;
+}
+
 function persistAccountBurnrateEnabled(enabled: boolean): void {
   if (typeof window === "undefined") {
     return;
@@ -253,6 +268,13 @@ function persistAccountListSort(sort: AccountListSort): void {
   window.localStorage.setItem(ACCOUNT_LIST_SORT_STORAGE_KEY, JSON.stringify(sort));
 }
 
+function persistRefreshSeconds(seconds: DashboardRefreshSeconds): void {
+  if (typeof window === "undefined") {
+    return;
+  }
+  window.localStorage.setItem(DASHBOARD_REFRESH_STORAGE_KEY, String(seconds));
+}
+
 export const useDashboardPreferencesStore = create<DashboardPreferencesState>((set, get) => ({
   accountBurnrateEnabled: true,
   accountViewMode: "cards",
@@ -261,6 +283,7 @@ export const useDashboardPreferencesStore = create<DashboardPreferencesState>((s
   accountListSort: null,
   accountPanelHeight: null,
   splitViewEnabled: false,
+  refreshSeconds: 15,
   initialized: false,
   initializePreferences: () => {
     const accountBurnrateEnabled = readStoredAccountBurnrateEnabled() ?? true;
@@ -270,11 +293,13 @@ export const useDashboardPreferencesStore = create<DashboardPreferencesState>((s
     const accountListSort = readStoredAccountListSort();
     const accountPanelHeight = readStoredAccountPanelHeight();
     const splitViewEnabled = readStoredSplitViewEnabled();
+    const refreshSeconds = readStoredRefreshSeconds() ?? 15;
     persistAccountBurnrateEnabled(accountBurnrateEnabled);
     persistAccountViewMode(accountViewMode);
     persistRequestLogViewMode(requestLogViewMode);
     persistAccountTypeVisibility(accountTypeVisibility);
     persistAccountListSort(accountListSort);
+    persistRefreshSeconds(refreshSeconds);
     set({
       accountBurnrateEnabled,
       accountViewMode,
@@ -283,6 +308,7 @@ export const useDashboardPreferencesStore = create<DashboardPreferencesState>((s
       accountListSort,
       accountPanelHeight,
       splitViewEnabled,
+      refreshSeconds,
       initialized: true,
     });
   },
@@ -318,5 +344,9 @@ export const useDashboardPreferencesStore = create<DashboardPreferencesState>((s
   setSplitViewEnabled: (enabled) => {
     persistSplitViewEnabled(enabled);
     set({ splitViewEnabled: enabled, initialized: true });
+  },
+  setRefreshSeconds: (seconds) => {
+    persistRefreshSeconds(seconds);
+    set({ refreshSeconds: seconds, initialized: true });
   },
 }));

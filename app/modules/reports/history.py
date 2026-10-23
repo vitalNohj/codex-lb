@@ -23,7 +23,7 @@ concurrently can never pair rollup rows from one watermark generation with
 bounds from another — the single-snapshot discipline of
 ``usage_time_rollup_read`` applied inside each branch. The raw tail is
 bound to the same state row through an uncorrelated scalar subquery (the
-``_conversation_raw_tail_start`` pattern). The segments are exactly
+``_conversation_tail_start`` pattern). The segments are exactly
 disjoint:
 
     rolled region  = [ceil_hour(since), min(hourly_w, floor_hour(until)))
@@ -349,7 +349,7 @@ def _raw_tail_start_expr(session: AsyncSession, since: datetime, until: datetime
     """Where the raw tail after the rolled region starts, state-relative and
     NULL-watermark safe (a missing state row or epoch watermark degrades the
     tail to the first whole hour, so raw then covers the caller's full
-    window) — the ``_conversation_raw_tail_start`` pattern."""
+    window) — the ``_conversation_tail_start`` pattern."""
     watermark = _STATE.hourly_folded_through
     lo_bound = literal(ceil_to_grid(since, HOURLY_BUCKET_SECONDS), type_=_RAW.requested_at.type)
     clamped = _least_fn(session)(

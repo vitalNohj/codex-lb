@@ -5,7 +5,12 @@ import logging
 
 from fastapi import APIRouter, Depends, Query
 
-from app.core.auth.dependencies import set_dashboard_error_format, validate_dashboard_session
+from app.core.auth.dashboard_access import DashboardPrincipal, Permission
+from app.core.auth.dependencies import (
+    require_dashboard_permission,
+    set_dashboard_error_format,
+    validate_dashboard_session,
+)
 from app.core.clients.claude_sidecar import ClaudeSidecarClient, SidecarModel
 from app.core.clients.omniroute_sidecar import OmniRouteSidecarClient
 from app.core.clients.openai_compat_sidecar import get_openai_compat_sidecar_client
@@ -43,29 +48,45 @@ router = APIRouter(
 )
 
 
-@router.get("/dashboard/overview", response_model=DashboardOverviewResponse)
+@router.get(
+    "/dashboard/overview",
+    response_model=DashboardOverviewResponse,
+    dependencies=[Depends(require_dashboard_permission(Permission.ACCOUNTS_READ))],
+)
 async def get_overview(
     timeframe: DashboardOverviewTimeframeKey = Query("7d"),
+    principal: DashboardPrincipal = Depends(validate_dashboard_session),
     context: DashboardContext = Depends(get_dashboard_context),
 ) -> DashboardOverviewResponse:
-    return await context.service.get_overview(timeframe)
+    return await context.service.get_overview(
+        timeframe,
+        redact_identity=not principal.has(Permission.ACCOUNTS_WRITE),
+    )
 
 
-@router.get("/dashboard/sync-status", response_model=DashboardSyncStatusResponse)
+@router.get(
+    "/dashboard/sync-status",
+    response_model=DashboardSyncStatusResponse,
+    dependencies=[Depends(require_dashboard_permission(Permission.ACCOUNTS_READ))],
+)
 async def get_sync_status(
     context: DashboardContext = Depends(get_dashboard_context),
 ) -> DashboardSyncStatusResponse:
     return await context.service.get_sync_status()
 
 
-@router.get("/dashboard/projections", response_model=DashboardProjectionsResponse)
+@router.get(
+    "/dashboard/projections",
+    response_model=DashboardProjectionsResponse,
+    dependencies=[Depends(require_dashboard_permission(Permission.ACCOUNTS_READ))],
+)
 async def get_projections(
     context: DashboardContext = Depends(get_dashboard_context),
 ) -> DashboardProjectionsResponse:
     return await context.service.get_projections()
 
 
-@router.get("/models")
+@router.get("/models", dependencies=[Depends(require_dashboard_permission(Permission.DASHBOARD_READ))])
 async def list_models() -> dict:
     registry = get_model_registry()
     models_by_slug = registry.get_models_with_fallback()

@@ -19,6 +19,15 @@ const OMNIROUTE_UPDATE_FIELDS = [
   "omnirouteSidecarDefaultReasoningEffort",
 ] as const satisfies readonly (keyof SettingsUpdateRequest)[];
 
+/**
+ * The whole settings row as an update request, with `patch` on top.
+ *
+ * `localLoginPolicy` is deliberately *not* echoed back. The response schema
+ * falls a policy this build does not know back to `enabled`, so echoing it
+ * would let any unrelated save on the Settings page quietly re-open local
+ * sign-in on an install running a newer backend. Omitted means unchanged, and
+ * the one card that owns the field passes it through `patch`.
+ */
 export function buildSettingsUpdateRequest(
   settings: DashboardSettings,
   patch: Partial<SettingsUpdateRequest>,
@@ -53,6 +62,7 @@ export function buildSettingsUpdateRequest(
     sidecarFullModelStars: settings.sidecarFullModelStars ?? {},
     importWithoutOverwrite: settings.importWithoutOverwrite,
     totpRequiredOnLogin: settings.totpRequiredOnLogin,
+    totpRequiredForAdminRole: settings.totpRequiredForAdminRole,
     apiKeyAuthEnabled: settings.apiKeyAuthEnabled,
     limitWarmupEnabled: settings.limitWarmupEnabled,
     limitWarmupWindows: settings.limitWarmupWindows,

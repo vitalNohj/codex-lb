@@ -5,6 +5,7 @@ from typing import TypeAlias
 from pydantic import (
     BaseModel,
     ConfigDict,
+    PrivateAttr,
     StrictFloat,
     StrictInt,
     StrictStr,
@@ -13,6 +14,7 @@ from pydantic import (
     model_validator,
 )
 
+from app.core.errors import OpenAIErrorParam
 from app.core.types import JsonValue
 
 type ModelLikeInput = JsonValue | BaseModel
@@ -30,6 +32,8 @@ def _normalize_model_value[T: BaseModel](model_type: type[T], value: ModelLikeIn
 class OpenAIError(BaseModel):
     model_config = ConfigDict(extra="allow")
 
+    _param_state: OpenAIErrorParam = PrivateAttr(default_factory=OpenAIErrorParam.absent)
+
     message: StrictStr | None = None
     type: StrictStr | None = None
     code: StrictStr | None = None
@@ -37,6 +41,19 @@ class OpenAIError(BaseModel):
     plan_type: StrictStr | None = None
     resets_at: StrictInt | StrictFloat | None = None
     resets_in_seconds: StrictInt | StrictFloat | None = None
+
+    def model_post_init(self, __context: object) -> None:
+        self._param_state = OpenAIErrorParam(
+            present="param" in self.model_fields_set,
+            raw=self.param,
+        )
+
+    @property
+    def param_state(self) -> OpenAIErrorParam:
+        return self._param_state
+
+    def set_param_state(self, state: OpenAIErrorParam) -> None:
+        self._param_state = state
 
 
 class OpenAIErrorEnvelope(BaseModel):

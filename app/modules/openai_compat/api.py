@@ -2,7 +2,11 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends
 
-from app.core.auth.dependencies import set_dashboard_error_format, validate_dashboard_session
+from app.core.auth.dependencies import (
+    require_dashboard_write_access,
+    set_dashboard_error_format,
+    validate_dashboard_session,
+)
 from app.dependencies import OpenAICompatContext, get_openai_compat_context
 from app.modules.openai_compat.schemas import (
     OpenAICompatModelsResponse,
@@ -25,7 +29,11 @@ async def get_status(
     return await context.service.get_status(endpoint_id)
 
 
-@router.post("/{endpoint_id}/test", response_model=OpenAICompatTestResponse)
+@router.post(
+    "/{endpoint_id}/test",
+    response_model=OpenAICompatTestResponse,
+    dependencies=[Depends(require_dashboard_write_access)],
+)
 async def test_connection(
     endpoint_id: str,
     context: OpenAICompatContext = Depends(get_openai_compat_context),

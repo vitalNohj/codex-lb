@@ -4,7 +4,7 @@ import { HttpResponse, http } from "msw";
 import { createElement, type PropsWithChildren } from "react";
 import { describe, expect, it } from "vitest";
 
-import { useDashboard } from "@/features/dashboard/hooks/use-dashboard";
+import { useDashboard, useDashboardProjections } from "@/features/dashboard/hooks/use-dashboard";
 import { server } from "@/test/mocks/server";
 
 function createTestQueryClient(): QueryClient {
@@ -81,6 +81,21 @@ describe("useDashboard", () => {
 
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
     expect(requestedTimeframe).toBe("1d");
+  });
+
+  it("does not poll dashboard projections in the background", () => {
+    const queryClient = createTestQueryClient();
+
+    renderHook(() => useDashboardProjections(false), {
+      wrapper: createWrapper(queryClient),
+    });
+
+    const query = queryClient.getQueryCache().find({ queryKey: ["dashboard", "projections"] });
+    const options = query?.options as
+      | { refetchInterval?: unknown; refetchOnWindowFocus?: unknown }
+      | undefined;
+    expect(options?.refetchInterval).toBeUndefined();
+    expect(options?.refetchOnWindowFocus).toBe(false);
   });
 
   it("exposes error state on request failure", async () => {

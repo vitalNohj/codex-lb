@@ -44,27 +44,20 @@ class EffectiveRetention:
 
 
 async def get_effective_retention() -> EffectiveRetention:
-    """Resolve the retention windows with dashboard-first precedence.
+    """Resolve the retention windows from the dashboard runtime settings.
 
-    A non-NULL dashboard value (SettingsCache-backed, so a dashboard change
-    takes effect without restart) wins; while the dashboard value is unset the
-    deprecated env alias applies; 0 means disabled at either layer.
+    The dashboard value (SettingsCache-backed, so a change takes effect
+    without restart) is the only source for request-log and usage-history
+    retention: NULL means never configured, which is disabled, and 0 means
+    explicitly disabled. The fork's hourly-rollup window still falls back to
+    its deprecated env alias while the dashboard value is unset.
     """
-    env = get_settings()
     dashboard = await get_settings_cache().get()
     return EffectiveRetention(
-        request_log_days=(
-            env.request_log_retention_days
-            if dashboard.request_log_retention_days is None
-            else dashboard.request_log_retention_days
-        ),
-        usage_history_days=(
-            env.usage_history_retention_days
-            if dashboard.usage_history_retention_days is None
-            else dashboard.usage_history_retention_days
-        ),
+        request_log_days=dashboard.request_log_retention_days or 0,
+        usage_history_days=dashboard.usage_history_retention_days or 0,
         hourly_rollup_days=(
-            env.hourly_rollup_retention_days
+            get_settings().hourly_rollup_retention_days
             if dashboard.hourly_rollup_retention_days is None
             else dashboard.hourly_rollup_retention_days
         ),
@@ -181,8 +174,8 @@ async def _prune_request_logs(cutoff: datetime, *, now: datetime) -> int:
     lifetime account totals. No watermark (fold never ran) means skip.
 
     The effective watermark is the MIN of the lifetime fold watermark and the
-    hourly and conversation time-axis watermarks: a raw row is only prunable
-    once EVERY rollup that must outlive it has folded it. While either
+    hourly, conversation and report time-axis watermarks: a raw row is only prunable
+    once EVERY rollup that must outlive it has folded it. While any
     time-axis backfill is catching up (each watermark starts at the epoch),
     the min fails the currency check below and pruning pauses entirely — the
     pre-existing "never delete what is not folded" invariant extended to the
@@ -228,6 +221,7 @@ async def _prune_request_logs(cutoff: datetime, *, now: datetime) -> int:
                             AccountUsageRollupState.folded_through,
                             AccountUsageRollupState.hourly_folded_through,
                             AccountUsageRollupState.conversation_folded_through,
+                            AccountUsageRollupState.reports_folded_through,
                             AccountUsageRollupState.upgrade_repair_from,
                         )
                         .where(AccountUsageRollupState.id == 1)
@@ -249,6 +243,7 @@ async def _prune_request_logs(cutoff: datetime, *, now: datetime) -> int:
                     state.folded_through,
                     state.hourly_folded_through,
                     state.conversation_folded_through,
+                    state.reports_folded_through,
                 )
                 if watermark < now - 2 * FOLD_LAG:
                     if total == 0:

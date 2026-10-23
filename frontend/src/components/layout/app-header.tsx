@@ -1,12 +1,14 @@
 import { useQuery } from "@tanstack/react-query";
-import { ChevronDown, ExternalLink, Eye, EyeOff, LogIn, LogOut, Menu } from "lucide-react";
+import { ChevronDown, ExternalLink, Eye, EyeOff, LogIn, LogOut, Menu, ShieldAlert } from "lucide-react";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Link, NavLink, useLocation } from "react-router-dom";
 
 import { CodexLogo } from "@/components/brand/codex-logo";
 import { ForkMark } from "@/components/brand/fork-mark";
+import { AccountMenu } from "@/components/layout/account-menu";
 import { LanguageToggle, LanguageToggleMobile } from "@/components/layout/language-toggle";
+import { ADVANCED_NAV_ITEMS, CORE_NAV_ITEMS } from "@/components/layout/nav-items";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -16,26 +18,15 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import { listAccounts } from "@/features/accounts/api";
+import { hasPermission, useAuthStore } from "@/features/auth/hooks/use-auth";
 import { getSettings } from "@/features/settings/api";
 import { PAGE_MAX_WIDTH_CLASS } from "@/hooks/use-page-width";
 import { usePrivacyStore } from "@/hooks/use-privacy";
 import { OMNIROUTE_ENABLED } from "@/lib/product-capabilities";
 import { cn } from "@/lib/utils";
 
-const CORE_NAV_ITEMS = [
-  { to: "/dashboard", labelKey: "nav.dashboard" },
-  { to: "/reports", labelKey: "nav.reports" },
-  { to: "/accounts", labelKey: "nav.accounts" },
-  { to: "/apis", labelKey: "nav.apis" },
-  { to: "/settings", labelKey: "nav.settings" },
-] as const;
-
 const OMNIROUTE_PATH = "/omni";
 const FORK_REPOSITORY_URL = "https://github.com/vitalNohj/codex-lb";
-
-const ADVANCED_NAV_ITEMS = [
-  { to: "/automations", labelKey: "nav.automations" },
-] as const;
 
 export type AppHeaderProps = {
   onLogout: () => void;
@@ -58,7 +49,20 @@ export function AppHeader({
   const { t } = useTranslation();
   const { pathname } = useLocation();
   const [mobileOpen, setMobileOpen] = useState(false);
-  const advancedActive = ADVANCED_NAV_ITEMS.some(
+  const permissions = useAuthStore((state) => state.permissions);
+  const tier = useAuthStore((state) => state.tier);
+  const user = useAuthStore((state) => state.user);
+  // A break-glass session can exist on an install the store still derives as
+  // the individual tier, where there is no account chip to hang a badge on —
+  // so the indicator is a sibling of the chip, not an item inside its menu.
+  const breakGlassSession = useAuthStore((state) => state.breakGlassSession);
+  const coreNavItems = CORE_NAV_ITEMS.filter((item) => hasPermission(permissions, item.requires));
+  const advancedNavItems = ADVANCED_NAV_ITEMS.filter((item) => hasPermission(permissions, item.requires));
+  // Individual installs keep today's Logout button; from the team tier the
+  // signed-in account gets the avatar chip and its menu instead (desktop; the
+  // mobile sheet keeps its Logout entry on every tier).
+  const showAccountMenu = tier !== "individual" && user !== null;
+  const advancedActive = advancedNavItems.some(
     (item) => pathname === item.to || pathname.startsWith(`${item.to}/`),
   );
   const blurred = usePrivacyStore((s) => s.blurred);
@@ -120,7 +124,7 @@ export function AppHeader({
 
         {/* Desktop nav pills */}
         <nav className="hidden items-center rounded-lg border border-border/50 bg-muted/40 p-0.5 sm:flex">
-          {CORE_NAV_ITEMS.map((item) => (
+          {coreNavItems.map((item) => (
             <NavLink
               key={item.to}
               to={item.to}
@@ -168,7 +172,7 @@ export function AppHeader({
               <ChevronDown className="h-3 w-3" aria-hidden="true" />
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
-              {ADVANCED_NAV_ITEMS.map((item) => (
+              {advancedNavItems.map((item) => (
                 <DropdownMenuItem key={item.to} asChild>
                   <NavLink to={item.to} className="cursor-pointer">
                     {t(item.labelKey)}
@@ -180,7 +184,7 @@ export function AppHeader({
         </nav>
 
         {/* Actions */}
-        <div className="flex flex-1 items-center justify-end gap-1.5">
+        <div className="flex min-w-0 flex-1 items-center justify-end gap-1.5">
           <LanguageToggle />
           <Button
             type="button"
@@ -192,7 +196,18 @@ export function AppHeader({
           >
             <PrivacyIcon className="h-3.5 w-3.5" aria-hidden="true" />
           </Button>
-          {showLogout && (
+          {breakGlassSession ? (
+            <span
+              data-testid="emergency-session-pill"
+              title={t("nav.emergencySession.description")}
+              className="hidden shrink-0 items-center gap-1 rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-[11px] font-medium text-amber-700 sm:inline-flex dark:text-amber-400"
+            >
+              <ShieldAlert className="h-3 w-3" aria-hidden="true" />
+              {t("nav.emergencySession.label")}
+            </span>
+          ) : null}
+          {showAccountMenu ? <AccountMenu /> : null}
+          {showLogout && !showAccountMenu && (
             <Button
               type="button"
               size="sm"
@@ -242,7 +257,16 @@ export function AppHeader({
                 </SheetTitle>
               </SheetHeader>
               <nav className="flex flex-col gap-0.5 px-4 pt-2">
-                {CORE_NAV_ITEMS.map((item) => (
+                {breakGlassSession ? (
+                  <span
+                    data-testid="emergency-session-pill-mobile"
+                    className="mb-2 flex items-center gap-1.5 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs font-medium text-amber-700 dark:text-amber-400"
+                  >
+                    <ShieldAlert className="h-3.5 w-3.5" aria-hidden="true" />
+                    {t("nav.emergencySession.label")}
+                  </span>
+                ) : null}
+                {coreNavItems.map((item) => (
                   <NavLink key={item.to} to={item.to} onClick={() => setMobileOpen(false)}>
                     {({ isActive }) => (
                       <span
@@ -279,7 +303,7 @@ export function AppHeader({
                 <p className="px-3 pb-1 text-[11px] font-medium tracking-wider text-muted-foreground uppercase">
                   {t("nav.advanced")}
                 </p>
-                {ADVANCED_NAV_ITEMS.map((item) => (
+                {advancedNavItems.map((item) => (
                   <NavLink key={item.to} to={item.to} onClick={() => setMobileOpen(false)}>
                     {({ isActive }) => (
                       <span

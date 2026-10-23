@@ -7,10 +7,11 @@ from typing import Any
 
 import pytest
 
-from app.core.auth.dashboard_access import DashboardRole
+from app.core.auth.dashboard_access import PRESET_ROLE_IDS, PresetRoleSlug
+from app.core.auth.dashboard_users_cache import get_dashboard_users_cache
 from app.core.config.settings_cache import get_settings_cache
 from app.core.utils.time import utcnow
-from app.db.models import Account, AccountStatus, UsageHistory
+from app.db.models import Account, AccountStatus, DashboardUser, UsageHistory
 from app.db.session import SessionLocal
 from app.modules.accounts.repository import AccountsRepository
 from app.modules.api_keys.repository import ApiKeysRepository
@@ -234,12 +235,25 @@ async def _seed_pool() -> None:
     await get_settings_cache().invalidate()
 
 
-def _install_dashboard_cookie(client) -> None:
-    session_id = get_dashboard_session_store().create(
+async def _install_dashboard_cookie(client) -> None:
+    """Sign in as a real admin dashboard user (multi-user dashboard auth)."""
+    async with SessionLocal() as session:
+        user = DashboardUser(
+            username="quota-feed-admin",
+            role_id=PRESET_ROLE_IDS[PresetRoleSlug.ADMIN],
+            password_hash="$2b$12$" + "x" * 53,
+        )
+        session.add(user)
+        await session.commit()
+        await session.refresh(user)
+    await get_settings_cache().invalidate()
+    await get_dashboard_users_cache().invalidate()
+    session_id = get_dashboard_session_store().create_user_session(
+        user.id,
+        user.session_generation,
         password_verified=True,
         totp_verified=True,
         ttl_seconds=3600,
-        role=DashboardRole.ADMIN,
     )
     client.cookies.set(DASHBOARD_SESSION_COOKIE, session_id)
 
@@ -281,7 +295,7 @@ def _assert_no_secrets(body: dict[str, Any], raw: str) -> None:
 async def test_quota_feed_rejects_missing_and_invalid_credentials(async_client) -> None:
     missing = await async_client.get("/v1/quota-feed")
     invalid = await async_client.get("/v1/quota-feed", headers={"Authorization": "Bearer not-a-real-key"})
-    _install_dashboard_cookie(async_client)
+    await _install_dashboard_cookie(async_client)
     invalid_with_cookie = await async_client.get(
         "/v1/quota-feed",
         headers={"Authorization": "Bearer not-a-real-key"},
@@ -305,12 +319,11 @@ async def test_quota_feed_rejects_dashboard_guest(async_client) -> None:
     async with SessionLocal() as session:
         await SettingsRepository(session).update(guest_access_enabled=True)
     await get_settings_cache().invalidate()
-    session_id = get_dashboard_session_store().create(
-        password_verified=False,
-        totp_verified=False,
+    async with SessionLocal() as session:
+        guest_generation = (await SettingsRepository(session).get_or_create()).guest_session_generation
+    session_id = get_dashboard_session_store().create_guest_session(
         ttl_seconds=3600,
-        role=DashboardRole.GUEST,
-        guest_verified=True,
+        guest_session_generation=guest_generation,
     )
     async_client.cookies.set(DASHBOARD_SESSION_COOKIE, session_id)
 
@@ -326,7 +339,7 @@ async def test_quota_feed_accepts_proxy_key_and_dashboard_session(async_client) 
     _, key = await _create_key("feed-open")
 
     by_key = await async_client.get("/v1/quota-feed", headers=_bearer(key))
-    _install_dashboard_cookie(async_client)
+    await _install_dashboard_cookie(async_client)
     by_cookie = await async_client.get("/v1/quota-feed")
 
     assert by_key.status_code == 200
@@ -347,7 +360,7 @@ async def test_quota_feed_scopes_keys_and_matches_router_inputs(async_client) ->
     scoped_a = await async_client.get("/v1/quota-feed", headers=_bearer(key_a))
     scoped_b = await async_client.get("/v1/quota-feed", headers=_bearer(key_b))
     unscoped = await async_client.get("/v1/quota-feed", headers=_bearer(key_all))
-    _install_dashboard_cookie(async_client)
+    await _install_dashboard_cookie(async_client)
     dashboard = await async_client.get("/v1/quota-feed")
     claude_quota = await async_client.get("/api/claude-sidecar/quota")
 
@@ -459,7 +472,7 @@ async def test_quota_feed_shows_nothing_to_unscoped_key_without_usage_sections(a
     _, key = await _create_key("feed-no-sections", usage_sections="")
 
     response = await async_client.get("/v1/quota-feed", headers=_bearer(key))
-    _install_dashboard_cookie(async_client)
+    await _install_dashboard_cookie(async_client)
     dashboard = await async_client.get("/v1/quota-feed")
 
     assert response.status_code == 200
@@ -510,7 +523,7 @@ async def test_quota_feed_hide_setting_hides_every_row_from_keys(async_client) -
     await _hide_upstream_quota(True)
 
     response = await async_client.get("/v1/quota-feed", headers=_bearer(key))
-    _install_dashboard_cookie(async_client)
+    await _install_dashboard_cookie(async_client)
     dashboard = await async_client.get("/v1/quota-feed")
 
     assert response.status_code == 200

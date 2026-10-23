@@ -82,7 +82,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.balancer.logic import AccountState, RoutingStrategy, select_account
 from app.core.clients.claude_sidecar import ClaudeSidecarClient
-from app.core.config.settings import get_settings
+from app.core.clock import REAL_CLOCK
 from app.core.config.settings_cache import get_settings_cache
 from app.core.metrics.prometheus import cliproxy_claude_sticky_cache_total, cliproxy_route_outcome_total
 from app.core.openai.chat_requests import ChatCompletionsRequest
@@ -419,6 +419,7 @@ async def choose_cliproxy_route(
         sticky_existing_account_id=pinned_id,
         sticky_refresh_skip_deadline=refresh_skip_deadline,
         sidecar_account_ids=sidecar_ids,
+        clock=REAL_CLOCK,
     )
     chosen = outcome.selection.account
     if chosen is None:
@@ -628,8 +629,6 @@ def _derived_chat_key(
     messages: object,
     api_key_id: str | None,
 ) -> str | None:
-    if not get_settings().openai_prompt_cache_key_derivation_enabled:
-        return None
     return derive_content_prompt_cache_key(
         model=model,
         instructions=instructions,
@@ -1283,6 +1282,12 @@ def _ranked_state(candidate: CliproxyCandidate, *, penalize_unknown: bool = True
         capacity_credits=float(candidate.weight),
         last_selected_at=_LAST_SELECTED.get(candidate.account_id),
     )
+    if state.status == AccountStatus.REAUTH_REQUIRED and state.access_token_expires_at is None:
+        # The shared selection keeps a reauth-required Codex account routable
+        # until its stored access token is known to expire. A CLIProxyAPI
+        # credential has no token on this side: CLIProxyAPI reporting it
+        # unauthorized means it cannot serve, so it is treated as expired.
+        state = replace(state, access_token_expires_at=0.0)
     measured = state.used_percent is not None or state.secondary_used_percent is not None
     if measured or not penalize_unknown:
         return state

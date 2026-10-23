@@ -2,7 +2,11 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends
 
-from app.core.auth.dependencies import set_dashboard_error_format, validate_dashboard_session
+from app.core.auth.dependencies import (
+    require_dashboard_write_access,
+    set_dashboard_error_format,
+    validate_dashboard_session,
+)
 from app.core.exceptions import DashboardConflictError
 from app.dependencies import FreeModelDiscoveryContext, get_free_model_discovery_context
 from app.modules.free_model_discovery.runner import (
@@ -30,7 +34,12 @@ async def get_plan(
     return await context.service.build_plan()
 
 
-@router.post("/runs", response_model=FreeModelDiscoveryRunResponse, status_code=201)
+@router.post(
+    "/runs",
+    response_model=FreeModelDiscoveryRunResponse,
+    status_code=201,
+    dependencies=[Depends(require_dashboard_write_access)],
+)
 async def start_run(
     payload: FreeModelDiscoveryStartRequest,
     context: FreeModelDiscoveryContext = Depends(get_free_model_discovery_context),
@@ -72,7 +81,11 @@ async def get_run(
     return await context.service.get_run(run_id)
 
 
-@router.post("/runs/{run_id}/cancel", response_model=FreeModelDiscoveryRunResponse)
+@router.post(
+    "/runs/{run_id}/cancel",
+    response_model=FreeModelDiscoveryRunResponse,
+    dependencies=[Depends(require_dashboard_write_access)],
+)
 async def cancel_run(
     run_id: str,
     context: FreeModelDiscoveryContext = Depends(get_free_model_discovery_context),

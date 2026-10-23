@@ -27,6 +27,12 @@ class ModelPrice:
     long_context_input_per_1m: float | None = None
     long_context_output_per_1m: float | None = None
     long_context_cached_input_per_1m: float | None = None
+    priority_long_context_input_per_1m: float | None = None
+    priority_long_context_output_per_1m: float | None = None
+    priority_long_context_cached_input_per_1m: float | None = None
+    flex_long_context_input_per_1m: float | None = None
+    flex_long_context_output_per_1m: float | None = None
+    flex_long_context_cached_input_per_1m: float | None = None
 
 
 # Anthropic bills a prompt-cache write at 2x the base input rate for the 1-hour
@@ -758,7 +764,10 @@ def get_pricing_for_model(
 ) -> tuple[str, ModelPrice] | None:
     if not model:
         return None
-    pricing = pricing or DEFAULT_PRICING_MODELS
+    if pricing is None:
+        from app.core.usage.pricing_catalog import get_active_prices
+
+        pricing = get_active_prices()
     aliases = aliases or DEFAULT_MODEL_ALIASES
 
     normalized = model.lower()
@@ -769,11 +778,18 @@ def get_pricing_for_model(
         if key.lower() == normalized:
             return key, value
 
+    # Upstream's dated-release fallback, for every family except Claude: a
+    # Claude id is priced only by its exact identity (below), so a dated Claude
+    # release must not inherit the undated key's price.
+    dated = re.fullmatch(r"(.+)-\d{4}-\d{2}-\d{2}", normalized)
+    if dated and dated[1] in pricing and not strip_known_sidecar_prefix(normalized).startswith("claude"):
+        return dated[1], pricing[dated[1]]
+
     # Versioned identity, then a non-Claude alias. A Claude id matches a key
     # only as that exact string, or after one leading cc/, cp-, or cp_ prefix.
     # A longer, dotted, dated, or effort-suffixed id does not inherit a shorter key.
     for alias in (resolve_versioned_model_id(normalized), resolve_model_alias(normalized, aliases)):
-        if not alias:
+        if not alias or (alias == "gpt-5" and normalized.startswith("gpt-5.")):
             continue
         for key, value in pricing.items():
             if key.lower() == alias.lower():
@@ -815,13 +831,24 @@ def _effective_rates(
 ) -> tuple[float, float, float]:
     is_long_context = (
         price.long_context_threshold_tokens is not None
+        and price.long_context_threshold_tokens > 0
         and usage.input_tokens > price.long_context_threshold_tokens
-        and price.long_context_input_per_1m is not None
-        and price.long_context_output_per_1m is not None
+    )
+    has_standard_long_context = (
+        price.long_context_input_per_1m is not None and price.long_context_output_per_1m is not None
     )
     input_rate = price.input_per_1m
     cached_rate = price.cached_input_per_1m if price.cached_input_per_1m is not None else input_rate
     output_rate = price.output_per_1m
+
+    if is_long_context:
+        tier = "priority" if _uses_priority_tier(service_tier) else "flex" if _uses_flex_tier(service_tier) else None
+        if tier is not None:
+            long_input = getattr(price, f"{tier}_long_context_input_per_1m")
+            long_output = getattr(price, f"{tier}_long_context_output_per_1m")
+            long_cached = getattr(price, f"{tier}_long_context_cached_input_per_1m")
+            if long_input is not None and long_output is not None:
+                return long_input, long_cached if long_cached is not None else long_input, long_output
 
     if _uses_priority_tier(service_tier):
         if price.priority_input_per_1m is not None and price.priority_output_per_1m is not None:
@@ -841,13 +868,13 @@ def _effective_rates(
         input_rate = price.flex_input_per_1m
         cached_rate = price.flex_cached_input_per_1m if price.flex_cached_input_per_1m is not None else input_rate
         output_rate = price.flex_output_per_1m
-        if is_long_context:
+        if is_long_context and has_standard_long_context:
             input_rate *= 2.0
             cached_rate *= 2.0
             output_rate *= 1.5
         return input_rate, cached_rate, output_rate
 
-    if is_long_context:
+    if is_long_context and has_standard_long_context:
         assert price.long_context_input_per_1m is not None
         assert price.long_context_output_per_1m is not None
         input_rate = price.long_context_input_per_1m
@@ -927,7 +954,10 @@ def calculate_costs(
     pricing: Mapping[str, ModelPrice] | None = None,
     aliases: Mapping[str, str] | None = None,
 ) -> UsageCostSummary:
-    pricing = pricing or DEFAULT_PRICING_MODELS
+    if pricing is None:
+        from app.core.usage.pricing_catalog import get_active_prices
+
+        pricing = get_active_prices()
     aliases = aliases or DEFAULT_MODEL_ALIASES
 
     totals: dict[str, float] = defaultdict(float)

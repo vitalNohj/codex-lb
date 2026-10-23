@@ -17,6 +17,8 @@ export type RequestFiltersProps = {
   modelOptions: MultiSelectOption[];
   statusOptions: MultiSelectOption[];
   viewMode: DashboardRequestLogViewMode;
+  /** Hide the API key filter (read-only guests receive no key options). */
+  showApiKeyFilter?: boolean;
   onSearchChange: (value: string) => void;
   onTimeframeChange: (value: FilterState["timeframe"]) => void;
   onViewModeChange: (value: DashboardRequestLogViewMode) => void;
@@ -35,6 +37,7 @@ export function RequestFilters({
   modelOptions,
   statusOptions,
   viewMode,
+  showApiKeyFilter = true,
   onSearchChange,
   onTimeframeChange,
   onViewModeChange,
@@ -97,12 +100,14 @@ export function RequestFilters({
           options={accountOptions}
           onChange={onAccountChange}
         />
-        <MultiSelectFilter
-          label={t("dashboard.filters.apiKeys")}
-          values={filters.apiKeyIds}
-          options={apiKeyOptions}
-          onChange={onApiKeyChange}
-        />
+        {showApiKeyFilter ? (
+          <MultiSelectFilter
+            label={t("dashboard.filters.apiKeys")}
+            values={filters.apiKeyIds}
+            options={apiKeyOptions}
+            onChange={onApiKeyChange}
+          />
+        ) : null}
         <MultiSelectFilter
           label={t("dashboard.filters.models")}
           values={filters.modelOptions}
@@ -115,7 +120,6 @@ export function RequestFilters({
           options={statusOptions}
           onChange={onStatusChange}
         />
-
         {filters.conversationId ? (
           <Badge variant="outline" className="h-8 gap-1.5 px-3 text-xs font-normal">
             <span className="max-w-[200px] truncate" title={filters.conversationId}>

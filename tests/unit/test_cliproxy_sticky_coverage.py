@@ -261,13 +261,6 @@ async def test_s1_nothing_to_hash_stays_unpinned(db_setup: bool, monkeypatch: py
     assert await _pins() == {}
 
 
-async def test_s1_derivation_switch_off_stays_unpinned(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(
-        routing, "get_settings", lambda: SimpleNamespace(openai_prompt_cache_key_derivation_enabled=False)
-    )
-    assert cliproxy_sticky_hints(_chat(_conversation(1)), api_key_id="key-1").derived_key is None
-
-
 def test_s1_identity_order_matches_cliproxyapi() -> None:
     hints = CliproxyStickyHints(prompt_cache_key="pck", body_session_id="body", derived_key="derived")
     headers = {"X-Claude-Code-Session-Id": "claude-sess"}
@@ -663,7 +656,7 @@ async def test_s5_cooling_last_resort_serves_when_the_spare_is_paused(
     del db_setup
     _install(monkeypatch, [_candidate("a", used=10.0), _candidate("b", used=40.0, status=AccountStatus.PAUSED)])
     routing._start_cooldown("cliproxy:claude:a")
-    # Pinned (session header) and unpinned (derivation off) paths both keep serving.
+    # Pinned (session header) and unpinned paths both keep serving.
     choice = await _route(_chat(_conversation(1)), headers={"X-Session-Id": "s5-last"})
     assert choice is not None and choice.account_id == "cliproxy:claude:a"
     _install(
