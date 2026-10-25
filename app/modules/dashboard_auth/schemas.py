@@ -134,7 +134,8 @@ class DashboardAuthSessionResponse(DashboardModel):
     #: Present for signed-in accounts only; principals without an account have nothing to re-verify.
     step_up: DashboardStepUpState | None = None
     #: True when the session was minted for an account carrying the
-    #: break-glass designation, so the header can show the emergency pill.
+    #: break-glass designation *and* ``local_login_policy`` is currently
+    #: restricted, so the header can show the emergency pill.
     break_glass_session: bool = False
 
 
