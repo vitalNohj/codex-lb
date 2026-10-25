@@ -14,7 +14,7 @@ The dashboard's local sign-in policy decides who may still use a password once a
 | `admins_only` | accounts holding the Admin preset | collapsed behind a "Sign in with a password" link |
 | `break_glass_only` | only a **qualifying** emergency account (see below) | nowhere — only at `/login?local=1` |
 
-Tightening the policy also changes how the emergency account signs in: a **break-glass** account always presents its second factor, whatever the install-wide two-factor settings say, its sign-in is recorded as `break_glass_login` at critical severity, and the header marks the session as an emergency session while it lasts.
+A **break-glass** account that has enrolled two-factor always presents its second factor, whatever the policy and the install-wide two-factor settings say. Tightening the policy changes what its sign-in means: while the policy is `admins_only` or `break_glass_only`, its sign-in is recorded as `break_glass_login` at critical severity (next to the ordinary `login_success`), and the header shows **Emergency session**. Under `enabled`, password sign-in is open to everyone, so the same sign-in is the ordinary way in. It writes only `login_success`, and the header shows nothing extra. The audit row depends on the policy at the moment of sign-in. The header label follows the current policy: an open session gets or loses it the next time the dashboard reloads its session, and in the tab where you change the policy that happens right away.
 
 ### The emergency account
 

@@ -60,6 +60,7 @@ from app.modules.dashboard_users.break_glass import (
     assert_break_glass_remains,
     break_glass_second_factor_required,
     local_login_admits,
+    policy_is_tightened,
 )
 from app.modules.dashboard_users.credentials import assert_credential_remains
 from app.modules.dashboard_users.repository import (
@@ -210,9 +211,12 @@ class DashboardSessionState:
     the cookie when the account is gone, disabled, or has revoked its sessions.
     ``kind == "guest"`` carries only the guest generation. ``step_up_verified_at``
     (``su``) is when the account last re-verified a credential for a sensitive
-    change; absent until it does. ``break_glass`` (``bg``) marks an emergency
-    session so the dashboard can say so; it is optional and its absence means
-    false, which is why the payload version does not change for it.
+    change; absent until it does. ``break_glass`` (``bg``) marks a session
+    minted for an account carrying the break-glass designation; the session
+    response reports it as an emergency session only while
+    ``local_login_policy`` is restricted (see ``describe_session``). It is
+    optional and its absence means false, which is why the payload version does
+    not change for it.
     """
 
     expires_at: int
@@ -697,7 +701,17 @@ class DashboardAuthService:
             access_summary=await self.access_summary() if manages_users else None,
             assignable_role_ids=assignable_role_ids() if manages_users else [],
             step_up=step_up,
-            break_glass_session=bool(resolved is not None and resolved.state.break_glass and user is not None),
+            # Read against the policy in force *now*, not the one the cookie was
+            # minted under: while password sign-in is open to everyone the
+            # designated account's sign-in is the ordinary way in, not an
+            # emergency, and loosening or tightening the policy re-labels the
+            # sessions that already exist on their next session read.
+            break_glass_session=bool(
+                resolved is not None
+                and resolved.state.break_glass
+                and user is not None
+                and policy_is_tightened(settings.local_login_policy)
+            ),
         )
         return SessionDescription(response=response, resolved=resolved)
 
@@ -1067,10 +1081,15 @@ class DashboardAuthService:
             actor=actor,
             target=target,
         )
-        if user.is_break_glass:
-            # The emergency door was used. This is the first (and, with the CLI,
-            # one of two) critical-severity events the product writes: an
-            # operator reading the audit log must never have to infer it.
+        # Decided from the policy in force at sign-in. While password sign-in is
+        # open to everyone the designated account is just another admin using
+        # the ordinary door, and a critical row on each of its sign-ins would
+        # stop the severity meaning anything.
+        if user.is_break_glass and policy_is_tightened((await self._repository.get_settings()).local_login_policy):
+            # The emergency door was used while password sign-in is restricted.
+            # This is the first (and, with the CLI, one of two) critical-severity
+            # events the product writes: an operator reading the audit log must
+            # never have to infer it.
             AuditService.log_async(
                 "break_glass_login",
                 actor_ip=actor_ip,

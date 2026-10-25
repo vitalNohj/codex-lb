@@ -242,7 +242,13 @@ async def test_the_emergency_admin_needs_a_second_factor_and_is_audited_as_criti
     value would let a regression that tied the two together pass: under
     ``enabled`` the designated account would then get in on its password alone,
     which is the state the whole invariant assumes cannot happen.
+
+    The emergency label is the policy's, though: while password sign-in is open
+    to everyone the same sign-in is the ordinary way in, so it reports no
+    emergency session and writes no critical row -- only ``login_success``.
     """
+
+    restricted = policy is not LocalLoginPolicy.ENABLED
 
     await _setup_admin(async_client)
     async with _client(app_instance) as person:
@@ -260,19 +266,54 @@ async def test_the_emergency_admin_needs_a_second_factor_and_is_audited_as_criti
         verified = await person.post("/api/dashboard-auth/totp/verify", json={"code": _code(secret)})
         assert verified.status_code == 200, verified.text
         assert verified.json()["authenticated"] is True
-        assert verified.json()["breakGlassSession"] is True
+        assert verified.json()["breakGlassSession"] is restricted
         assert (await person.get(SETTINGS)).status_code == 200
 
+    signed_in = [row for row in await _rows("login_success") if row.actor_username == "rescue"]
+    assert signed_in, "the ordinary sign-in row is written under every policy"
     emergency = await _rows("break_glass_login")
-    assert len(emergency) == 1
-    assert emergency[0].severity == "critical"
-    assert emergency[0].actor_username == "rescue"
+    if restricted:
+        assert len(emergency) == 1
+        assert emergency[0].severity == "critical"
+        assert emergency[0].actor_username == "rescue"
+    else:
+        assert emergency == []
 
-    # An account that carries no designation signs in without either.
-    await _set_policy(LocalLoginPolicy.ENABLED)
+    # An account that carries no designation signs in without either, whatever the policy.
     async with _client(app_instance) as ordinary:
+        await _set_policy(LocalLoginPolicy.ENABLED)
         await _invite_and_accept(async_client, ordinary, "olivia", OPERATOR_ROLE)
+        await _set_policy(LocalLoginPolicy.ADMINS_ONLY)
         assert (await ordinary.get(SESSION)).json()["breakGlassSession"] is False
+    assert len(await _rows("break_glass_login")) == (1 if restricted else 0)
+
+
+@pytest.mark.asyncio
+async def test_the_emergency_label_follows_the_policy_in_force(async_client: AsyncClient, app_instance) -> None:
+    """A live session is re-labelled when the policy changes, without signing in again.
+
+    The cookie records the designation; whether that is an emergency is read
+    from ``local_login_policy`` on each session read, so loosening the policy
+    drops the pill from a session that already exists and tightening it puts
+    the pill on one. No audit row is written by either change of label.
+    """
+
+    await _setup_admin(async_client)
+    async with _client(app_instance) as person:
+        _, secret = await _emergency_admin(async_client, person)
+        await _set_policy(LocalLoginPolicy.BREAK_GLASS_ONLY)
+        await person.post("/api/dashboard-auth/logout", json={})
+        await person.post(LOGIN, json={"username": "rescue", "password": PASSWORD})
+        verified = await person.post("/api/dashboard-auth/totp/verify", json={"code": _code(secret)})
+        assert verified.status_code == 200, verified.text
+        assert verified.json()["breakGlassSession"] is True
+
+        await _set_policy(LocalLoginPolicy.ENABLED)
+        assert (await person.get(SESSION)).json()["breakGlassSession"] is False
+
+        await _set_policy(LocalLoginPolicy.ADMINS_ONLY)
+        assert (await person.get(SESSION)).json()["breakGlassSession"] is True
+
     assert len(await _rows("break_glass_login")) == 1
 
 
@@ -291,8 +332,13 @@ async def test_the_migrated_admin_signs_in_and_enrols_while_the_policy_is_open(a
     assert await _enrol_totp(async_client)
 
 
+@pytest.mark.parametrize(
+    "policy", [LocalLoginPolicy.ENABLED, LocalLoginPolicy.ADMINS_ONLY], ids=lambda policy: policy.value
+)
 @pytest.mark.asyncio
-async def test_a_designation_without_a_secret_signs_in_as_an_ordinary_admin(async_client: AsyncClient) -> None:
+async def test_a_designation_without_a_secret_signs_in_as_an_ordinary_admin(
+    async_client: AsyncClient, policy: LocalLoginPolicy
+) -> None:
     """The unenrolled designation meets the install's own TOTP policy and nothing more.
 
     ``break_glass_second_factor_required`` binds an account that *holds* a
@@ -303,12 +349,18 @@ async def test_a_designation_without_a_secret_signs_in_as_an_ordinary_admin(asyn
     row belongs to the second factor — writing one for a sign-in that
     presented none would put a critical event on every ordinary sign-in of
     every upgraded install, and the severity would stop meaning anything.
+
+    Both labels also need the policy to be restricted: under ``enabled`` the
+    designated account's sign-in is the ordinary way in even once it presents
+    its new second factor.
     """
 
+    restricted = policy is not LocalLoginPolicy.ENABLED
     await _setup_admin(async_client)
     admin = await _user((await async_client.get(SESSION)).json()["user"]["id"])
     assert admin is not None and admin.is_break_glass is True and admin.totp_secret_encrypted is None
     await _require_totp_on_login()
+    await _set_policy(policy)
     await async_client.post("/api/dashboard-auth/logout", json={})
     await _clear_rate_limits()
 
@@ -316,10 +368,11 @@ async def test_a_designation_without_a_secret_signs_in_as_an_ordinary_admin(asyn
     assert login.status_code == 200, login.text
     body = login.json()
     # Signed in, not held pending: nothing asks a factor of an account that
-    # holds none. The indicator follows the designation all the same.
+    # holds none. The indicator follows the designation under a restricted
+    # policy; under ``enabled`` this is the ordinary way in.
     assert body["authenticated"] is True and body["totpRequiredOnLogin"] is False
     assert body["totpEnrollmentRequired"] is True
-    assert body["breakGlassSession"] is True
+    assert body["breakGlassSession"] is restricted
 
     refused = await async_client.get(SETTINGS)
     assert refused.status_code == 403 and _error(refused) == "totp_enrollment_required"
@@ -334,7 +387,8 @@ async def test_a_designation_without_a_secret_signs_in_as_an_ordinary_admin(asyn
     verified = await async_client.post("/api/dashboard-auth/totp/verify", json={"code": _code(secret)})
     assert verified.status_code == 200, verified.text
     assert (await async_client.get(SETTINGS)).status_code == 200
-    assert [row.severity for row in await _rows("break_glass_login")] == ["critical"]
+    # The second factor alone does not make it an emergency; the policy does.
+    assert [row.severity for row in await _rows("break_glass_login")] == (["critical"] if restricted else [])
 
 
 @pytest.mark.asyncio

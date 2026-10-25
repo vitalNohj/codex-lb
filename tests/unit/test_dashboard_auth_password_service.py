@@ -911,3 +911,79 @@ async def test_totp_replay_is_refused_per_user(monkeypatch: pytest.MonkeyPatch) 
         await service.verify_totp(session_id=_session_for(store, admin), code=code, ttl_seconds=3600)
     with pytest.raises(TotpInvalidCodeError):
         await service.disable_totp(session_id=verified, code=code)
+
+
+@pytest.mark.parametrize(
+    ("policy", "emergency"),
+    [("enabled", False), ("admins_only", True), ("break_glass_only", True)],
+)
+@pytest.mark.asyncio
+async def test_break_glass_sign_in_is_an_emergency_only_under_a_restricted_policy(
+    monkeypatch: pytest.MonkeyPatch, audit_events: list[_AuditCall], policy: str, emergency: bool
+) -> None:
+    """The critical row and the session label both follow ``local_login_policy``.
+
+    While password sign-in is open to everyone, the designated account's
+    sign-in is the ordinary way in: it writes ``login_success`` and nothing
+    critical, and the session it holds reports no emergency.
+    """
+
+    import pyotp
+
+    import app.core.auth.totp as totp_module
+    import app.modules.dashboard_auth.service as service_module
+    from app.core.crypto import TokenEncryptor
+
+    now = 1_700_000_000
+    monkeypatch.setattr(service_module, "time", lambda: now)
+    monkeypatch.setattr(totp_module, "time", lambda: now)
+
+    repository = _FakeRepository()
+    store = DashboardSessionStore()
+    service = _service(repository, store)
+    admin = await service.setup_password("password123")
+    assert admin.is_break_glass is True
+    secret = pyotp.random_base32()
+    admin.totp_secret_encrypted = TokenEncryptor().encrypt(secret)
+    repository.settings.local_login_policy = policy
+
+    verified, _ = await service.verify_totp(
+        session_id=_session_for(store, admin), code=pyotp.TOTP(secret).at(now), ttl_seconds=3600
+    )
+
+    assert len(_calls(audit_events, "login_success")) == 1
+    critical = _calls(audit_events, "break_glass_login")
+    assert [call.severity for call in critical] == ([AuditSeverity.CRITICAL] if emergency else [])
+    # The cookie always records the designation; the label is the policy's.
+    state = store.get(verified)
+    assert state is not None and state.break_glass is True
+    assert (await service.get_session_state(verified)).break_glass_session is emergency
+
+
+@pytest.mark.asyncio
+async def test_the_emergency_label_is_read_from_the_current_policy() -> None:
+    """Loosening the policy drops the label from a live session; tightening restores it."""
+
+    repository = _FakeRepository()
+    store = DashboardSessionStore()
+    service = _service(repository, store)
+    admin = await service.setup_password("password123")
+    session_id = store.create_user_session(
+        admin.id,
+        admin.session_generation,
+        password_verified=True,
+        totp_verified=True,
+        ttl_seconds=3600,
+        break_glass=True,
+    )
+
+    repository.settings.local_login_policy = "break_glass_only"
+    assert (await service.get_session_state(session_id)).break_glass_session is True
+    repository.settings.local_login_policy = "enabled"
+    assert (await service.get_session_state(session_id)).break_glass_session is False
+    repository.settings.local_login_policy = "admins_only"
+    assert (await service.get_session_state(session_id)).break_glass_session is True
+
+    # A cookie minted for an undesignated account never carries the label.
+    ordinary = _session_for(store, admin, totp_verified=True)
+    assert (await service.get_session_state(ordinary)).break_glass_session is False

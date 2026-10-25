@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { HttpResponse, http } from "msw";
 import { MemoryRouter, useLocation } from "react-router-dom";
@@ -7,12 +7,14 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { AppHeader } from "@/components/layout/app-header";
 import { useAuthStore } from "@/features/auth/hooks/use-auth";
+import { LoginHintSchema } from "@/features/auth/schemas";
 import { server } from "@/test/mocks/server";
 import {
   ADMIN_PERMISSIONS,
   OPERATOR_PERMISSIONS,
   VIEWER_PERMISSIONS,
   createAccountSummary,
+  createDashboardAuthSession,
   createDashboardSettings,
   createSessionUser,
 } from "@/test/mocks/factories";
@@ -378,6 +380,55 @@ describe("AppHeader", () => {
       useAuthStore.setState({ breakGlassSession: false, user: createSessionUser(), tier: "team" });
 
       renderHeader();
+
+      expect(screen.queryByTestId("emergency-session-pill")).not.toBeInTheDocument();
+    });
+
+    it.each([
+      ["enabled", false],
+      ["admins_only", true],
+      ["break_glass_only", true],
+    ] as const)(
+      "follows the session the server describes under the %s policy",
+      async (localLogin, emergency) => {
+        // The server owns the rule (designation and a restricted policy); the
+        // header renders whatever the refreshed session says, so a policy
+        // change followed by a session refresh relabels this very tab.
+        server.use(
+          http.get("/api/dashboard-auth/session", () =>
+            HttpResponse.json(
+              createDashboardAuthSession({
+                breakGlassSession: emergency,
+                login: LoginHintSchema.parse({ localLogin }),
+              }),
+            ),
+          ),
+        );
+        await act(() => useAuthStore.getState().refreshSession());
+
+        renderHeader();
+
+        if (emergency) {
+          expect(screen.getByTestId("emergency-session-pill")).toHaveTextContent("Emergency session");
+        } else {
+          expect(screen.queryByTestId("emergency-session-pill")).not.toBeInTheDocument();
+        }
+      },
+    );
+
+    it("drops off a live session when a refresh reports the policy loosened", async () => {
+      let emergency = true;
+      server.use(
+        http.get("/api/dashboard-auth/session", () =>
+          HttpResponse.json(createDashboardAuthSession({ breakGlassSession: emergency })),
+        ),
+      );
+      await act(() => useAuthStore.getState().refreshSession());
+      renderHeader();
+      expect(screen.getByTestId("emergency-session-pill")).toBeInTheDocument();
+
+      emergency = false;
+      await act(() => useAuthStore.getState().refreshSession());
 
       expect(screen.queryByTestId("emergency-session-pill")).not.toBeInTheDocument();
     });
