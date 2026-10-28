@@ -12,3 +12,4 @@
 ## 3. Dashboard
 
 - [x] 3.1 Browser-check the xAI card, its windows or "Quota not reported", and the CLIProxy filter against a local build with a stubbed listing.
+- [x] 3.2 Show provider quota windows, prepaid credits, or "Quota not reported" on the Accounts page detail for a non-Claude CLIProxyAPI card.

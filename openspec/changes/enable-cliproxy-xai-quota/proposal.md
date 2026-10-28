@@ -24,5 +24,7 @@ The stored quota snapshot therefore lists only Claude logins, and the dashboard'
 ## Impact
 
 - Backend: `app/modules/claude_sidecar/grok_credits.py`, `app/modules/claude_sidecar/quota_poller.py`.
-- No API, schema, setting, or migration change. The frontend already renders the provider card and the CLIProxy filter already includes it.
+- Frontend: the Accounts page detail for a non-Claude CLIProxyAPI card lists each login's provider quota windows and prepaid credits, or "Quota not reported", instead of Claude's 5h/weekly plan line.
+  The dashboard card and the CLIProxy filter already handle the provider card.
+- No API, schema, setting, or migration change.
 - Rollback is a revert. The next poll drops the xAI rows, but an xAI login held at that moment stays disabled until an operator resumes it, because the reverted poller no longer releases xAI holds.

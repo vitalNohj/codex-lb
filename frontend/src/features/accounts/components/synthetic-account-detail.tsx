@@ -1,4 +1,5 @@
 import { Bot, ExternalLink, Pause, Play, PlugZap, Settings as SettingsIcon } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { Link } from "react-router-dom";
 
 import { Button } from "@/components/ui/button";
@@ -6,7 +7,7 @@ import { ClaudeSidecarQuotaEstimation } from "@/features/accounts/components/cla
 import { SidecarEffortSelect } from "@/features/accounts/components/sidecar-effort-select";
 import { ExcludedModelsEditor } from "@/features/settings/components/excluded-models-editor";
 import { SessionAffinityToggle } from "@/features/settings/components/session-affinity-toggle";
-import type { AccountSummary } from "@/features/accounts/schemas";
+import type { AccountSummary, SidecarAuthAccount } from "@/features/accounts/schemas";
 import {
   useClaudeSidecarAccountExcludedModels,
   useClaudeSidecarAccountPause,
@@ -48,6 +49,9 @@ export function SyntheticAccountDetail({ account, busy }: { account: AccountSumm
   // An absent provider still means Claude, matching testProviderFor's default
   // and the schema, which declares provider as nullable/optional.
   const isClaude = (account.provider ?? "claude") === "claude";
+  // A non-Claude CLIProxyAPI login (for example xAI) reports provider quota
+  // windows, not Claude's 5h/weekly plan estimates.
+  const isCliproxyProvider = !isClaude && account.accountId.startsWith("cliproxy-");
   const openaiCompatEndpointId = openaiCompatEndpointIdFromAccountId(account.accountId) ?? "";
   const openaiCompatSidecar = useOpenAICompatSidecar(isOpenAICompat ? openaiCompatEndpointId : "", {
     modelsEnabled: false,
@@ -106,7 +110,9 @@ export function SyntheticAccountDetail({ account, busy }: { account: AccountSumm
                   ? "Read-only Ollama account"
                 : isOpenAICompat
                   ? "Read-only OpenAI-compat account"
-                  : "Read-only Claude sidecar account"}
+                  : isCliproxyProvider
+                    ? "Read-only CLIProxyAPI account"
+                    : "Read-only Claude sidecar account"}
         </p>
       </div>
 
@@ -189,6 +195,9 @@ export function SyntheticAccountDetail({ account, busy }: { account: AccountSumm
                         ? ` | models exceeded: ${auth.modelsExceeded.join(", ")}`
                         : ""}
                     </div>
+                    {isCliproxyProvider ? (
+                      <CliproxyQuotaLine auth={auth} />
+                    ) : (
                     <div className="truncate text-[11px] text-muted-foreground">
                       {auth.planType ? `${formatSlug(auth.planType)} | ` : "Plan required | "}
                       5h {formatPercentNullable(auth.primaryRemainingPercent ?? null)}
@@ -201,6 +210,7 @@ export function SyntheticAccountDetail({ account, busy }: { account: AccountSumm
                         ? ` (${auth.secondaryUsedTokens.toLocaleString()} / ${auth.secondaryTokenBudget.toLocaleString()} tok)`
                         : ""}
                     </div>
+                    )}
                   </div>
                 </div>
                 <div className="flex shrink-0 items-center gap-2">
@@ -279,6 +289,24 @@ export function SyntheticAccountDetail({ account, busy }: { account: AccountSumm
           </Button>
         ) : null}
       </div>
+    </div>
+  );
+}
+
+function CliproxyQuotaLine({ auth }: { auth: SidecarAuthAccount }) {
+  const { t } = useTranslation();
+  const windows = auth.quotaWindows ?? [];
+  const parts = windows.map(
+    (window) =>
+      `${window.label} ${formatPercentNullable(window.percentRemaining)}` +
+      (window.resetsAt ? ` (resets ${formatQuotaResetLabel(window.resetsAt)})` : ""),
+  );
+  if (auth.prepaidCredits != null) {
+    parts.push(`${t("settings.cliproxy.meta.prepaid")} ${auth.prepaidCredits}`);
+  }
+  return (
+    <div className="truncate text-[11px] text-muted-foreground">
+      {parts.length > 0 ? parts.join(" | ") : t("dashboard.cliproxyAuth.quotaUnknown")}
     </div>
   );
 }
