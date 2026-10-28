@@ -15,8 +15,8 @@ What reaches the fake xAI upstream is the proof:
 * every turn carries the same ``prompt_cache_key`` and ``x-grok-conv-id``,
   equal to codex-lb's sticky pin id, and lands on the same credential, both
   when codex-lb pins the credential and when it leaves the choice to
-  CLIProxyAPI's session affinity (production today: xAI OAuth logins only
-  become pin candidates with the xAI quota rollout);
+  CLIProxyAPI's session affinity (before the first quota poll codex-lb knows
+  no xAI login to pin);
 * xAI's exact cost (``cost_in_usd_ticks``), cached and reasoning tokens land
   in the request log;
 * CLIProxyAPI's ``routing.session-affinity`` is read and a warning is logged
@@ -262,12 +262,12 @@ def fresh_settings(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
 
 
 @pytest.fixture
-def xai_pin_candidates() -> bool:
-    """Whether xAI OAuth logins are codex-lb pin candidates.
+def quota_poll_first() -> bool:
+    """Whether codex-lb runs one quota poll before the conversation.
 
-    They join the candidates only behind the xAI quota rollout flag, which is
-    still off in production. A test parametrizes this to ``False`` to prove
-    the session-affinity fallback that production relies on today.
+    The poll lists the xAI OAuth logins, which makes them codex-lb pin
+    candidates. A test parametrizes this to ``False`` to prove the
+    session-affinity fallback that serves a conversation before that poll.
     """
 
     return True
@@ -279,13 +279,9 @@ async def codex_lb(
     app_instance,
     cliproxy: str,
     fresh_settings,
-    xai_pin_candidates: bool,
+    quota_poll_first: bool,
 ) -> AsyncIterator[AsyncClient]:
     del fresh_settings
-    monkeypatch.setattr(
-        "app.modules.claude_sidecar.grok_credits.XAI_QUOTA_INTEGRATION_ENABLED",
-        xai_pin_candidates,
-    )
     await _wait_ready(cliproxy)
     await init_http_client()
     try:
@@ -313,9 +309,10 @@ async def codex_lb(
                 },
             )
             assert response.status_code == 200, response.text
-            # One quota poll, as the running service does, so codex-lb knows both
-            # credentials and pins the conversation to one of them.
-            await build_claude_sidecar_quota_poller()._poll_locked()
+            if quota_poll_first:
+                # One quota poll, as the running service does, so codex-lb knows
+                # both credentials and pins the conversation to one of them.
+                await build_claude_sidecar_quota_poller()._poll_locked()
             yield client
     finally:
         await close_http_client()
@@ -446,14 +443,14 @@ async def test_native_route_round_trips_encrypted_reasoning_streaming(codex_lb, 
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("xai_pin_candidates", [False])
+@pytest.mark.parametrize("quota_poll_first", [False])
 async def test_native_route_without_a_codex_lb_pin_stays_on_one_credential(
-    codex_lb, fake_xai, xai_pin_candidates
+    codex_lb, fake_xai, quota_poll_first
 ) -> None:
-    """Production today: xAI OAuth logins are not pin candidates yet, so
+    """Before the first quota poll codex-lb knows no xAI login to pin, so
     CLIProxyAPI's session affinity is what keeps a conversation's cache."""
 
-    del xai_pin_candidates
+    del quota_poll_first
     fake, _port = fake_xai
     await _assert_native_conversation(codex_lb, fake, stream=True, pinned=False)
 

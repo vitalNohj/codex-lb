@@ -5,12 +5,13 @@ reads the credential file. CLIProxyAPI returns the upstream body as a JSON
 string, and Go's JSON encoder replaces invalid UTF-8, so the request uses
 grpc-web-text (base64 frames) instead of raw protobuf.
 
-The product switch stays off. Claude polling does not call this module until
-:func:`xai_quota_integration_enabled` is turned on for the rollout.
+The quota poller calls this module for xAI credentials only. Claude rows pass
+through every function here unchanged.
 """
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import struct
 from collections.abc import Mapping, Sequence
@@ -33,11 +34,11 @@ from app.modules.claude_sidecar.quota import (
 from app.modules.claude_sidecar.rate_limit_hold import XAI_LIMIT_BACKOFF, XAI_LIMIT_FREE_USAGE
 from app.modules.claude_sidecar.usage_queue import parse_usage_queue_record
 
-# Leave this false until the rollout PR. A deploy must not poll or hold xAI
-# credentials, and must not change Claude quota behavior.
-XAI_QUOTA_INTEGRATION_ENABLED = False
-
 GROK_CREDITS_URL = "https://grok.com/grok_api_v2.GrokBuildBilling/GetGrokCreditsConfig"
+# The quota poll saves Claude quota and hold releases only after every Grok
+# fetch returns, so one stalled grok.com call must not hold it for the general
+# sidecar request timeout.
+GROK_CREDITS_TIMEOUT_SECONDS = 20.0
 _RESPONSE_LIMIT_BYTES = 64 * 1024
 _MAX_SAFE_INTEGER = 9007199254740991
 _EMPTY_GRPC_WEB_TEXT_BODY = base64.b64encode(bytes(5)).decode("ascii")
@@ -87,12 +88,6 @@ class _Field:
         self.field = field
         self.wire = wire
         self.value = value
-
-
-def xai_quota_integration_enabled() -> bool:
-    """Return whether xAI quota polling, holds, and usage learning run."""
-
-    return XAI_QUOTA_INTEGRATION_ENABLED
 
 
 def classify_xai_429(body: str) -> str:
@@ -155,22 +150,25 @@ async def fetch_grok_credits(
     if not auth_index.strip() or not credential_usable:
         raise GrokCreditsUnavailable("Grok credits credential is not usable")
     try:
-        raw = await client.api_call(
-            auth_index=auth_index,
-            method="POST",
-            url=GROK_CREDITS_URL,
-            header={
-                "Authorization": "Bearer $TOKEN$",
-                "Accept": "application/grpc-web-text",
-                "Content-Type": "application/grpc-web-text",
-                "Origin": "https://grok.com",
-                "Referer": "https://grok.com/?_s=usage",
-                "x-grpc-web": "1",
-                "x-user-agent": "connect-es/2.1.1",
-            },
-            data=_EMPTY_GRPC_WEB_TEXT_BODY,
-            decode_json=False,
-        )
+        async with asyncio.timeout(GROK_CREDITS_TIMEOUT_SECONDS):
+            raw = await client.api_call(
+                auth_index=auth_index,
+                method="POST",
+                url=GROK_CREDITS_URL,
+                header={
+                    "Authorization": "Bearer $TOKEN$",
+                    "Accept": "application/grpc-web-text",
+                    "Content-Type": "application/grpc-web-text",
+                    "Origin": "https://grok.com",
+                    "Referer": "https://grok.com/?_s=usage",
+                    "x-grpc-web": "1",
+                    "x-user-agent": "connect-es/2.1.1",
+                },
+                data=_EMPTY_GRPC_WEB_TEXT_BODY,
+                decode_json=False,
+            )
+    except TimeoutError as exc:
+        raise GrokCreditsUnavailable("Grok credits request timed out") from exc
     except ClaudeSidecarUnavailableError as exc:
         raise GrokCreditsUnavailable("Grok credits transport failed") from exc
     except ClaudeSidecarError as exc:
@@ -370,12 +368,9 @@ def note_xai_usage_queue(raw_records: Sequence[Mapping[str, JsonValue]]) -> None
     """Remember xAI usage-queue rows until the quota poll folds them in.
 
     The raw 429 body is classified immediately and dropped, so a credential
-    error never sits in the pending list. Claude rows are ignored. While the
-    product switch is off this stores nothing.
+    error never sits in the pending list. Claude rows are ignored.
     """
 
-    if not xai_quota_integration_enabled():
-        return
     for raw in raw_records:
         if not is_json_mapping(raw):
             continue
@@ -403,16 +398,10 @@ def note_xai_usage_queue(raw_records: Sequence[Mapping[str, JsonValue]]) -> None
 
 
 def take_xai_usage_observations() -> tuple[XaiUsageObservation, ...]:
-    """Remove and return pending xAI usage rows.
-
-    A disabled integration discards anything still pending so a later enable
-    cannot replay a stale 429.
-    """
+    """Remove and return pending xAI usage rows."""
 
     pending = tuple(_pending_usage)
     _pending_usage.clear()
-    if not xai_quota_integration_enabled():
-        return ()
     return pending
 
 

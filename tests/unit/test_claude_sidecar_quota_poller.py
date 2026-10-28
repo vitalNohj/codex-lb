@@ -17,6 +17,7 @@ from app.core.clients.claude_sidecar import (
     ClaudeSidecarUnavailableError,
     SidecarPrefix,
 )
+from app.modules.claude_sidecar import grok_credits as grok_credits_module
 from app.modules.claude_sidecar import quota_poller as quota_poller_module
 from app.modules.claude_sidecar.quota import (
     GrokCreditsQuota,
@@ -1044,10 +1045,6 @@ async def test_poll_pause_during_fetch_does_not_reset_another_auth_when_listing_
 _XAI_NAME = "grok-a.json"
 
 
-def _enable_xai_quota(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("app.modules.claude_sidecar.grok_credits.XAI_QUOTA_INTEGRATION_ENABLED", True)
-
-
 def _xai_file(*, disabled: bool = False) -> dict[str, Any]:
     return {
         "name": _XAI_NAME,
@@ -1140,34 +1137,70 @@ def _stored_grok_snapshot() -> str:
 
 
 @pytest.mark.asyncio
-async def test_poll_leaves_xai_alone_while_the_integration_is_off(monkeypatch) -> None:
+async def test_xai_holds_never_disable_or_enable_a_claude_credential(monkeypatch) -> None:
+    """An xAI hold starting or ending patches the xAI file and nothing else.
+
+    The Claude login is paused by the operator and has no hold of its own.
+    The expired xAI hold is enabled again on the first poll, and a fresh
+    free-usage 429 disables it on the second. Neither poll sends a PATCH for
+    the Claude file, and its pause stays.
+    """
+
     client = _GrokApiClient()
-
-    async def _explode(**_kwargs: Any) -> Any:
-        raise AssertionError("xAI quota polling must stay off")
-
-    client.api_call = _explode  # type: ignore[method-assign]
+    client.disabled = True
+    client.extra_files = [_xai_file(disabled=True)]
+    client.api_result = _grpc_text(_message(1, _weekly_config()))
+    expired = SidecarRateLimitHold(
+        name=_XAI_NAME,
+        until=datetime(2026, 9, 1, tzinfo=timezone.utc),
+        released=False,
+        provider="xai",
+        kind="backoff",
+        backoff_level=1,
+    )
+    stored = snapshot_from_json(_stored_grok_snapshot())
+    assert stored is not None
+    settings = _FakeSettings(
+        claude_sidecar_quota_state_json=snapshot_to_json(
+            replace(
+                stored,
+                accounts=tuple(replace(account, disabled=True) for account in stored.accounts),
+                rate_limit_holds=(expired,),
+            )
+        )
+    )
     repo_holder, poller = _poll_with_usage(
         monkeypatch,
-        _FakeSettings(),
+        settings,
         client,
         _usage(40.0, 70.0, five_reset=_FUTURE),
     )
 
     await poller._poll_once()
 
+    assert client.patches == [(_XAI_NAME, False)]
     snapshot = _read_snapshot(repo_holder)
     assert snapshot is not None
-    assert [account.provider for account in snapshot.accounts] == ["claude"]
-    assert client.patches == []
-    assert snapshot.accounts[0].oauth_usage is not None
-    assert snapshot.accounts[0].oauth_usage.five_hour is not None
-    assert snapshot.accounts[0].oauth_usage.five_hour.remaining_percent == 40.0
+    by_name = {account.name: account for account in snapshot.accounts}
+    assert by_name[_AUTH_NAME].disabled is True
+    assert by_name[_XAI_NAME].disabled is False
+    assert snapshot.rate_limit_holds == ()
+
+    client.api_error = ClaudeSidecarError(429, "limited", body='{"code":"free-usage-exhausted"}')
+    await poller._poll_once()
+
+    assert client.patches == [(_XAI_NAME, False), (_XAI_NAME, True)]
+    assert all(name != _AUTH_NAME for name, _disabled in client.patches)
+    snapshot = _read_snapshot(repo_holder)
+    assert snapshot is not None
+    by_name = {account.name: account for account in snapshot.accounts}
+    assert by_name[_AUTH_NAME].disabled is True
+    assert by_name[_XAI_NAME].disabled is True
+    assert [(hold.name, hold.provider) for hold in snapshot.rate_limit_holds] == [(_XAI_NAME, "xai")]
 
 
 @pytest.mark.asyncio
 async def test_poll_stores_grok_windows_from_the_api_call_passthrough(monkeypatch) -> None:
-    _enable_xai_quota(monkeypatch)
     client = _GrokApiClient()
     client.api_result = _grpc_text(_message(1, _weekly_config()))
     repo_holder, poller = _poll_with_usage(
@@ -1200,7 +1233,6 @@ async def test_poll_stores_grok_windows_from_the_api_call_passthrough(monkeypatc
 
 @pytest.mark.asyncio
 async def test_poll_holds_only_the_xai_credential_on_free_usage_429(monkeypatch) -> None:
-    _enable_xai_quota(monkeypatch)
     client = _GrokApiClient()
     client.api_error = ClaudeSidecarError(429, "limited", body='{"code":"free-usage-exhausted"}')
     repo_holder, poller = _poll_with_usage(
@@ -1232,7 +1264,6 @@ async def test_poll_holds_only_the_xai_credential_on_free_usage_429(monkeypatch)
 
 @pytest.mark.asyncio
 async def test_poll_does_not_call_grok_for_an_unavailable_credential(monkeypatch) -> None:
-    _enable_xai_quota(monkeypatch)
     client = _GrokApiClient()
     client.extra_files = [{**_xai_file(), "unavailable": True, "status": "error"}]
     client.api_result = _grpc_text(_message(1, _weekly_config()))
@@ -1256,7 +1287,6 @@ async def test_poll_does_not_call_grok_for_an_unavailable_credential(monkeypatch
 
 @pytest.mark.asyncio
 async def test_poll_keeps_stored_grok_windows_when_the_passthrough_is_down(monkeypatch) -> None:
-    _enable_xai_quota(monkeypatch)
     client = _GrokApiClient()
     client.api_error = ClaudeSidecarUnavailableError("connection refused")
     repo_holder, poller = _poll_with_usage(
@@ -1280,6 +1310,62 @@ async def test_poll_keeps_stored_grok_windows_when_the_passthrough_is_down(monke
     assert by_provider["claude"].oauth_usage.five_hour is not None
     assert by_provider["claude"].oauth_usage.five_hour.remaining_percent == 12.0
     assert snapshot.rate_limit_holds == ()
+
+
+class _StalledGrokApiClient(_GrokApiClient):
+    def __init__(self) -> None:
+        super().__init__()
+        self.in_flight = 0
+        self.max_in_flight = 0
+
+    async def api_call(self, **kwargs: Any) -> Any:
+        self.api_calls.append(kwargs)
+        self.in_flight += 1
+        self.max_in_flight = max(self.max_in_flight, self.in_flight)
+        try:
+            await asyncio.Event().wait()
+        finally:
+            self.in_flight -= 1
+        raise AssertionError("unreachable")
+
+
+@pytest.mark.asyncio
+async def test_stalled_grok_calls_time_out_together_and_claude_quota_is_still_saved(monkeypatch) -> None:
+    monkeypatch.setattr(grok_credits_module, "GROK_CREDITS_TIMEOUT_SECONDS", 0.2)
+    client = _StalledGrokApiClient()
+    client.extra_files = [
+        _xai_file(),
+        {**_xai_file(), "name": "grok-b.json", "email": "grok-b@example.com", "auth_index": "x2"},
+        {**_xai_file(), "name": "grok-c.json", "email": "grok-c@example.com", "auth_index": "x3"},
+    ]
+    repo_holder, poller = _poll_with_usage(
+        monkeypatch,
+        _FakeSettings(claude_sidecar_quota_state_json=_stored_grok_snapshot()),
+        client,
+        _usage(12.0, 80.0, five_reset=_FUTURE),
+    )
+
+    started = asyncio.get_running_loop().time()
+    await poller._poll_once()
+    elapsed = asyncio.get_running_loop().time() - started
+
+    assert len(client.api_calls) == 3
+    assert client.max_in_flight == 3
+    assert elapsed < 0.55
+    snapshot = _read_snapshot(repo_holder)
+    assert snapshot is not None
+    assert client.patches == []
+    assert snapshot.rate_limit_holds == ()
+    by_name = {account.name: account for account in snapshot.accounts}
+    claude_usage = by_name[_AUTH_NAME].oauth_usage
+    assert claude_usage is not None
+    assert claude_usage.five_hour is not None
+    assert claude_usage.five_hour.remaining_percent == 12.0
+    stored = by_name[_XAI_NAME].grok_credits
+    assert stored is not None
+    assert stored.windows[0].percent_remaining == 11.0
+    assert by_name["grok-b.json"].grok_credits is None
+    assert [account.name for account in snapshot.accounts] == [_AUTH_NAME, _XAI_NAME, "grok-b.json", "grok-c.json"]
 
 
 class _AffinityOffClient(_FakeClient):

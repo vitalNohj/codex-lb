@@ -452,6 +452,65 @@ describe("AccountDetail", () => {
     await waitFor(() => expect(received).toBe(true));
   });
 
+  it("shows Grok windows or quota not reported on an xAI CLIProxyAPI account", () => {
+    const login = {
+      paused: false,
+      quotaExceeded: false,
+      modelsExceeded: [],
+      success: 0,
+      failed: 0,
+      excludedModels: [],
+      excludedModelsState: "unsupported" as const,
+    };
+    renderWithClient(
+      <SyntheticAccountDetail
+        account={createAccountSummary({
+          accountId: "cliproxy-xai",
+          email: "grok-a@example.com",
+          displayName: "CLIProxyAPI xAI",
+          planType: "xai",
+          status: "active",
+          synthetic: true,
+          readOnly: true,
+          kind: "sidecar",
+          provider: "xai",
+          healthStatus: "healthy",
+          baseUrl: "http://127.0.0.1:8317",
+          sidecarAuths: [
+            {
+              ...login,
+              name: "xai-grok-a.json",
+              authIndex: "x1",
+              email: "grok-a@example.com",
+              provider: "xai",
+              status: "active",
+              quotaWindows: [
+                { id: "credits", label: "week", kind: "weekly", percentRemaining: 62.5, resetsAt: null },
+              ],
+              prepaidCredits: 42,
+            },
+            {
+              ...login,
+              name: "xai-grok-b.json",
+              authIndex: "x2",
+              email: "grok-b@example.com",
+              provider: "xai",
+              status: "active",
+              quotaWindows: [],
+            },
+          ],
+        })}
+        busy={false}
+      />,
+    );
+
+    expect(screen.getByText("Read-only CLIProxyAPI account")).toBeInTheDocument();
+    expect(screen.getByText("week 63% | Prepaid credits 42")).toBeInTheDocument();
+    expect(screen.getByText("Quota not reported")).toBeInTheDocument();
+    expect(screen.queryByText(/Plan required/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Pause grok/ })).not.toBeInTheDocument();
+  });
+
   it("does not show session affinity on a non-Claude sidecar account", () => {
     renderWithClient(
       <SyntheticAccountDetail
