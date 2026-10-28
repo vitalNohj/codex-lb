@@ -233,6 +233,140 @@ describe("AccountCards", () => {
     expect(screen.getByRole("button", { name: "Pause one@example.com" })).toBeInTheDocument();
   });
 
+  it("expands a CLIProxyAPI xAI account into one card per login", () => {
+    renderWithProviders(
+      <AccountCards
+        accounts={[
+          createAccountSummary({
+            accountId: "cliproxy-xai",
+            email: "grok-a@example.com",
+            displayName: "CLIProxyAPI xAI",
+            planType: "xai",
+            status: "active",
+            synthetic: true,
+            kind: "sidecar",
+            provider: "xai",
+            baseUrl: "http://127.0.0.1:8317",
+            usage: null,
+            sidecarAuths: [
+              {
+                name: "xai-grok-a.json",
+                authIndex: "x1",
+                email: "grok-a@example.com",
+                provider: "xai",
+                paused: false,
+                quotaExceeded: false,
+                modelsExceeded: [],
+                excludedModels: [],
+                excludedModelsState: "unsupported",
+                success: 0,
+                failed: 0,
+                quotaWindows: [
+                  { id: "credits", label: "week", kind: "weekly", percentRemaining: 62.5, resetsAt: null },
+                ],
+              },
+              {
+                name: "xai-grok-b.json",
+                authIndex: "x2",
+                email: null,
+                provider: "xai",
+                planType: "super",
+                paused: false,
+                quotaExceeded: false,
+                modelsExceeded: [],
+                excludedModels: [],
+                excludedModelsState: "unsupported",
+                success: 0,
+                failed: 0,
+                quotaWindows: [],
+              },
+            ],
+          }),
+        ]}
+        onAction={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText("grok-a@example.com")).toBeInTheDocument();
+    expect(screen.getByText("xai-grok-b.json")).toBeInTheDocument();
+    expect(screen.getByText("xAI")).toBeInTheDocument();
+    expect(screen.getByText("Super | xAI")).toBeInTheDocument();
+    expect(screen.getByText("week")).toBeInTheDocument();
+    expect(screen.getByText("Quota not reported")).toBeInTheDocument();
+    expect(screen.queryByText("CLIProxyAPI xAI")).not.toBeInTheDocument();
+    expect(screen.queryByText("http://127.0.0.1:8317")).not.toBeInTheDocument();
+    expect(screen.queryByText("Xai")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Pause/ })).not.toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: "Details" })).toHaveLength(2);
+  });
+
+  it("keeps the grouped CLIProxyAPI xAI card when no login exists yet", () => {
+    renderWithProviders(
+      <AccountCards
+        accounts={[
+          createAccountSummary({
+            accountId: "cliproxy-xai",
+            email: "xai.cliproxy.local",
+            displayName: "CLIProxyAPI xAI",
+            planType: "xai",
+            status: "active",
+            synthetic: true,
+            kind: "sidecar",
+            provider: "xai",
+            baseUrl: "http://127.0.0.1:8317",
+            usage: null,
+            sidecarAuths: [],
+          }),
+        ]}
+        onAction={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText("CLIProxyAPI xAI")).toBeInTheDocument();
+    expect(screen.getByText("Xai | http://127.0.0.1:8317")).toBeInTheDocument();
+  });
+
+  it("does not split a non-xAI CLIProxyAPI provider into login cards", () => {
+    renderWithProviders(
+      <AccountCards
+        accounts={[
+          createAccountSummary({
+            accountId: "cliproxy-gemini",
+            email: "gemini@example.com",
+            displayName: "CLIProxyAPI Gemini",
+            planType: "gemini",
+            status: "active",
+            synthetic: true,
+            kind: "sidecar",
+            provider: "gemini",
+            baseUrl: "http://127.0.0.1:8317",
+            usage: null,
+            sidecarAuths: [
+              {
+                name: "gemini-1.json",
+                authIndex: "g1",
+                email: "gemini-login@example.com",
+                provider: "gemini",
+                paused: false,
+                quotaExceeded: false,
+                modelsExceeded: [],
+                excludedModels: [],
+                excludedModelsState: "unsupported",
+                success: 0,
+                failed: 0,
+              },
+            ],
+          }),
+        ]}
+        onAction={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText("CLIProxyAPI Gemini")).toBeInTheDocument();
+    expect(screen.getByText("gemini-login@example.com")).toBeInTheDocument();
+    expect(screen.queryByText("xAI")).not.toBeInTheDocument();
+  });
+
   it("links the empty-account state to the Accounts page", () => {
     render(
       <MemoryRouter>

@@ -497,6 +497,100 @@ describe("AccountCard", () => {
     expect(container.querySelector(".privacy-blur")).not.toBeNull();
   });
 
+  it("renders an xAI login as an email card with an xAI subtitle and no Claude controls", async () => {
+    const user = userEvent.setup();
+    const onAction = vi.fn();
+    const account = createAccountSummary({
+      accountId: "cliproxy-xai",
+      email: "grok@example.com",
+      displayName: "CLIProxyAPI xAI",
+      planType: "xai",
+      status: "active",
+      synthetic: true,
+      readOnly: true,
+      kind: "sidecar",
+      provider: "xai",
+      baseUrl: "http://127.0.0.1:8317",
+      usage: null,
+    });
+    const auth = {
+      name: "xai-grok.json",
+      authIndex: "x1",
+      email: "grok@example.com",
+      provider: "xai",
+      planType: "max20",
+      paused: false,
+      quotaExceeded: false,
+      modelsExceeded: [],
+      excludedModels: [],
+      excludedModelsState: "unsupported",
+      success: 0,
+      failed: 0,
+      quotaWindows: [
+        { id: "credits", label: "week", kind: "weekly", percentRemaining: 62.5, resetsAt: null },
+      ],
+    };
+
+    renderWithProviders(<ClaudeAuthCard account={account} auth={auth} onAction={onAction} variant="xai" />);
+
+    const title = screen.getByText("grok@example.com");
+    expect(title).toHaveClass("text-sm", "font-semibold");
+    expect(screen.getByText("Max20 | xAI")).toBeInTheDocument();
+    expect(screen.queryByText("CLIProxyAPI xAI")).not.toBeInTheDocument();
+    expect(screen.queryByText("http://127.0.0.1:8317")).not.toBeInTheDocument();
+    expect(screen.queryByText("Xai")).not.toBeInTheDocument();
+    const quota = screen.getByRole("group", { name: "Quota for grok@example.com" });
+    expect(quota).toHaveTextContent("week");
+    expect(quota).toHaveTextContent("63%");
+    expect(quota.closest(".rounded-lg.border")).toBeNull();
+    expect(screen.queryByText("5h")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Pause/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("group", { name: "Excluded models" })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Details" }));
+    expect(onAction).toHaveBeenCalledWith(account, "details");
+    expect(await screen.findByText("Reasoning effort override")).toBeInTheDocument();
+  });
+
+  it("blurs an xAI login email when privacy mode is enabled", () => {
+    act(() => {
+      usePrivacyStore.setState({ blurred: true });
+    });
+    const account = createAccountSummary({
+      accountId: "cliproxy-xai",
+      displayName: "CLIProxyAPI xAI",
+      planType: "xai",
+      status: "active",
+      synthetic: true,
+      kind: "sidecar",
+      provider: "xai",
+      usage: null,
+    });
+    const auth = {
+      name: "xai-grok.json",
+      authIndex: "x1",
+      email: "grok@example.com",
+      provider: "xai",
+      paused: false,
+      quotaExceeded: false,
+      modelsExceeded: [],
+      excludedModels: [],
+      excludedModelsState: "unsupported",
+      success: 0,
+      failed: 0,
+      quotaWindows: [],
+    };
+
+    const { container } = renderWithProviders(
+      <ClaudeAuthCard account={account} auth={auth} variant="xai" />,
+    );
+
+    expect(screen.getByText("grok@example.com").closest(".privacy-blur")).not.toBeNull();
+    expect(container.querySelector(".privacy-blur")).not.toBeNull();
+    expect(screen.getByText("xAI")).toBeInTheDocument();
+    expect(screen.getByText("Quota not reported")).toBeInTheDocument();
+  });
+
   it("renders a fallback Claude Usage panel when no auth accounts exist", () => {
     const account = createAccountSummary({
       accountId: "claude-sidecar",

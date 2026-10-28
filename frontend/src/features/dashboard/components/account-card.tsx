@@ -270,28 +270,97 @@ function NativeAccountCard({ account, showAccountId = false, readOnly = false, o
   );
 }
 
-export function ClaudeAuthCard({
-  account,
-  auth,
-  onAction,
-}: {
-  account: AccountSummary;
-  auth: SidecarAuthAccount;
-  onAction?: (account: AccountSummary, action: AccountAction) => void;
-}) {
-  const blurred = usePrivacyStore((s) => s.blurred);
-  const pauseMutation = useClaudeSidecarAccountPause();
-  const title = auth.email ?? auth.name;
-  const status = claudeAuthBadgeStatus(auth, account.status);
+function claudeLoginSubtitle(auth: SidecarAuthAccount): string {
   const planLabel = auth.planType ? formatSlug(auth.planType) : "Claude";
   const providerLabel = auth.provider === "claude"
     ? "Claude"
     : auth.provider
       ? formatSlug(auth.provider)
       : "CLIProxyAPI";
+  return `${planLabel} | ${providerLabel}`;
+}
+
+function xaiLoginSubtitle(planType: string | null | undefined): string {
+  const plan = planType?.trim() ?? "";
+  if (plan.length === 0 || plan.toLowerCase() === "xai") {
+    return "xAI";
+  }
+  return `${formatSlug(plan)} | xAI`;
+}
+
+function CliproxyAuthQuotaBars({
+  title,
+  windows,
+}: {
+  title: string;
+  windows: SidecarAuthAccount["quotaWindows"];
+}) {
+  const { t } = useTranslation();
+  if (windows.length === 0) {
+    return <p className="text-xs text-muted-foreground">{t("dashboard.cliproxyAuth.quotaUnknown")}</p>;
+  }
+  return (
+    <div
+      role="group"
+      aria-label={t("dashboard.cliproxyAuth.quotaAria", { label: title })}
+      className={cn("grid gap-3", windows.length > 1 ? "grid-cols-2" : "grid-cols-1")}
+    >
+      {windows.map((window) => (
+        <QuotaBar
+          key={window.id}
+          label={window.label}
+          percent={window.percentRemaining}
+          resetLabel={window.resetsAt ? formatQuotaResetLabel(window.resetsAt) : null}
+        />
+      ))}
+    </div>
+  );
+}
+
+function ClaudeAuthPauseButton({ auth, title }: { auth: SidecarAuthAccount; title: string }) {
+  const pauseMutation = useClaudeSidecarAccountPause();
+  return (
+    <Button
+      type="button"
+      size="sm"
+      variant="ghost"
+      className={cn(
+        "h-7 shrink-0 gap-1.5 rounded-lg text-xs",
+        auth.paused
+          ? "text-emerald-600 hover:bg-emerald-500/10 hover:text-emerald-700 dark:text-emerald-400 dark:hover:text-emerald-300"
+          : "text-amber-600 hover:bg-amber-500/10 hover:text-amber-700 dark:text-amber-400 dark:hover:text-amber-300",
+      )}
+      disabled={pauseMutation.isPending}
+      aria-label={`${auth.paused ? "Resume" : "Pause"} ${title}`}
+      onClick={() => pauseMutation.mutate({ name: auth.name, paused: !auth.paused })}
+    >
+      {auth.paused ? <Play className="h-3 w-3" /> : <Pause className="h-3 w-3" />}
+      {auth.paused ? "Resume" : "Pause"}
+    </Button>
+  );
+}
+
+export function ClaudeAuthCard({
+  account,
+  auth,
+  onAction,
+  variant = "claude",
+}: {
+  account: AccountSummary;
+  auth: SidecarAuthAccount;
+  onAction?: (account: AccountSummary, action: AccountAction) => void;
+  /** xAI logins share this card and omit Claude pause and 5h/weekly quota. */
+  variant?: "claude" | "xai";
+}) {
+  const blurred = usePrivacyStore((s) => s.blurred);
+  const title = auth.email ?? auth.name;
+  const status = variant === "xai"
+    ? cliproxyAuthBadgeStatus(auth, account.status)
+    : claudeAuthBadgeStatus(auth, account.status);
+  const subtitle = variant === "xai" ? xaiLoginSubtitle(auth.planType) : claudeLoginSubtitle(auth);
 
   return (
-    <div className="card-hover rounded-xl border bg-card p-4">
+    <div className="card-hover flex h-full w-full flex-col rounded-xl border bg-card p-4">
       {/* Header */}
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
@@ -299,75 +368,70 @@ export function ClaudeAuthCard({
             {blurred ? <span className="privacy-blur">{title}</span> : title}
           </p>
           <p className="mt-0.5 truncate text-xs text-muted-foreground">
-            {planLabel} | {providerLabel}
+            {subtitle}
           </p>
         </div>
         <StatusBadge status={status} />
       </div>
 
       {/* Quota bars */}
-      <div className="mt-3.5 grid grid-cols-2 gap-3">
-        <QuotaBar
-          label="5h"
-          percent={auth.primaryRemainingPercent ?? null}
-          resetLabel={formatQuotaResetLabel(auth.resetAtPrimary ?? null)}
-        />
-        <QuotaBar
-          label="Weekly"
-          percent={auth.secondaryRemainingPercent ?? null}
-          resetLabel={formatQuotaResetLabel(auth.resetAtSecondary ?? null)}
-        />
-      </div>
+      {variant === "xai" ? (
+        <div className="mt-3.5">
+          <CliproxyAuthQuotaBars title={title} windows={auth.quotaWindows ?? []} />
+        </div>
+      ) : (
+        <div className="mt-3.5 grid grid-cols-2 gap-3">
+          <QuotaBar
+            label="5h"
+            percent={auth.primaryRemainingPercent ?? null}
+            resetLabel={formatQuotaResetLabel(auth.resetAtPrimary ?? null)}
+          />
+          <QuotaBar
+            label="Weekly"
+            percent={auth.secondaryRemainingPercent ?? null}
+            resetLabel={formatQuotaResetLabel(auth.resetAtSecondary ?? null)}
+          />
+        </div>
+      )}
 
       {/* Reasoning effort override occupies the warm-up slot */}
       <div className="mt-3">
         <SidecarEffortSelect provider={account.provider} accountId={account.accountId} />
       </div>
 
-      {/* Actions */}
-      <div className="mt-3 flex items-center gap-1.5 border-t pt-3">
-        <Button
-          type="button"
-          size="sm"
-          variant="ghost"
-          className="h-7 shrink-0 gap-1.5 rounded-lg text-xs text-muted-foreground hover:text-foreground"
-          onClick={() => onAction?.(account, "details")}
-        >
-          <ExternalLink className="h-3 w-3" />
-          Details
-        </Button>
-        <Button
-          type="button"
-          size="sm"
-          variant="ghost"
-          className={cn(
-            "h-7 shrink-0 gap-1.5 rounded-lg text-xs",
-            auth.paused
-              ? "text-emerald-600 hover:bg-emerald-500/10 hover:text-emerald-700 dark:text-emerald-400 dark:hover:text-emerald-300"
-              : "text-amber-600 hover:bg-amber-500/10 hover:text-amber-700 dark:text-amber-400 dark:hover:text-amber-300",
-          )}
-          disabled={pauseMutation.isPending}
-          aria-label={`${auth.paused ? "Resume" : "Pause"} ${title}`}
-          onClick={() => pauseMutation.mutate({ name: auth.name, paused: !auth.paused })}
-        >
-          {auth.paused ? <Play className="h-3 w-3" /> : <Pause className="h-3 w-3" />}
-          {auth.paused ? "Resume" : "Pause"}
-        </Button>
-        {/* Read-only info, so a rule keeps it apart from the buttons. */}
-        <ExcludedModelsRail excludedModels={auth.excludedModels} className="ml-1 border-l pl-2.5" />
+      {/* Actions. mt-auto keeps the footer on the bottom edge when a shorter
+          login shares a grid row with a taller card. */}
+      <div className="mt-auto">
+        <div className="mt-3 flex items-center gap-1.5 border-t pt-3">
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            className="h-7 shrink-0 gap-1.5 rounded-lg text-xs text-muted-foreground hover:text-foreground"
+            onClick={() => onAction?.(account, "details")}
+          >
+            <ExternalLink className="h-3 w-3" />
+            Details
+          </Button>
+          {variant === "claude" ? (
+            <>
+              <ClaudeAuthPauseButton auth={auth} title={title} />
+              {/* Read-only info, so a rule keeps it apart from the buttons. */}
+              <ExcludedModelsRail excludedModels={auth.excludedModels} className="ml-1 border-l pl-2.5" />
+            </>
+          ) : null}
+        </div>
       </div>
     </div>
   );
 }
 
 function CliproxyProviderAuths({ account }: { account: AccountSummary }) {
-  const { t } = useTranslation();
   const auths = account.sidecarAuths ?? [];
   return (
     <div className="mt-3.5 space-y-2.5">
       {auths.map((auth) => {
         const title = auth.email ?? auth.name;
-        const windows = auth.quotaWindows ?? [];
         return (
           <div
             key={auth.name}
@@ -382,24 +446,7 @@ function CliproxyProviderAuths({ account }: { account: AccountSummary }) {
               </div>
               <StatusBadge status={cliproxyAuthBadgeStatus(auth, account.status)} />
             </div>
-            {windows.length > 0 ? (
-              <div
-                role="group"
-                aria-label={t("dashboard.cliproxyAuth.quotaAria", { label: title })}
-                className={cn("grid gap-3", windows.length > 1 ? "grid-cols-2" : "grid-cols-1")}
-              >
-                {windows.map((window) => (
-                  <QuotaBar
-                    key={window.id}
-                    label={window.label}
-                    percent={window.percentRemaining}
-                    resetLabel={window.resetsAt ? formatQuotaResetLabel(window.resetsAt) : null}
-                  />
-                ))}
-              </div>
-            ) : (
-              <p className="text-xs text-muted-foreground">{t("dashboard.cliproxyAuth.quotaUnknown")}</p>
-            )}
+            <CliproxyAuthQuotaBars title={title} windows={auth.quotaWindows ?? []} />
           </div>
         );
       })}
