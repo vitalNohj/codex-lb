@@ -589,7 +589,7 @@ function CliproxyAuthListRow({
       ) : (
         <span className="text-xs text-muted-foreground">{t("dashboard.cliproxyAuth.quotaUnknown")}</span>
       )}
-      <span className="text-xs text-muted-foreground" title={t("dashboard.cliproxyAuth.modelsHint")}>
+      <span className="text-xs text-muted-foreground">
         {t("dashboard.cliproxyAuth.modelsInSettings")}
       </span>
       <span className="text-muted-foreground">-</span>

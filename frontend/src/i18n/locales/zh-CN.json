@@ -2140,7 +2140,6 @@
   "settings.cliproxy.apiKeys.empty": "尚未配置 API 密钥账户。",
   "dashboard.cliproxyAuth.quotaAria": "{{label}} 的额度",
   "dashboard.cliproxyAuth.quotaUnknown": "额度未上报",
-  "dashboard.cliproxyAuth.modelsHint": "各账户的模型列在“设置 → CLIProxyAPI”中。",
   "dashboard.cliproxyAuth.modelsInSettings": "见设置",
   "settings.cliproxy.apiKeys.group": "分组",
   "settings.cliproxy.apiKeys.keyCount_one": "{{count}} 个密钥",

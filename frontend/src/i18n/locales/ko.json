@@ -2140,7 +2140,6 @@
   "settings.cliproxy.apiKeys.empty": "구성된 API 키 계정이 없습니다.",
   "dashboard.cliproxyAuth.quotaAria": "{{label}} 할당량",
   "dashboard.cliproxyAuth.quotaUnknown": "할당량 보고 없음",
-  "dashboard.cliproxyAuth.modelsHint": "계정별 모델은 설정 → CLIProxyAPI에 표시됩니다.",
   "dashboard.cliproxyAuth.modelsInSettings": "설정 참조",
   "settings.cliproxy.apiKeys.group": "그룹",
   "settings.cliproxy.apiKeys.keyCount_one": "키 {{count}}개",
