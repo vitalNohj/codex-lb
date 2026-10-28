@@ -12,6 +12,7 @@ import {
   buildWeeklyCreditPace,
   isClaudeSidecar,
   isCliproxyProviderAccount,
+  isXaiCliproxyAccount,
   sumRemaining,
   weeklyCreditPaceStatus,
   type RemainingItem,
@@ -131,8 +132,11 @@ describe("accountTypeKey", () => {
     });
 
     expect(isCliproxyProviderAccount(xai)).toBe(true);
+    expect(isXaiCliproxyAccount(xai)).toBe(true);
     expect(isClaudeSidecar(xai)).toBe(false);
     expect(accountTypeKey(xai)).toBe("cliproxy");
+    expect(isXaiCliproxyAccount({ ...xai, provider: "gemini" })).toBe(false);
+    expect(isXaiCliproxyAccount({ ...xai, sidecarAuths: [] })).toBe(false);
   });
 });
 

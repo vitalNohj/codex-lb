@@ -51,6 +51,16 @@ export function isCliproxyProviderAccount(account: AccountSummary): boolean {
   );
 }
 
+/**
+ * The dashboard card grid renders each xAI login as its own card.
+ * Other CLIProxyAPI providers stay on the grouped synthetic card.
+ * An xAI account with no logins yet is not this shape, so the grid keeps
+ * the grouped fallback card.
+ */
+export function isXaiCliproxyAccount(account: AccountSummary): boolean {
+  return isCliproxyProviderAccount(account) && account.provider === "xai";
+}
+
 export function accountTypeKey(account: AccountSummary): AccountTypeKey | "other" {
   if (!account.synthetic) {
     return "codex";

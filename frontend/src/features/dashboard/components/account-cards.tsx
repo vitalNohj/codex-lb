@@ -6,7 +6,7 @@ import { EmptyState } from "@/components/empty-state";
 import { Button } from "@/components/ui/button";
 import { AccountCard, ClaudeAuthCard, type AccountCardProps } from "@/features/dashboard/components/account-card";
 import type { AccountSummary } from "@/features/dashboard/schemas";
-import { isClaudeSidecar } from "@/features/dashboard/utils";
+import { isClaudeSidecar, isXaiCliproxyAccount } from "@/features/dashboard/utils";
 import { RESIZABLE_PANEL_TARGET_ATTR } from "@/components/resizable-panel";
 import { cn } from "@/lib/utils";
 
@@ -59,14 +59,20 @@ export function AccountCards({ accounts, readOnly = false, onAction, fluidColumn
       }}
     >
       {accounts.flatMap((account, index) => {
-        if (isClaudeSidecar(account)) {
+        const xaiLogin = isXaiCliproxyAccount(account);
+        if (isClaudeSidecar(account) || xaiLogin) {
           return (account.sidecarAuths ?? []).map((auth, authIndex) => (
             <div
               key={`${account.accountId}-${auth.name}`}
-              className="animate-fade-in-up"
+              className="flex animate-fade-in-up"
               style={{ animationDelay: `${(index + authIndex) * 75}ms` }}
             >
-              <ClaudeAuthCard account={account} auth={auth} onAction={onAction} />
+              <ClaudeAuthCard
+                account={account}
+                auth={auth}
+                onAction={onAction}
+                variant={xaiLogin ? "xai" : "claude"}
+              />
             </div>
           ));
         }
