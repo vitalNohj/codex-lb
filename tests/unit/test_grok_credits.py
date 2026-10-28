@@ -19,7 +19,6 @@ from app.modules.claude_sidecar.grok_credits import (
     note_xai_usage_queue,
     project_xai_usage,
     take_xai_usage_observations,
-    xai_quota_integration_enabled,
 )
 from app.modules.claude_sidecar.quota import (
     GrokCreditsQuota,
@@ -113,10 +112,6 @@ def _account(provider: str, auth_index: str, *, credits: GrokCreditsQuota | None
         last_refresh=None,
         grok_credits=credits,
     )
-
-
-def test_integration_stays_off() -> None:
-    assert xai_quota_integration_enabled() is False
 
 
 def test_parser_reads_quota_axi_weekly_windows_and_prepaid() -> None:
@@ -269,8 +264,7 @@ async def test_fetch_maps_passthrough_429_and_transport_errors() -> None:
         await fetch_grok_credits(down, "x1", credential_usable=True, now=_NOW)
 
 
-def test_usage_queue_rollup_keeps_free_usage_and_drops_the_raw_body(monkeypatch) -> None:
-    monkeypatch.setattr("app.modules.claude_sidecar.grok_credits.XAI_QUOTA_INTEGRATION_ENABLED", True)
+def test_usage_queue_rollup_keeps_free_usage_and_drops_the_raw_body() -> None:
     take_xai_usage_observations()
     secret = "raw-429-body-must-not-be-stored"
     note_xai_usage_queue(
@@ -355,21 +349,10 @@ def test_usage_queue_rollup_keeps_free_usage_and_drops_the_raw_body(monkeypatch)
     assert rolled.token_rollup.total_tokens == 21
 
 
-def test_disabled_integration_discards_pending_usage(monkeypatch) -> None:
-    monkeypatch.setattr("app.modules.claude_sidecar.grok_credits.XAI_QUOTA_INTEGRATION_ENABLED", True)
+def test_taken_usage_is_not_replayed_by_a_later_poll() -> None:
+    """A 429 from the usage queue reaches one poll only, so it holds once."""
+
     take_xai_usage_observations()
-    note_xai_usage_queue(
-        [
-            {
-                "provider": "xai",
-                "auth_index": "x1",
-                "timestamp": "2026-10-16T09:00:00Z",
-                "tokens": {"total_tokens": 1},
-            }
-        ]
-    )
-    monkeypatch.setattr("app.modules.claude_sidecar.grok_credits.XAI_QUOTA_INTEGRATION_ENABLED", False)
-    assert take_xai_usage_observations() == ()
     note_xai_usage_queue(
         [
             {
@@ -381,6 +364,8 @@ def test_disabled_integration_discards_pending_usage(monkeypatch) -> None:
             }
         ]
     )
+    [observation] = take_xai_usage_observations()
+    assert observation.fail_body == XAI_LIMIT_FREE_USAGE
     assert take_xai_usage_observations() == ()
 
 

@@ -32,7 +32,6 @@ from app.modules.claude_sidecar.grok_credits import (
     restore_xai_usage_observations,
     strip_observed_limits,
     take_xai_usage_observations,
-    xai_quota_integration_enabled,
 )
 from app.modules.claude_sidecar.oauth_usage import (
     ClaudeOAuthUsageError,
@@ -238,24 +237,23 @@ async def _apply_rate_limit_holds(
         failed_disables=failed_disables,
         failed_enables=failed_enables,
     )
-    if xai_quota_integration_enabled():
-        xai_plan = plan_xai_rate_limit_holds(accounts, holds, snapshot.checked_at)
-        xai_failed_disables: set[str] = set()
-        xai_failed_enables: set[str] = set()
-        for name in xai_plan.disable_names:
-            if not await _patch_auth_disabled(client, name, True):
-                xai_failed_disables.add(name)
-        for name in xai_plan.enable_names:
-            if not await _patch_auth_disabled(client, name, False):
-                xai_failed_enables.add(name)
-        accounts, holds = apply_hold_results(
-            accounts,
-            holds,
-            xai_plan,
-            failed_disables=xai_failed_disables,
-            failed_enables=xai_failed_enables,
-            provider="xai",
-        )
+    xai_plan = plan_xai_rate_limit_holds(accounts, holds, snapshot.checked_at)
+    xai_failed_disables: set[str] = set()
+    xai_failed_enables: set[str] = set()
+    for name in xai_plan.disable_names:
+        if not await _patch_auth_disabled(client, name, True):
+            xai_failed_disables.add(name)
+    for name in xai_plan.enable_names:
+        if not await _patch_auth_disabled(client, name, False):
+            xai_failed_enables.add(name)
+    accounts, holds = apply_hold_results(
+        accounts,
+        holds,
+        xai_plan,
+        failed_disables=xai_failed_disables,
+        failed_enables=xai_failed_enables,
+        provider="xai",
+    )
     return replace(snapshot, accounts=strip_observed_limits(accounts), rate_limit_holds=holds)
 
 
@@ -435,14 +433,12 @@ async def _attach_grok_credits(
     accounts: list[SidecarAuthQuota],
     previous_snapshot: SidecarQuotaSnapshot | None,
 ) -> list[SidecarAuthQuota]:
-    """Fetch GetGrokCreditsConfig for xAI credentials when the rollout flag is on.
+    """Fetch GetGrokCreditsConfig for each xAI credential.
 
     A 429 becomes this poll's ``observed_limit``. Any other failure keeps the
     last stored windows. Claude accounts are copied through.
     """
 
-    if not xai_quota_integration_enabled():
-        return accounts
     previous_credits = _previous_grok_credits_by_key(previous_snapshot)
     enriched: list[SidecarAuthQuota] = []
     for account in accounts:
@@ -493,15 +489,12 @@ def _previous_grok_credits_by_key(
 def _polled_accounts(raw_files: Iterable[Mapping[str, JsonValue]]) -> list[SidecarAuthQuota]:
     """Parse the auth listing the poller is allowed to manage.
 
-    The default listing is Claude only. xAI credentials join it when the
-    rollout flag is on, and never replace the Claude rows.
+    Claude credentials come first, then xAI credentials. Other providers are
+    left out.
     """
 
     entries = list(raw_files)
-    claude_accounts = parse_auth_files(entries, provider="claude")
-    if not xai_quota_integration_enabled():
-        return claude_accounts
-    return claude_accounts + parse_auth_files(entries, provider="xai")
+    return parse_auth_files(entries, provider="claude") + parse_auth_files(entries, provider="xai")
 
 
 def _auth_identity_key(account: SidecarAuthQuota) -> str | None:

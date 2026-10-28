@@ -5,8 +5,8 @@ reads the credential file. CLIProxyAPI returns the upstream body as a JSON
 string, and Go's JSON encoder replaces invalid UTF-8, so the request uses
 grpc-web-text (base64 frames) instead of raw protobuf.
 
-The product switch stays off. Claude polling does not call this module until
-:func:`xai_quota_integration_enabled` is turned on for the rollout.
+The quota poller calls this module for xAI credentials only. Claude rows pass
+through every function here unchanged.
 """
 
 from __future__ import annotations
@@ -32,10 +32,6 @@ from app.modules.claude_sidecar.quota import (
 )
 from app.modules.claude_sidecar.rate_limit_hold import XAI_LIMIT_BACKOFF, XAI_LIMIT_FREE_USAGE
 from app.modules.claude_sidecar.usage_queue import parse_usage_queue_record
-
-# Leave this false until the rollout PR. A deploy must not poll or hold xAI
-# credentials, and must not change Claude quota behavior.
-XAI_QUOTA_INTEGRATION_ENABLED = False
 
 GROK_CREDITS_URL = "https://grok.com/grok_api_v2.GrokBuildBilling/GetGrokCreditsConfig"
 _RESPONSE_LIMIT_BYTES = 64 * 1024
@@ -87,12 +83,6 @@ class _Field:
         self.field = field
         self.wire = wire
         self.value = value
-
-
-def xai_quota_integration_enabled() -> bool:
-    """Return whether xAI quota polling, holds, and usage learning run."""
-
-    return XAI_QUOTA_INTEGRATION_ENABLED
 
 
 def classify_xai_429(body: str) -> str:
@@ -370,12 +360,9 @@ def note_xai_usage_queue(raw_records: Sequence[Mapping[str, JsonValue]]) -> None
     """Remember xAI usage-queue rows until the quota poll folds them in.
 
     The raw 429 body is classified immediately and dropped, so a credential
-    error never sits in the pending list. Claude rows are ignored. While the
-    product switch is off this stores nothing.
+    error never sits in the pending list. Claude rows are ignored.
     """
 
-    if not xai_quota_integration_enabled():
-        return
     for raw in raw_records:
         if not is_json_mapping(raw):
             continue
@@ -403,16 +390,10 @@ def note_xai_usage_queue(raw_records: Sequence[Mapping[str, JsonValue]]) -> None
 
 
 def take_xai_usage_observations() -> tuple[XaiUsageObservation, ...]:
-    """Remove and return pending xAI usage rows.
-
-    A disabled integration discards anything still pending so a later enable
-    cannot replay a stale 429.
-    """
+    """Remove and return pending xAI usage rows."""
 
     pending = tuple(_pending_usage)
     _pending_usage.clear()
-    if not xai_quota_integration_enabled():
-        return ()
     return pending
 
 

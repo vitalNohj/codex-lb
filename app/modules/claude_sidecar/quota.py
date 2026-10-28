@@ -123,9 +123,8 @@ def credential_provider(value: str | None) -> str:
 def claude_quota_snapshot(snapshot: SidecarQuotaSnapshot) -> SidecarQuotaSnapshot:
     """Return the Claude rows of a mixed snapshot.
 
-    xAI credentials share the stored snapshot once their poll is enabled. Claude
-    quota, estimates, and the Claude account card keep reading only Claude rows,
-    which is every row while that poll is off.
+    xAI credentials share the stored snapshot. Claude quota, estimates, and the
+    Claude account card keep reading only Claude rows.
     """
 
     accounts = tuple(account for account in snapshot.accounts if credential_provider(account.provider) == "claude")

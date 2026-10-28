@@ -1367,3 +1367,86 @@ async def test_put_routing_excluded_models_unknown_account(async_client, monkeyp
     assert payload["status"] == "error"
     assert "not found" in (payload["message"] or "")
     assert _FakeSidecarClient.excluded_models_updates == []
+
+
+@pytest.mark.asyncio
+async def test_poll_of_a_mixed_listing_shows_an_xai_card_beside_the_claude_card(async_client, monkeypatch):
+    """Two Claude logins and one xAI login: the dashboard shows both cards.
+
+    The poll reads CLIProxyAPI's listing, fetches Claude OAuth usage and Grok
+    credits through the management passthrough, and stores one snapshot. The
+    overview and the accounts list then show the xAI login on its own
+    CLIProxyAPI card, with the Grok windows, and leave the Claude card as it
+    was. The poll never changes a Claude login's ``disabled`` flag.
+    """
+
+    from app.modules.claude_sidecar.quota_poller import ClaudeSidecarQuotaPoller
+    from tests.unit.test_grok_credits import _grpc_text, _message, _weekly_config
+
+    _reset_fake_sidecar_client()
+    monkeypatch.setattr(
+        _FakeSidecarClient,
+        "auth_files",
+        [
+            {"name": "claude-a@example.com.json", "auth_index": "0", "email": "a@example.com", "provider": "claude"},
+            {"name": "claude-b@example.com.json", "auth_index": "1", "email": "b@example.com", "provider": "claude"},
+            {
+                "name": "xai-grok@example.com.json",
+                "auth_index": "x1",
+                "email": "grok@example.com",
+                "provider": "xai",
+                "type": "xai",
+                "status": "active",
+            },
+        ],
+    )
+    passthrough_calls: list[str] = []
+
+    class MixedListingClient(_FakeSidecarClient):
+        async def api_call(self, *, auth_index: str, **kwargs):
+            passthrough_calls.append(auth_index)
+            if auth_index == "x1":
+                return _grpc_text(_message(1, _weekly_config()))
+            return {
+                "five_hour": {"utilization": 25.0, "resets_at": None},
+                "seven_day": {"utilization": 50.0, "resets_at": None},
+            }
+
+    response = await async_client.put(
+        "/api/settings",
+        json={
+            "claudeSidecarEnabled": True,
+            "claudeSidecarApiKey": "sidecar-key",
+            "claudeSidecarManagementKey": "mgmt-key",
+        },
+    )
+    assert response.status_code == 200
+
+    poller = ClaudeSidecarQuotaPoller(
+        interval_seconds=60,
+        enabled=True,
+        _client_factory=cast(type[ClaudeSidecarClient], MixedListingClient),
+    )
+    await poller._poll_locked()
+
+    assert sorted(passthrough_calls) == ["0", "1", "x1"]
+    assert _FakeSidecarClient.disabled_updates == []
+    for endpoint in ("/api/dashboard/overview", "/api/accounts"):
+        response = await async_client.get(endpoint)
+        assert response.status_code == 200
+        by_id = {account["accountId"]: account for account in response.json()["accounts"]}
+        assert "cliproxy-claude" not in by_id
+        xai = by_id["cliproxy-xai"]
+        assert xai["provider"] == "xai"
+        assert xai["synthetic"] is True
+        assert xai["readOnly"] is True
+        assert xai["status"] == "active"
+        [xai_auth] = xai["sidecarAuths"]
+        assert xai_auth["email"] == "grok@example.com"
+        assert xai_auth["paused"] is False
+        assert xai_auth["prepaidCredits"] == 42
+        assert [window["id"] for window in xai_auth["quotaWindows"]] == ["credits", "product:grok_build"]
+        assert xai_auth["quotaWindows"][0]["percentRemaining"] == pytest.approx(62.5)
+        claude = by_id["claude-sidecar"]
+        assert sorted(auth["email"] for auth in claude["sidecarAuths"]) == ["a@example.com", "b@example.com"]
+        assert all(auth["primaryRemainingPercent"] == 75.0 for auth in claude["sidecarAuths"])
