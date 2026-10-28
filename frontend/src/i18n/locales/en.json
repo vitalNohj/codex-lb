@@ -2140,7 +2140,6 @@
   "settings.cliproxy.apiKeys.empty": "No API-key accounts configured.",
   "dashboard.cliproxyAuth.quotaAria": "Quota for {{label}}",
   "dashboard.cliproxyAuth.quotaUnknown": "Quota not reported",
-  "dashboard.cliproxyAuth.modelsHint": "Per-account models are listed under Settings → CLIProxyAPI.",
   "dashboard.cliproxyAuth.modelsInSettings": "See settings",
   "settings.cliproxy.apiKeys.group": "Group",
   "settings.cliproxy.apiKeys.keyCount_one": "{{count}} key",

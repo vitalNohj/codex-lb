@@ -403,7 +403,6 @@ function CliproxyProviderAuths({ account }: { account: AccountSummary }) {
           </div>
         );
       })}
-      <p className="text-[11px] text-muted-foreground">{t("dashboard.cliproxyAuth.modelsHint")}</p>
     </div>
   );
 }
