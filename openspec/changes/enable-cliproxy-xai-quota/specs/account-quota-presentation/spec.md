@@ -18,6 +18,14 @@ The dashboard overview and the accounts list MUST show them on one read-only `cl
 
 An xAI rate-limit hold MUST NOT disable or enable a Claude login.
 Claude quota, estimates, and the Claude card MUST keep reading only Claude rows.
+A stalled Grok credits fetch MUST give up after its own short timeout, and the poll MUST run those fetches concurrently, so a stalled xAI login does not hold back saving Claude quota and hold releases for the general sidecar request timeout.
+
+#### Scenario: Stalled Grok fetches do not hold back the Claude quota
+
+- **GIVEN** a Claude login and three xAI logins whose Grok credits fetch never answers
+- **WHEN** the quota poller runs
+- **THEN** the poll finishes after about one Grok fetch timeout, not one per xAI login
+- **AND** it saves the Claude quota and keeps each xAI login's stored Grok windows
 
 #### Scenario: An xAI hold leaves a Claude pause alone
 

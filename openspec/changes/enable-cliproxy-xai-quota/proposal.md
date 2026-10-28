@@ -9,7 +9,7 @@ The stored quota snapshot therefore lists only Claude logins, and the dashboard'
 - Remove the switch. Each CLIProxyAPI quota poll lists Claude and xAI logins, fetches Grok credits for each usable xAI login, folds xAI usage-queue rows into it, and plans xAI holds.
 - The dashboard overview and the accounts list show a read-only `CLIProxyAPI xAI` card with each xAI login, its Grok windows, and its prepaid credits. A login with no windows yet reads "Quota not reported". The card sits under the existing CLIProxy account-type filter.
 - xAI logins become codex-lb pin candidates for Grok traffic after the first poll lists them.
-- Claude behavior does not change. Claude holds, Claude quota, estimates, and the Claude card keep reading only Claude rows, and an xAI hold never disables or enables a Claude login.
+- Claude behavior does not change. Claude holds, Claude quota, estimates, and the Claude card keep reading only Claude rows, and an xAI hold never disables or enables a Claude login. Each Grok credits fetch has its own 20-second timeout and the fetches run up to four at a time, so a stalled xAI login cannot hold back saving Claude quota for the 600-second sidecar request timeout.
 
 ## Capabilities
 

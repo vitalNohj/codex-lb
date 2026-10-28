@@ -11,6 +11,7 @@ through every function here unchanged.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import struct
 from collections.abc import Mapping, Sequence
@@ -34,6 +35,10 @@ from app.modules.claude_sidecar.rate_limit_hold import XAI_LIMIT_BACKOFF, XAI_LI
 from app.modules.claude_sidecar.usage_queue import parse_usage_queue_record
 
 GROK_CREDITS_URL = "https://grok.com/grok_api_v2.GrokBuildBilling/GetGrokCreditsConfig"
+# The quota poll saves Claude quota and hold releases only after every Grok
+# fetch returns, so one stalled grok.com call must not hold it for the general
+# sidecar request timeout.
+GROK_CREDITS_TIMEOUT_SECONDS = 20.0
 _RESPONSE_LIMIT_BYTES = 64 * 1024
 _MAX_SAFE_INTEGER = 9007199254740991
 _EMPTY_GRPC_WEB_TEXT_BODY = base64.b64encode(bytes(5)).decode("ascii")
@@ -145,22 +150,25 @@ async def fetch_grok_credits(
     if not auth_index.strip() or not credential_usable:
         raise GrokCreditsUnavailable("Grok credits credential is not usable")
     try:
-        raw = await client.api_call(
-            auth_index=auth_index,
-            method="POST",
-            url=GROK_CREDITS_URL,
-            header={
-                "Authorization": "Bearer $TOKEN$",
-                "Accept": "application/grpc-web-text",
-                "Content-Type": "application/grpc-web-text",
-                "Origin": "https://grok.com",
-                "Referer": "https://grok.com/?_s=usage",
-                "x-grpc-web": "1",
-                "x-user-agent": "connect-es/2.1.1",
-            },
-            data=_EMPTY_GRPC_WEB_TEXT_BODY,
-            decode_json=False,
-        )
+        async with asyncio.timeout(GROK_CREDITS_TIMEOUT_SECONDS):
+            raw = await client.api_call(
+                auth_index=auth_index,
+                method="POST",
+                url=GROK_CREDITS_URL,
+                header={
+                    "Authorization": "Bearer $TOKEN$",
+                    "Accept": "application/grpc-web-text",
+                    "Content-Type": "application/grpc-web-text",
+                    "Origin": "https://grok.com",
+                    "Referer": "https://grok.com/?_s=usage",
+                    "x-grpc-web": "1",
+                    "x-user-agent": "connect-es/2.1.1",
+                },
+                data=_EMPTY_GRPC_WEB_TEXT_BODY,
+                decode_json=False,
+            )
+    except TimeoutError as exc:
+        raise GrokCreditsUnavailable("Grok credits request timed out") from exc
     except ClaudeSidecarUnavailableError as exc:
         raise GrokCreditsUnavailable("Grok credits transport failed") from exc
     except ClaudeSidecarError as exc:

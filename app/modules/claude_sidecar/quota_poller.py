@@ -60,6 +60,8 @@ logger = logging.getLogger(__name__)
 # How long after a hold's release instant the poller runs, so the usage API
 # already reports the reset window as renewed.
 _HOLD_RELEASE_POLL_DELAY_SECONDS = 1.0
+# How many Grok credit fetches one poll runs at once.
+_GROK_CREDITS_CONCURRENCY = 4
 
 
 class _LeaderElectionLike(Protocol):
@@ -435,42 +437,43 @@ async def _attach_grok_credits(
 ) -> list[SidecarAuthQuota]:
     """Fetch GetGrokCreditsConfig for each xAI credential.
 
-    A 429 becomes this poll's ``observed_limit``. Any other failure keeps the
-    last stored windows. Claude accounts are copied through.
+    A 429 becomes this poll's ``observed_limit``. Any other failure, including
+    a timeout, keeps the last stored windows. Claude accounts are copied
+    through. Fetches run a few at a time, so a stalled login delays the poll by
+    about one fetch timeout, not one per xAI login.
     """
 
     previous_credits = _previous_grok_credits_by_key(previous_snapshot)
-    enriched: list[SidecarAuthQuota] = []
-    for account in accounts:
+    limit = asyncio.Semaphore(_GROK_CREDITS_CONCURRENCY)
+
+    async def enrich(account: SidecarAuthQuota) -> SidecarAuthQuota:
         if credential_provider(account.provider) != "xai" or not account.auth_index:
-            enriched.append(account)
-            continue
+            return account
         stored = previous_credits.get(_auth_identity_key(account))
         if not grok_credential_usable(account):
-            enriched.append(replace(account, grok_credits=stored) if stored is not None else account)
-            continue
+            return replace(account, grok_credits=stored) if stored is not None else account
         try:
-            credits = await fetch_grok_credits(
-                client,
-                account.auth_index,
-                credential_usable=True,
-            )
+            async with limit:
+                credits = await fetch_grok_credits(
+                    client,
+                    account.auth_index,
+                    credential_usable=True,
+                )
         except GrokCreditsRateLimit as exc:
             base = stored or GrokCreditsQuota()
-            enriched.append(replace(account, grok_credits=replace(base, observed_limit=exc.kind)))
-            continue
+            return replace(account, grok_credits=replace(base, observed_limit=exc.kind))
         except GrokCreditsError as exc:
             logger.debug(
                 "failed to fetch Grok credits for %s: %s",
                 account.email or account.auth_index or account.name,
                 exc,
             )
-            enriched.append(replace(account, grok_credits=stored) if stored is not None else account)
-            continue
+            return replace(account, grok_credits=stored) if stored is not None else account
         if stored is not None and stored.token_rollup is not None:
             credits = replace(credits, token_rollup=stored.token_rollup)
-        enriched.append(replace(account, grok_credits=credits))
-    return enriched
+        return replace(account, grok_credits=credits)
+
+    return list(await asyncio.gather(*(enrich(account) for account in accounts)))
 
 
 def _previous_grok_credits_by_key(

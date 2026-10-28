@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import struct
+from collections.abc import Mapping
 from datetime import datetime, timezone
 
 import pytest
 
 from app.core.clients.claude_sidecar import ClaudeSidecarError, ClaudeSidecarUnavailableError
+from app.core.types import JsonValue
+from app.modules.claude_sidecar import grok_credits as grok_credits_module
 from app.modules.claude_sidecar.grok_credits import (
     GrokCreditsError,
     GrokCreditsRateLimit,
@@ -262,6 +266,29 @@ async def test_fetch_maps_passthrough_429_and_transport_errors() -> None:
     down = _Api(ClaudeSidecarUnavailableError("connection refused"))
     with pytest.raises(GrokCreditsUnavailable):
         await fetch_grok_credits(down, "x1", credential_usable=True, now=_NOW)
+
+
+class _StalledApi:
+    async def api_call(
+        self,
+        *,
+        auth_index: str,
+        method: str,
+        url: str,
+        header: Mapping[str, str],
+        data: str | None = None,
+        decode_json: bool = True,
+    ) -> JsonValue:
+        await asyncio.Event().wait()
+        raise AssertionError("unreachable")
+
+
+@pytest.mark.asyncio
+async def test_fetch_gives_up_on_a_stalled_passthrough_after_its_own_timeout(monkeypatch) -> None:
+    monkeypatch.setattr(grok_credits_module, "GROK_CREDITS_TIMEOUT_SECONDS", 0.05)
+
+    with pytest.raises(GrokCreditsUnavailable, match="timed out"):
+        await fetch_grok_credits(_StalledApi(), "x1", credential_usable=True, now=_NOW)
 
 
 def test_usage_queue_rollup_keeps_free_usage_and_drops_the_raw_body() -> None:

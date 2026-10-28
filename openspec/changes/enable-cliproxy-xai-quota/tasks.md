@@ -7,7 +7,8 @@
 ## 2. Claude unchanged
 
 - [x] 2.1 Prove xAI holds never disable or enable a Claude login, including an operator-paused one.
-- [x] 2.2 Run the Claude sidecar, CLIProxyAPI, quota-feed, and routing suites, and the real CLIProxyAPI binary suites.
+- [x] 2.2 Bound each Grok credits fetch with its own short timeout and run the fetches a few at a time, so a stalled xAI login does not hold back saving Claude quota.
+- [x] 2.3 Run the Claude sidecar, CLIProxyAPI, quota-feed, and routing suites, and the real CLIProxyAPI binary suites.
 
 ## 3. Dashboard
 

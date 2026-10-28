@@ -17,6 +17,7 @@ from app.core.clients.claude_sidecar import (
     ClaudeSidecarUnavailableError,
     SidecarPrefix,
 )
+from app.modules.claude_sidecar import grok_credits as grok_credits_module
 from app.modules.claude_sidecar import quota_poller as quota_poller_module
 from app.modules.claude_sidecar.quota import (
     GrokCreditsQuota,
@@ -1309,6 +1310,62 @@ async def test_poll_keeps_stored_grok_windows_when_the_passthrough_is_down(monke
     assert by_provider["claude"].oauth_usage.five_hour is not None
     assert by_provider["claude"].oauth_usage.five_hour.remaining_percent == 12.0
     assert snapshot.rate_limit_holds == ()
+
+
+class _StalledGrokApiClient(_GrokApiClient):
+    def __init__(self) -> None:
+        super().__init__()
+        self.in_flight = 0
+        self.max_in_flight = 0
+
+    async def api_call(self, **kwargs: Any) -> Any:
+        self.api_calls.append(kwargs)
+        self.in_flight += 1
+        self.max_in_flight = max(self.max_in_flight, self.in_flight)
+        try:
+            await asyncio.Event().wait()
+        finally:
+            self.in_flight -= 1
+        raise AssertionError("unreachable")
+
+
+@pytest.mark.asyncio
+async def test_stalled_grok_calls_time_out_together_and_claude_quota_is_still_saved(monkeypatch) -> None:
+    monkeypatch.setattr(grok_credits_module, "GROK_CREDITS_TIMEOUT_SECONDS", 0.2)
+    client = _StalledGrokApiClient()
+    client.extra_files = [
+        _xai_file(),
+        {**_xai_file(), "name": "grok-b.json", "email": "grok-b@example.com", "auth_index": "x2"},
+        {**_xai_file(), "name": "grok-c.json", "email": "grok-c@example.com", "auth_index": "x3"},
+    ]
+    repo_holder, poller = _poll_with_usage(
+        monkeypatch,
+        _FakeSettings(claude_sidecar_quota_state_json=_stored_grok_snapshot()),
+        client,
+        _usage(12.0, 80.0, five_reset=_FUTURE),
+    )
+
+    started = asyncio.get_running_loop().time()
+    await poller._poll_once()
+    elapsed = asyncio.get_running_loop().time() - started
+
+    assert len(client.api_calls) == 3
+    assert client.max_in_flight == 3
+    assert elapsed < 0.55
+    snapshot = _read_snapshot(repo_holder)
+    assert snapshot is not None
+    assert client.patches == []
+    assert snapshot.rate_limit_holds == ()
+    by_name = {account.name: account for account in snapshot.accounts}
+    claude_usage = by_name[_AUTH_NAME].oauth_usage
+    assert claude_usage is not None
+    assert claude_usage.five_hour is not None
+    assert claude_usage.five_hour.remaining_percent == 12.0
+    stored = by_name[_XAI_NAME].grok_credits
+    assert stored is not None
+    assert stored.windows[0].percent_remaining == 11.0
+    assert by_name["grok-b.json"].grok_credits is None
+    assert [account.name for account in snapshot.accounts] == [_AUTH_NAME, _XAI_NAME, "grok-b.json", "grok-c.json"]
 
 
 class _AffinityOffClient(_FakeClient):
