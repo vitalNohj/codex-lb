@@ -21,6 +21,7 @@ from app.core.config.product_capabilities import omniroute_enabled
 from app.core.config.settings_cache import get_settings_cache
 from app.core.crypto import TokenEncryptor
 from app.core.errors import OpenAIErrorEnvelope, openai_error
+from app.core.exceptions import ProxyReasoningEffortNotAllowed
 from app.core.openai.chat_requests import ChatCompletionsRequest
 from app.core.openai.requests import ResponsesRequest
 from app.core.types import JsonObject, JsonValue
@@ -55,13 +56,13 @@ from app.modules.proxy.deepseek_v4_compat import (
 from app.modules.proxy.deepseek_v4_compat import (
     resolve_scope as deepseek_resolve_scope,
 )
+from app.modules.proxy.request_policy import apply_sidecar_chat_reasoning, reasoning_effort_denied_body
 from app.modules.proxy.responses_chat_bridge import (
     ResponsesChatTranslation,
     ResponsesStreamSynthesizer,
     chat_to_responses_result,
     translate_responses_to_chat,
 )
-from app.modules.proxy.sidecar_model_profiles import read_reasoning_effort, set_reasoning_effort_override
 from app.modules.proxy.sidecar_routing import (
     SidecarRoutingEntry,
     parse_sidecar_full_models,
@@ -140,15 +141,21 @@ def build_omniroute_chat_payload(
     payload: ChatCompletionsRequest,
     effective_model: str,
     default_reasoning_effort: str | None = None,
+    *,
+    api_key: ApiKeyData | None = None,
 ) -> OmniRouteChatPayload:
     body = cast(dict[str, JsonValue], payload.model_dump(mode="json", exclude_none=True))
-    requested_reasoning_effort = read_reasoning_effort(body)
     body["model"] = effective_model.strip()
-    set_reasoning_effort_override(body, default_reasoning_effort)
+    requested_reasoning_effort, effective_reasoning_effort = apply_sidecar_chat_reasoning(
+        body,
+        payload=payload,
+        default_reasoning_effort=default_reasoning_effort,
+        api_key=api_key,
+    )
     return OmniRouteChatPayload(
         body=body,
         requested_reasoning_effort=requested_reasoning_effort,
-        effective_reasoning_effort=read_reasoning_effort(body),
+        effective_reasoning_effort=effective_reasoning_effort,
     )
 
 
@@ -165,9 +172,20 @@ async def proxy_chat_to_omniroute(
     cursor_compat: bool = False,
     wire_model: str | None = None,
 ) -> Response:
-    sidecar_payload = build_omniroute_chat_payload(
-        payload, wire_model or effective_model, client.config.default_reasoning_effort
-    )
+    try:
+        sidecar_payload = build_omniroute_chat_payload(
+            payload,
+            wire_model or effective_model,
+            client.config.default_reasoning_effort,
+            api_key=api_key,
+        )
+    except ProxyReasoningEffortNotAllowed as exc:
+        await _release_omniroute_reservation(reservation, api_key=api_key)
+        return JSONResponse(
+            status_code=exc.status_code,
+            content=reasoning_effort_denied_body(exc),
+            headers=dict(rate_limit_headers),
+        )
     deepseek_scope = deepseek_resolve_scope(
         effective_model=effective_model,
         provider="omniroute",
@@ -567,7 +585,19 @@ async def proxy_responses_to_omniroute(
     # The caller translates before reserving quota so an untranslatable
     # request is refused with a 400 rather than sent with parts missing.
     translation = translation or translate_responses_to_chat(payload, forward_model)
-    chat_payload = build_omniroute_chat_payload(translation.chat_request, forward_model)
+    try:
+        chat_payload = build_omniroute_chat_payload(
+            translation.chat_request,
+            forward_model,
+            api_key=api_key,
+        )
+    except ProxyReasoningEffortNotAllowed as exc:
+        await _release_omniroute_reservation(reservation, api_key=api_key)
+        return JSONResponse(
+            status_code=exc.status_code,
+            content=reasoning_effort_denied_body(exc),
+            headers=dict(rate_limit_headers),
+        )
     chat_body = chat_payload.body
     requested_reasoning_effort = chat_payload.requested_reasoning_effort
     effective_reasoning_effort = chat_payload.effective_reasoning_effort

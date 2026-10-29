@@ -341,10 +341,20 @@ async def _create_api_key(
     *,
     allowed_models: list[str] | None = None,
     limits: list[LimitRuleInput] | None = None,
+    enforced_reasoning_effort: str | None = None,
+    allowed_reasoning_efforts: list[str] | None = None,
 ):
     async with SessionLocal() as session:
         service = ApiKeysService(ApiKeysRepository(session))
-        return await service.create_key(ApiKeyCreateData(name=name, allowed_models=allowed_models, limits=limits or []))
+        return await service.create_key(
+            ApiKeyCreateData(
+                name=name,
+                allowed_models=allowed_models,
+                limits=limits or [],
+                enforced_reasoning_effort=enforced_reasoning_effort,
+                allowed_reasoning_efforts=allowed_reasoning_efforts,
+            )
+        )
 
 
 async def _reservation_statuses() -> list[str]:
@@ -2630,3 +2640,118 @@ async def test_responses_claude_dispatch_follows_api_key_quota_privacy(
         assert "x-codex-primary-used-percent" not in response.headers
     else:
         assert response.headers["x-codex-primary-used-percent"] == "42.0"
+
+
+def _opus_chat(**extra: object) -> dict:
+    body: dict = {"model": "cc/claude-opus-5-5", "messages": [{"role": "user", "content": "hi"}]}
+    body.update(extra)
+    return body
+
+
+@pytest.mark.asyncio
+async def test_api_key_enforced_reasoning_wins_on_claude_chat(
+    async_client,
+    sidecar_enabled,
+    fake_sidecar,
+):
+    """A key's enforced effort beats the sidecar default and any client effort."""
+
+    fake_sidecar.config = replace(fake_sidecar.config, default_reasoning_effort="low")
+    await _enable_api_key_auth(async_client)
+    key = await _create_api_key("mikey", enforced_reasoning_effort="high")
+    headers = {"Authorization": f"Bearer {key.key}"}
+
+    omitted = await async_client.post("/v1/chat/completions", headers=headers, json=_opus_chat())
+    different = await async_client.post(
+        "/v1/chat/completions",
+        headers=headers,
+        json=_opus_chat(reasoning_effort="medium"),
+    )
+
+    assert omitted.status_code == 200
+    assert different.status_code == 200
+    assert [payload["reasoning_effort"] for payload in fake_sidecar.chat_payloads] == ["high", "high"]
+    logs = sorted(await _sidecar_logs(), key=lambda log: log.id)
+    assert [(log.requested_reasoning_effort, log.reasoning_effort) for log in logs] == [
+        (None, "high"),
+        ("medium", "high"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_api_key_without_enforced_reasoning_keeps_sidecar_override(
+    async_client,
+    sidecar_enabled,
+    fake_sidecar,
+):
+    fake_sidecar.config = replace(fake_sidecar.config, default_reasoning_effort="low")
+    await _enable_api_key_auth(async_client)
+    key = await _create_api_key("plain")
+    headers = {"Authorization": f"Bearer {key.key}"}
+
+    response = await async_client.post(
+        "/v1/chat/completions",
+        headers=headers,
+        json=_opus_chat(reasoning_effort="high"),
+    )
+
+    assert response.status_code == 200
+    assert fake_sidecar.chat_payloads[0]["reasoning_effort"] == "low"
+    logs = await _sidecar_logs()
+    assert [(log.requested_reasoning_effort, log.reasoning_effort) for log in logs] == [("high", "low")]
+
+
+@pytest.mark.asyncio
+async def test_api_key_enforced_reasoning_wins_on_claude_responses(
+    async_client,
+    sidecar_enabled,
+    fake_sidecar,
+):
+    fake_sidecar.config = replace(fake_sidecar.config, default_reasoning_effort="low")
+    await _enable_api_key_auth(async_client)
+    key = await _create_api_key("mikey-responses", enforced_reasoning_effort="high")
+
+    omitted = await async_client.post(
+        "/v1/responses",
+        headers={"Authorization": f"Bearer {key.key}"},
+        json={"model": "cc/claude-opus-5-5", "input": "hi"},
+    )
+    different = await async_client.post(
+        "/v1/responses",
+        headers={"Authorization": f"Bearer {key.key}"},
+        json={"model": "cc/claude-opus-5-5", "input": "hi", "reasoning": {"effort": "medium"}},
+    )
+
+    assert omitted.status_code == 200
+    assert different.status_code == 200
+    assert [payload["reasoning_effort"] for payload in fake_sidecar.chat_payloads] == ["high", "high"]
+    logs = sorted(await _sidecar_logs(), key=lambda log: log.id)
+    assert [(log.requested_reasoning_effort, log.reasoning_effort) for log in logs] == [
+        (None, "high"),
+        ("medium", "high"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_api_key_reasoning_allowlist_rejects_claude_chat_before_forwarding(
+    async_client,
+    sidecar_enabled,
+    fake_sidecar,
+):
+    await _enable_api_key_auth(async_client)
+    key = await _create_api_key(
+        "allowlist",
+        allowed_reasoning_efforts=["high"],
+        limits=[LimitRuleInput(limit_type="total_tokens", limit_window="weekly", max_value=1000)],
+    )
+
+    response = await async_client.post(
+        "/v1/chat/completions",
+        headers={"Authorization": f"Bearer {key.key}"},
+        json=_opus_chat(reasoning_effort="low"),
+    )
+
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "reasoning_effort_not_allowed"
+    assert fake_sidecar.chat_payloads == []
+    assert await _reservation_statuses() == []

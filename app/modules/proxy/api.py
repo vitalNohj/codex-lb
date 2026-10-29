@@ -416,6 +416,7 @@ from app.modules.proxy.request_policy import (
     normalize_source_reasoning_aliases,
     openai_client_payload_error,
     openai_validation_error,
+    reject_disallowed_sidecar_reasoning,
     resolve_model_alias,
     resolve_wire_reasoning_effort,
     responses_source_route_excluded,
@@ -1350,6 +1351,7 @@ async def _opencode_go_responses_dispatch_or_none(
 
     validate_model_access(api_key, effective_model, routing_entries=routing_entries)
     rate_limit_headers = await _rate_limit_headers_for_request(context, api_key)
+    reject_disallowed_sidecar_reasoning(responses_payload, api_key)
     translation = _responses_chat_translation_or_error(
         request, responses_payload, decision.wire_model or effective_model, rate_limit_headers
     )
@@ -1404,6 +1406,7 @@ async def _omniroute_responses_dispatch_or_none(
         return None
     validate_model_access(api_key, effective_model, routing_entries=tuple(routing_entries))
     rate_limit_headers = await _rate_limit_headers_for_request(context, api_key)
+    reject_disallowed_sidecar_reasoning(responses_payload, api_key)
     translation = _responses_chat_translation_or_error(
         request, responses_payload, decision.wire_model or effective_model, rate_limit_headers
     )
@@ -5821,6 +5824,7 @@ async def v1_chat_completions(
             for target in authorized_pool.targets
             if (target_decision := resolve_sidecar_pool_target(target, tuple(routing_entries))) is not None
         ]
+        reject_disallowed_sidecar_reasoning(payload, api_key)
         reservation = await _enforce_request_limits(
             api_key,
             request_model=metering_model,
@@ -5945,6 +5949,7 @@ async def v1_chat_completions(
             routing_entries=tuple(routing_entries),
             pool_target=alias_resolved,
         )
+        reject_disallowed_sidecar_reasoning(payload, api_key)
         reservation = await _enforce_request_limits(
             api_key,
             request_model=metering_model,

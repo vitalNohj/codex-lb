@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import datetime, timezone
 
 import pytest
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -16,6 +17,7 @@ from app.core.clients.opencode_go_sidecar import (
 from app.core.openai.chat_requests import ChatCompletionsRequest
 from app.core.openai.requests import ResponsesRequest
 from app.core.utils.sse import SseJsonDataDecoder
+from app.modules.api_keys.service import ApiKeyData
 from app.modules.proxy.opencode_go_sidecar_dispatch import (
     OPENCODE_GO_SIDECAR_SOURCE,
     _headers_with_retry_after,
@@ -740,6 +742,74 @@ async def test_opencode_go_stream_does_not_retry_after_a_chunk(_isolate_side_eff
     assert len(client.calls) == 1
     assert b'"content":"hi"' in body
     assert b"bad gateway" in body
+
+
+def _enforcing_key(effort: str) -> ApiKeyData:
+    return ApiKeyData(
+        id="ak_test",
+        name="mikey",
+        key_prefix="sk-test",
+        allowed_models=None,
+        enforced_model=None,
+        enforced_reasoning_effort=effort,
+        enforced_service_tier=None,
+        expires_at=None,
+        is_active=True,
+        created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        last_used_at=None,
+    )
+
+
+@pytest.mark.asyncio
+async def test_opencode_go_chat_logs_the_key_enforced_effort(_isolate_side_effects) -> None:
+    client = _FakeClient(response=_completion())
+    request = ChatCompletionsRequest.model_validate(
+        {
+            "model": "glm-5.3",
+            "messages": [{"role": "user", "content": "hi"}],
+            "reasoning_effort": "medium",
+        }
+    )
+
+    response = await proxy_chat_to_opencode_go(
+        _FakeRequest(),  # type: ignore[arg-type]
+        request,
+        effective_model="glm-5.3",
+        api_key=_enforcing_key("high"),
+        reservation=None,
+        rate_limit_headers={},
+        sse_keepalive_interval_seconds=15.0,
+        client=client,  # type: ignore[arg-type]
+    )
+
+    assert response.status_code == 200
+    assert client.calls[0][0]["reasoning_effort"] == "high"
+    assert _isolate_side_effects[-1]["requested_reasoning_effort"] == "medium"
+    assert _isolate_side_effects[-1]["reasoning_effort"] == "high"
+
+
+@pytest.mark.asyncio
+async def test_opencode_go_responses_forwards_the_key_enforced_effort(_isolate_side_effects) -> None:
+    client = _FakeClient(response=_completion())
+    request = ResponsesRequest.model_validate(
+        {"model": "glm-5.3", "instructions": "", "input": "hi", "reasoning": {"effort": "medium"}}
+    )
+
+    response = await proxy_responses_to_opencode_go(
+        _FakeRequest(),  # type: ignore[arg-type]
+        request,
+        effective_model="glm-5.3",
+        api_key=_enforcing_key("high"),
+        reservation=None,
+        rate_limit_headers={},
+        sse_keepalive_interval_seconds=0,
+        client=client,  # type: ignore[arg-type]
+    )
+
+    assert response.status_code == 200
+    assert client.calls[0][0]["reasoning_effort"] == "high"
+    assert _isolate_side_effects[-1]["requested_reasoning_effort"] == "medium"
+    assert _isolate_side_effects[-1]["reasoning_effort"] == "high"
 
 
 @pytest.mark.asyncio

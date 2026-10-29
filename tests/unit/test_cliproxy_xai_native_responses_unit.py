@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import datetime, timezone
 from typing import Any, cast
 
 import pytest
@@ -16,7 +17,9 @@ from app.core.clients.claude_sidecar import (
     SidecarPrefix,
 )
 from app.core.config.settings import get_settings
-from app.core.openai.requests import ResponsesRequest
+from app.core.exceptions import ProxyReasoningEffortNotAllowed
+from app.core.openai.requests import ResponsesReasoning, ResponsesRequest
+from app.modules.api_keys.service import ApiKeyData
 from app.modules.claude_sidecar import session_affinity_guard
 from app.modules.proxy import cliproxy_account_routing as routing
 from app.modules.proxy.claude_sidecar_dispatch import extract_usage, extract_xai_billed_cost
@@ -125,6 +128,65 @@ def test_the_default_effort_fills_only_a_missing_effort() -> None:
     )
     assert filled.body["reasoning"] == {"summary": "auto", "effort": "low"}
     assert (filled.requested_reasoning_effort, filled.effective_reasoning_effort) == (None, "low")
+
+
+def _enforcing_key(effort: str | None = "high", *, allowed: list[str] | None = None) -> ApiKeyData:
+    return ApiKeyData(
+        id="ak_test",
+        name="mikey",
+        key_prefix="sk-test",
+        allowed_models=None,
+        enforced_model=None,
+        enforced_reasoning_effort=effort,
+        enforced_service_tier=None,
+        expires_at=None,
+        is_active=True,
+        created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        last_used_at=None,
+        allowed_reasoning_efforts=allowed,
+    )
+
+
+def test_key_enforced_effort_wins_over_the_client_and_the_fill() -> None:
+    built = build_cliproxy_xai_responses_body(
+        _payload(reasoning={"effort": "medium", "summary": "auto"}),
+        wire_model="grok-4.3",
+        conversation_id="c",
+        default_reasoning_effort="low",
+        api_key=_enforcing_key("high"),
+    )
+
+    assert built.body["reasoning"] == {"effort": "high", "summary": "auto"}
+    assert (built.requested_reasoning_effort, built.effective_reasoning_effort) == ("medium", "high")
+
+
+def test_key_enforced_effort_replaces_a_default_fill_when_the_client_sent_none() -> None:
+    payload = _payload()
+    payload._codex_lb_client_reasoning_captured = True
+    payload._codex_lb_client_reasoning_effort = None
+    payload.reasoning = ResponsesReasoning(effort="high")
+
+    built = build_cliproxy_xai_responses_body(
+        payload,
+        wire_model="grok-4.3",
+        conversation_id="c",
+        default_reasoning_effort="low",
+        api_key=_enforcing_key("high"),
+    )
+
+    assert built.body["reasoning"] == {"effort": "high"}
+    assert (built.requested_reasoning_effort, built.effective_reasoning_effort) == (None, "high")
+
+
+def test_native_allowlist_rejects_the_client_effort() -> None:
+    with pytest.raises(ProxyReasoningEffortNotAllowed):
+        build_cliproxy_xai_responses_body(
+            _payload(reasoning={"effort": "low"}),
+            wire_model="grok-4.3",
+            conversation_id="c",
+            default_reasoning_effort="high",
+            api_key=_enforcing_key(None, allowed=["high"]),
+        )
 
 
 def test_a_client_cache_key_is_replaced_by_the_conversation_id() -> None:

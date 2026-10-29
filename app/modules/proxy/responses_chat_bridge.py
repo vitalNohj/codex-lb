@@ -151,6 +151,9 @@ def translate_responses_to_chat(
             param=None,
             code="invalid_request_error",
         ) from exc
+    if payload._codex_lb_client_reasoning_captured:
+        chat_request._codex_lb_client_reasoning_captured = True
+        chat_request._codex_lb_client_reasoning_effort = payload._codex_lb_client_reasoning_effort
     return ResponsesChatTranslation(
         chat_request=chat_request,
         tool_shapes=dict(tools.shapes),

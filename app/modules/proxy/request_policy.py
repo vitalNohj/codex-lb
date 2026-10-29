@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Mapping
-from typing import NamedTuple
+from typing import NamedTuple, cast
 
 from pydantic import ValidationError
 
 from app.core.errors import OpenAIErrorEnvelope, openai_error
 from app.core.exceptions import ProxyModelNotAllowed, ProxyReasoningEffortNotAllowed
+from app.core.openai.chat_requests import ChatCompletionsRequest
 from app.core.openai.exceptions import ClientPayloadError
 from app.core.openai.model_registry import ModelRegistry, canonical_service_tier_value, get_model_registry
 from app.core.openai.requests import (
@@ -32,7 +33,11 @@ from app.core.utils.request_id import get_request_id
 from app.db.models import ModelSource
 from app.modules.api_keys.service import ApiKeyData
 from app.modules.model_sources.catalog import source_model_reasoning_levels
-from app.modules.proxy.sidecar_model_profiles import canonical_sidecar_model
+from app.modules.proxy.sidecar_model_profiles import (
+    canonical_sidecar_model,
+    read_reasoning_effort,
+    set_reasoning_effort_override,
+)
 from app.modules.proxy.sidecar_routing import (
     SidecarRoutingEntry,
     resolve_sidecar_pool_target,
@@ -285,6 +290,129 @@ def validate_reasoning_effort_access(api_key: ApiKeyData | None, effort: str | N
     )
 
 
+# Provider aliases a chat client can use instead of ``reasoning_effort``.
+# ``normalize_reasoning_aliases`` is the same folding the Responses path uses.
+_CHAT_REASONING_ALIAS_KEYS: tuple[str, ...] = (
+    "reasoning",
+    "reasoning_effort",
+    "reasoningEffort",
+    "thinking",
+    "enable_thinking",
+)
+
+
+SidecarReasoningPayload = ChatCompletionsRequest | ResponsesRequest | ResponsesCompactRequest
+
+
+def sidecar_requested_reasoning_effort(payload: SidecarReasoningPayload, body: Mapping[str, JsonValue]) -> str | None:
+    """The effort the client asked for, before a sidecar default or key policy.
+
+    After Responses enforcement, ``body`` already carries the enforced effort.
+    The captured client value is the one request logs must record.
+    """
+
+    if payload._codex_lb_client_reasoning_captured:
+        captured = payload._codex_lb_client_reasoning_effort
+        if isinstance(captured, str) and captured.strip():
+            return captured.strip()
+        return None
+    return read_reasoning_effort(dict(body))
+
+
+def sidecar_allowlist_reasoning_effort(
+    payload: SidecarReasoningPayload,
+    body: Mapping[str, JsonValue],
+    requested: str | None,
+) -> str | None:
+    """The effort :func:`validate_reasoning_effort_access` should see.
+
+    A captured Responses effort is authoritative, including ``None`` when the
+    client sent none: the translated body may already hold the enforced value.
+    Otherwise a direct effort wins, then the same provider aliases the
+    Responses path folds in.
+    """
+
+    if payload._codex_lb_client_reasoning_captured:
+        return requested
+    if requested is not None:
+        return requested
+    present = {key: body[key] for key in _CHAT_REASONING_ALIAS_KEYS if key in body}
+    if not present:
+        return None
+    probe: dict[str, JsonValue] = dict(present)
+    normalize_reasoning_aliases(probe)
+    return read_reasoning_effort(probe)
+
+
+def authorize_sidecar_reasoning_effort(
+    payload: SidecarReasoningPayload,
+    body: Mapping[str, JsonValue],
+    api_key: ApiKeyData | None,
+) -> str | None:
+    """Check the key allowlist and return the client-requested effort."""
+
+    requested = sidecar_requested_reasoning_effort(payload, body)
+    validate_reasoning_effort_access(api_key, sidecar_allowlist_reasoning_effort(payload, body, requested))
+    return requested
+
+
+def enforced_wire_reasoning_effort(api_key: ApiKeyData | None) -> str | None:
+    """The effort a key forces onto the upstream body, or ``None`` when it does not."""
+
+    if api_key is None:
+        return None
+    enforced = api_key.enforced_reasoning_effort
+    if not isinstance(enforced, str) or not enforced.strip():
+        return None
+    return resolve_wire_reasoning_effort(enforced)
+
+
+def apply_sidecar_chat_reasoning(
+    body: dict[str, JsonValue],
+    *,
+    payload: SidecarReasoningPayload,
+    default_reasoning_effort: str | None,
+    api_key: ApiKeyData | None,
+) -> tuple[str | None, str | None]:
+    """Apply sidecar reasoning precedence and return ``(requested, effective)``.
+
+    The sidecar default keeps its current meaning (it replaces a client effort
+    on chat routes). A key enforced effort is written after that default, so
+    it wins. A key with no enforced effort leaves the body as the default
+    step left it. ``allowed_reasoning_efforts`` is checked against the
+    client's effort, matching :func:`apply_api_key_enforcement`.
+    """
+
+    requested = authorize_sidecar_reasoning_effort(payload, body, api_key)
+    set_reasoning_effort_override(body, default_reasoning_effort)
+    enforced = enforced_wire_reasoning_effort(api_key)
+    if enforced is not None:
+        set_reasoning_effort_override(body, enforced)
+    return requested, read_reasoning_effort(body)
+
+
+def reject_disallowed_sidecar_reasoning(payload: SidecarReasoningPayload, api_key: ApiKeyData | None) -> None:
+    """Refuse a disallowed client effort before a sidecar reservation is taken.
+
+    No-op when the key has no allowlist. The payload builders check again so a
+    caller that skips this still fails closed.
+    """
+
+    if api_key is None or api_key.allowed_reasoning_efforts is None:
+        return
+    dumped = payload.model_dump(mode="json", exclude_none=True)
+    if not isinstance(dumped, dict):
+        return
+    authorize_sidecar_reasoning_effort(payload, cast(dict[str, JsonValue], dumped), api_key)
+
+
+def reasoning_effort_denied_body(exc: ProxyReasoningEffortNotAllowed) -> OpenAIErrorEnvelope:
+    error = openai_error(exc.code, exc.message, error_type=exc.error_type)
+    if exc.param is not None:
+        error["error"]["param"] = exc.param
+    return error
+
+
 def _client_reasoning_effort(payload: ResponsesRequest | ResponsesCompactRequest) -> str | None:
     """Return the effort selected by the client before wire normalization.
 
@@ -413,6 +541,7 @@ def apply_api_key_enforcement(
     """
     client_reasoning_effort = payload._codex_lb_client_reasoning_effort or _client_reasoning_effort(payload)
     payload._codex_lb_client_reasoning_effort = client_reasoning_effort
+    payload._codex_lb_client_reasoning_captured = True
     provider_reasoning_effort = _client_reasoning_effort_from_provider_aliases(payload)
     normalize_upstream_model_alias(payload)
 

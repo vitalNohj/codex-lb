@@ -528,6 +528,36 @@ async def test_the_client_effort_wins_over_the_operator_default(async_client, fa
     assert [log.requested_reasoning_effort for log in logs] == ["high", None]
 
 
+@pytest.mark.asyncio
+async def test_api_key_enforced_reasoning_wins_on_native_xai_responses(async_client, fake_cliproxy):
+    """A key's enforced effort beats the client value and the fill-in default."""
+
+    from dataclasses import replace
+
+    fake_cliproxy.config = replace(fake_cliproxy.config, default_reasoning_effort="low")
+    await _enable_api_key_auth(async_client)
+    key = await _create_api_key("mikey-native", enforced_reasoning_effort="high")
+    headers = {"Authorization": f"Bearer {key.key}"}
+    omitted = _xai_request()
+    del omitted["reasoning"]
+
+    missing = await async_client.post("/v1/responses", json=omitted, headers=headers)
+    different = await async_client.post(
+        "/v1/responses",
+        json=_xai_request(reasoning={"effort": "medium"}),
+        headers=headers,
+    )
+
+    assert missing.status_code == 200
+    assert different.status_code == 200
+    assert [payload["reasoning"]["effort"] for payload in fake_cliproxy.responses_payloads] == ["high", "high"]
+    logs = sorted(await _sidecar_logs(), key=lambda log: log.id)
+    assert [(log.requested_reasoning_effort, log.reasoning_effort) for log in logs] == [
+        (None, "high"),
+        ("medium", "high"),
+    ]
+
+
 # --- API keys: service tier and reservations ---------------------------------------
 
 

@@ -23,6 +23,7 @@ from app.core.clients.openrouter_sidecar import (
 from app.core.config.settings_cache import get_settings_cache
 from app.core.crypto import TokenEncryptor
 from app.core.errors import OpenAIErrorEnvelope, openai_error
+from app.core.exceptions import ProxyReasoningEffortNotAllowed
 from app.core.openai.chat_requests import ChatCompletionsRequest
 from app.core.types import JsonValue
 from app.core.usage.logs import CANCELLED_STATUS, CLIENT_DISCONNECT_ERROR_CODE
@@ -73,8 +74,8 @@ from app.modules.proxy.external_pricing_logging import (
     external_response_settlement,
     usage_tokens_from_sidecar,
 )
+from app.modules.proxy.request_policy import apply_sidecar_chat_reasoning, reasoning_effort_denied_body
 from app.modules.proxy.responses_chat_tools import normalize_chat_function_tools
-from app.modules.proxy.sidecar_model_profiles import read_reasoning_effort, set_reasoning_effort_override
 from app.modules.proxy.sidecar_routing import (
     SidecarRoutingEntry,
     parse_sidecar_full_models,
@@ -171,20 +172,26 @@ def build_openrouter_chat_payload(
     payload: ChatCompletionsRequest,
     effective_model: str,
     config: OpenRouterSidecarConfig,
+    *,
+    api_key: ApiKeyData | None = None,
 ) -> OpenRouterChatPayload:
     body = cast(dict[str, JsonValue], payload.model_dump(mode="json", exclude_none=True))
     # A strict chat upstream rejects or ignores the flat Responses tool shape
     # (``{"type": "function", "name": ...}``); send ``{"function": {...}}``.
     normalize_chat_function_tools(body)
-    requested_reasoning_effort = read_reasoning_effort(body)
     # ``effective_model`` is the wire model already resolved (and stripped per
     # the matched prefix's flag) by the unified resolver.
     body["model"] = effective_model.strip()
-    set_reasoning_effort_override(body, config.default_reasoning_effort)
+    requested_reasoning_effort, effective_reasoning_effort = apply_sidecar_chat_reasoning(
+        body,
+        payload=payload,
+        default_reasoning_effort=config.default_reasoning_effort,
+        api_key=api_key,
+    )
     return OpenRouterChatPayload(
         body=body,
         requested_reasoning_effort=requested_reasoning_effort,
-        effective_reasoning_effort=read_reasoning_effort(body),
+        effective_reasoning_effort=effective_reasoning_effort,
     )
 
 
@@ -227,7 +234,20 @@ async def proxy_chat_to_openrouter(
             rate_limit_headers=rate_limit_headers,
             allow_failover=allow_failover,
         )
-    sidecar_payload = build_openrouter_chat_payload(payload, wire_model or effective_model, client.config)
+    try:
+        sidecar_payload = build_openrouter_chat_payload(
+            payload,
+            wire_model or effective_model,
+            client.config,
+            api_key=api_key,
+        )
+    except ProxyReasoningEffortNotAllowed as exc:
+        await _release_openrouter_reservation(reservation, api_key=api_key)
+        return JSONResponse(
+            status_code=exc.status_code,
+            content=reasoning_effort_denied_body(exc),
+            headers=dict(rate_limit_headers),
+        )
     deepseek_scope = deepseek_resolve_scope(
         effective_model=effective_model,
         provider="openrouter",
