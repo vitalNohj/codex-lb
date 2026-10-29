@@ -122,23 +122,15 @@ def model_filter_quota_token(models: list[str]) -> str | None:
 
 
 def upgrade_stored_model_filter(stored: str | None) -> str | None:
-    """Wrap a legacy model id in a JSON list. ``NULL`` stays ``NULL``.
+    """Wrap one legacy model id as a one-item JSON list. ``NULL`` stays ``NULL``.
 
-    The wrapped id is the original string, so an existing rule matches the same
-    requests it matched before the migration.
+    The column is an unrestricted string, so a value that looks like JSON is
+    still one model id. ``[]`` must not become every model, and
+    ``["model-alpha"]`` must not start matching ``model-alpha``. Wrapping the
+    original text keeps the rule on the same id it matched before.
     """
     if stored is None:
         return None
-    text = stored.strip()
-    if text.startswith("["):
-        try:
-            parsed = json.loads(stored)
-        except json.JSONDecodeError:
-            parsed = None
-        if isinstance(parsed, list) and all(isinstance(item, str) for item in parsed):
-            if not parsed:
-                return None
-            return json.dumps(parsed, separators=(",", ":"), ensure_ascii=False)
     return json.dumps([stored], separators=(",", ":"), ensure_ascii=False)
 
 

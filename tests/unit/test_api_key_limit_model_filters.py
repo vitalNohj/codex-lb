@@ -49,33 +49,38 @@ def _run(engine: Engine, revision_fn) -> None:
             revision_fn()
 
 
-def test_upgrade_wraps_a_legacy_model_id_without_changing_null_or_lists(tmp_path: Path) -> None:
+def test_upgrade_wraps_every_legacy_id_including_json_looking_text(tmp_path: Path) -> None:
+    json_looking = '["gpt-5.4"]'
+    empty_list = "[]"
     engine = _engine(tmp_path)
     _insert(
         engine,
         [
             (1, "gpt-5.1"),
             (2, None),
-            (3, '["gpt-5.4"]'),
+            (3, json_looking),
+            (4, empty_list),
         ],
     )
 
     _run(engine, _MIGRATION.upgrade)
 
-    assert _stored(engine) == {
-        1: '["gpt-5.1"]',
-        2: None,
-        3: '["gpt-5.4"]',
-    }
-    assert decode_model_filters('["gpt-5.1"]') == ["gpt-5.1"]
+    stored = _stored(engine)
+    assert stored[1] == '["gpt-5.1"]'
+    assert stored[2] is None
+    assert decode_model_filters(stored[3]) == [json_looking]
+    assert decode_model_filters(stored[4]) == [empty_list]
     assert upgrade_stored_model_filter("gpt-5.1") == '["gpt-5.1"]'
+    assert upgrade_stored_model_filter(empty_list) == '["[]"]'
+    assert decode_model_filters(upgrade_stored_model_filter('["model-alpha"]')) == ['["model-alpha"]']
 
     _run(engine, _MIGRATION.downgrade)
 
     assert _stored(engine) == {
         1: "gpt-5.1",
         2: None,
-        3: "gpt-5.4",
+        3: json_looking,
+        4: empty_list,
     }
 
 
@@ -101,17 +106,17 @@ def test_downgrade_refuses_a_multi_model_rule_without_writing(tmp_path: Path) ->
 def test_upgrade_pages_past_the_first_batch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(_MIGRATION, "_BATCH_SIZE", 2)
     engine = _engine(tmp_path)
-    _insert(engine, [(1, "gpt-5.1"), (2, None), (3, "gpt-5.4"), (4, "gpt-5"), (5, '["gpt-5.4"]')])
+    json_looking = '["gpt-5.4"]'
+    _insert(engine, [(1, "gpt-5.1"), (2, None), (3, "gpt-5.4"), (4, "gpt-5"), (5, json_looking)])
 
     _run(engine, _MIGRATION.upgrade)
 
-    assert _stored(engine) == {
-        1: '["gpt-5.1"]',
-        2: None,
-        3: '["gpt-5.4"]',
-        4: '["gpt-5"]',
-        5: '["gpt-5.4"]',
-    }
+    stored = _stored(engine)
+    assert stored[1] == '["gpt-5.1"]'
+    assert stored[2] is None
+    assert stored[3] == '["gpt-5.4"]'
+    assert stored[4] == '["gpt-5"]'
+    assert decode_model_filters(stored[5]) == [json_looking]
 
 
 def test_quota_token_keeps_one_model_bare_and_sorts_a_set() -> None:
