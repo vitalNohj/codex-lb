@@ -38,6 +38,7 @@ from app.core.clients.claude_sidecar import (
 )
 from app.core.config.settings import get_settings
 from app.core.errors import OpenAIErrorEnvelope, openai_error, response_failed_event
+from app.core.exceptions import ProxyReasoningEffortNotAllowed
 from app.core.metrics.prometheus import cliproxy_xai_responses_route_total
 from app.core.openai.requests import ResponsesRequest
 from app.core.types import JsonValue
@@ -70,6 +71,11 @@ from app.modules.proxy.cliproxy_account_routing import (
     apply_cliproxy_account_route,
     cliproxy_conversation_id,
     rebind_cliproxy_account_route,
+)
+from app.modules.proxy.request_policy import (
+    authorize_sidecar_reasoning_effort,
+    enforced_wire_reasoning_effort,
+    reasoning_effort_denied_body,
 )
 from app.modules.proxy.sidecar_model_profiles import read_reasoning_effort
 from app.modules.proxy.sidecar_upstream_errors import (
@@ -142,33 +148,53 @@ class CliproxyResponsesBody:
     effective_reasoning_effort: str | None
 
 
+def _write_native_reasoning_effort(body: dict[str, JsonValue], effort: str) -> None:
+    """Set ``reasoning.effort`` without moving the value to ``reasoning_effort``.
+
+    xAI's native Responses executor reads the nested field. The chat override
+    writes a top-level ``reasoning_effort`` and strips the nested one, which
+    this route must not do.
+    """
+
+    reasoning = body.get("reasoning")
+    merged: dict[str, JsonValue] = dict(reasoning) if is_json_mapping(reasoning) else {}
+    merged["effort"] = effort
+    body["reasoning"] = merged
+
+
 def build_cliproxy_xai_responses_body(
     payload: ResponsesRequest,
     *,
     wire_model: str,
     conversation_id: str,
     default_reasoning_effort: str | None,
+    api_key: ApiKeyData | None = None,
 ) -> CliproxyResponsesBody:
-    """The body sent to CLIProxyAPI: the client's request with three edits.
+    """The body sent to CLIProxyAPI: the client's request with a few edits.
 
     ``model`` becomes the routed wire id and ``prompt_cache_key`` the
     conversation id codex-lb pins on, so xAI's cache and the pin agree. An
-    operator default effort fills ``reasoning.effort`` only when the client
-    sent none: unlike the chat route's override, a client effort is the
-    client's to choose here. Everything else, including reasoning items with
-    their ``encrypted_content``, is forwarded as sent.
+    operator default effort fills ``reasoning.effort`` only when the forwarded
+    body still has none: unlike the chat route's override, a client effort is
+    the client's to choose here. A key enforced effort is written after that
+    fill, so it wins over both the client value and the default. Everything
+    else, including reasoning items with their ``encrypted_content``, is
+    forwarded as sent.
     """
 
     body = payload.model_dump_for_forwarding()
     body["model"] = wire_model
     body["prompt_cache_key"] = conversation_id
-    requested_reasoning_effort = read_reasoning_effort(body)
-    default_effort = default_reasoning_effort.strip() if default_reasoning_effort else ""
-    if requested_reasoning_effort is None and default_effort:
-        reasoning = body.get("reasoning")
-        merged: dict[str, JsonValue] = dict(reasoning) if is_json_mapping(reasoning) else {}
-        merged["effort"] = default_effort
-        body["reasoning"] = merged
+    # Captured before the fill. Responses enforcement may already have written
+    # the key's effort into ``body``; the log still records what the client sent.
+    requested_reasoning_effort = authorize_sidecar_reasoning_effort(payload, body, api_key)
+    if read_reasoning_effort(body) is None:
+        default_effort = default_reasoning_effort.strip() if default_reasoning_effort else ""
+        if default_effort:
+            _write_native_reasoning_effort(body, default_effort)
+    enforced = enforced_wire_reasoning_effort(api_key)
+    if enforced is not None:
+        _write_native_reasoning_effort(body, enforced)
     return CliproxyResponsesBody(
         body=body,
         requested_reasoning_effort=requested_reasoning_effort,
@@ -214,12 +240,21 @@ async def proxy_responses_to_cliproxy_native(
             reservation=reservation,
             rate_limit_headers=rate_limit_headers,
         )
-    built = build_cliproxy_xai_responses_body(
-        payload,
-        wire_model=wire_model,
-        conversation_id=native_conversation_id(sticky_hints, request.headers),
-        default_reasoning_effort=client.config.default_reasoning_effort,
-    )
+    try:
+        built = build_cliproxy_xai_responses_body(
+            payload,
+            wire_model=wire_model,
+            conversation_id=native_conversation_id(sticky_hints, request.headers),
+            default_reasoning_effort=client.config.default_reasoning_effort,
+            api_key=api_key,
+        )
+    except ProxyReasoningEffortNotAllowed as exc:
+        await _release_sidecar_reservation(reservation, api_key=api_key)
+        return JSONResponse(
+            status_code=exc.status_code,
+            content=reasoning_effort_denied_body(exc),
+            headers=dict(rate_limit_headers),
+        )
     body = built.body
     await apply_cliproxy_account_route(body, headers=request.headers, client=client, hints=sticky_hints)
     requested_at = time.monotonic()

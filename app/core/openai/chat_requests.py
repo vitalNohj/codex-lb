@@ -3,7 +3,16 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import cast
 
-from pydantic import BaseModel, ConfigDict, Field, SerializeAsAny, SkipValidation, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    PrivateAttr,
+    SerializeAsAny,
+    SkipValidation,
+    field_validator,
+    model_validator,
+)
 
 from app.core.openai.contracts import OpenAIMessage
 from app.core.openai.message_coercion import _content_parts, coerce_messages
@@ -42,6 +51,11 @@ def _json_mapping(value: JsonValue | OpenAIMessage) -> Mapping[str, JsonValue] |
 
 class ChatCompletionsRequest(BaseModel):
     model_config = ConfigDict(extra="allow")
+    # Copied from a Responses request after API-key enforcement captured the
+    # client's effort. ``model_dump`` hides both, so the forwarded body stays
+    # the wire payload.
+    _codex_lb_client_reasoning_effort: str | None = PrivateAttr(default=None)
+    _codex_lb_client_reasoning_captured: bool = PrivateAttr(default=False)
 
     model: str = Field(min_length=1)
     # Passthrough JSON (see ``PassthroughJsonValue``): shape checks live in

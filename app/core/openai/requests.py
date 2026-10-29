@@ -729,6 +729,9 @@ class ResponsesTextControls(BaseModel):
 class ResponsesRequest(BaseModel):
     model_config = ConfigDict(extra="allow")
     _codex_lb_client_reasoning_effort: str | None = PrivateAttr(default=None)
+    # Set once :func:`apply_api_key_enforcement` has stored the client's effort.
+    # Later rewrites of ``reasoning.effort`` must not be logged as the request.
+    _codex_lb_client_reasoning_captured: bool = PrivateAttr(default=False)
     _codex_lb_provider_reasoning_effort_materialized: bool = PrivateAttr(default=False)
     _codex_lb_client_requested_store: bool = PrivateAttr(default=False)
 
@@ -885,6 +888,7 @@ class ResponsesRequest(BaseModel):
 class ResponsesCompactRequest(BaseModel):
     model_config = ConfigDict(extra="allow")
     _codex_lb_client_reasoning_effort: str | None = PrivateAttr(default=None)
+    _codex_lb_client_reasoning_captured: bool = PrivateAttr(default=False)
 
     @model_validator(mode="before")
     @classmethod

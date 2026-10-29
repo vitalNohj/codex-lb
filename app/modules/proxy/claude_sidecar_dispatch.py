@@ -24,6 +24,7 @@ from app.core.clients.claude_sidecar import (
 from app.core.config.settings_cache import get_settings_cache
 from app.core.crypto import TokenEncryptor
 from app.core.errors import OpenAIErrorEnvelope, openai_error
+from app.core.exceptions import ProxyReasoningEffortNotAllowed
 from app.core.openai.chat_requests import ChatCompletionsRequest
 from app.core.openai.message_coercion import chat_tool_content_parts
 from app.core.types import JsonValue
@@ -75,11 +76,11 @@ from app.modules.proxy.deepseek_v4_compat import (
     resolve_scope as deepseek_resolve_scope,
 )
 from app.modules.proxy.external_pricing_logging import validated_billed_cost
+from app.modules.proxy.request_policy import apply_sidecar_chat_reasoning, reasoning_effort_denied_body
 from app.modules.proxy.sidecar_model_profiles import (
     apply_sidecar_model_profile_with_suffix_effort,
     canonical_sidecar_model,
     read_reasoning_effort,
-    set_reasoning_effort_override,
 )
 from app.modules.proxy.sidecar_routing import (
     SidecarRoutingEntry,
@@ -1189,17 +1190,22 @@ def build_sidecar_chat_payload(
     payload: ChatCompletionsRequest,
     effective_model: str,
     config: ClaudeSidecarConfig,
+    *,
+    api_key: ApiKeyData | None = None,
 ) -> SidecarChatPayload:
     body = cast(dict[str, JsonValue], payload.model_dump(mode="json", exclude_none=True))
-    # Capture the client-requested effort before the model profile or override
-    # mutates it, so request logs can record requested-vs-effective.
-    requested_reasoning_effort = read_reasoning_effort(body)
     # The unified resolver already produced the wire model (prefix stripped per
     # the matched prefix's strip flag). The profile forwards that id unchanged.
     wire_model, _ = apply_sidecar_model_profile_with_suffix_effort(body, stripped_model=effective_model)
     # The model name is not an effort source. The configured override forces
-    # the provider effort over any client-sent value.
-    set_reasoning_effort_override(body, config.default_reasoning_effort)
+    # the provider effort over any client-sent value, and a key enforced
+    # effort replaces that override. Requested effort is captured first.
+    requested_reasoning_effort, _ = apply_sidecar_chat_reasoning(
+        body,
+        payload=payload,
+        default_reasoning_effort=config.default_reasoning_effort,
+        api_key=api_key,
+    )
     apply_sidecar_max_tokens_bounds(body, wire_model=wire_model)
     sanitize_sidecar_forward_payload(body)
     effective_reasoning_effort = read_reasoning_effort(body)
@@ -1354,7 +1360,20 @@ async def proxy_chat_to_sidecar(
 ) -> Response:
     # ``effective_model`` is used for reservations/logging; ``wire_model`` (the
     # resolver's stripped model) shapes the forwarded payload.
-    sidecar_payload = build_sidecar_chat_payload(payload, wire_model or effective_model, client.config)
+    try:
+        sidecar_payload = build_sidecar_chat_payload(
+            payload,
+            wire_model or effective_model,
+            client.config,
+            api_key=api_key,
+        )
+    except ProxyReasoningEffortNotAllowed as exc:
+        await _release_sidecar_reservation(reservation, api_key=api_key)
+        return JSONResponse(
+            status_code=exc.status_code,
+            content=reasoning_effort_denied_body(exc),
+            headers=dict(rate_limit_headers),
+        )
     # Read the conversation identity from the client request: the sidecar body
     # has already lost ``metadata``. The Responses bridge passes the hints it
     # read before translation.

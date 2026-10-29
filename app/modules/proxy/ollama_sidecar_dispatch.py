@@ -20,6 +20,7 @@ from app.core.clients.ollama_sidecar import (
 from app.core.config.settings_cache import get_settings_cache
 from app.core.crypto import TokenEncryptor
 from app.core.errors import OpenAIErrorEnvelope, openai_error
+from app.core.exceptions import ProxyReasoningEffortNotAllowed
 from app.core.openai.chat_requests import ChatCompletionsRequest
 from app.core.openai.exceptions import ClientPayloadError
 from app.core.types import JsonObject, JsonValue
@@ -42,6 +43,11 @@ from app.modules.proxy.cursor_chat_compat import (
     cursor_context_limit_usage_completion,
     is_sidecar_context_length_error,
     stream_bytes_with_cursor_usage_fallback,
+)
+from app.modules.proxy.request_policy import (
+    authorize_sidecar_reasoning_effort,
+    enforced_wire_reasoning_effort,
+    reasoning_effort_denied_body,
 )
 from app.modules.proxy.sidecar_routing import (
     SidecarRoutingEntry,
@@ -109,6 +115,8 @@ def build_ollama_chat_payload(
     payload: ChatCompletionsRequest,
     effective_model: str,
     default_reasoning_effort: str | None = None,
+    *,
+    api_key: ApiKeyData | None = None,
 ) -> OllamaChatPayload:
     body: dict[str, JsonValue] = {
         "model": effective_model.strip(),
@@ -130,11 +138,27 @@ def build_ollama_chat_payload(
     if options:
         body["options"] = options
     thinking = _ollama_thinking(payload)
-    # Capture the client-requested effort (a string ``think``/effort value) for
-    # request-log observability; a boolean ``think`` is not an effort label.
-    requested_reasoning_effort = thinking.strip() if isinstance(thinking, str) and thinking.strip() else None
+    # The allowlist sees every alias the Responses path folds, including a
+    # boolean ``thinking: true`` (medium). A string ``think`` value is still
+    # the requested effort recorded on the log when no other alias is set.
+    extra = payload.model_extra if isinstance(payload.model_extra, dict) else {}
+    probe: dict[str, JsonValue] = {}
+    for key in ("reasoning", "reasoning_effort", "reasoningEffort", "thinking", "enable_thinking"):
+        if key in extra:
+            probe[key] = cast(JsonValue, extra[key])
+    requested_reasoning_effort = authorize_sidecar_reasoning_effort(payload, probe, api_key)
+    if (
+        requested_reasoning_effort is None
+        and not payload._codex_lb_client_reasoning_captured
+        and isinstance(thinking, str)
+        and thinking.strip()
+    ):
+        requested_reasoning_effort = thinking.strip()
     override = default_reasoning_effort.strip() if default_reasoning_effort else None
-    if override:
+    enforced = enforced_wire_reasoning_effort(api_key)
+    if enforced is not None:
+        thinking = enforced
+    elif override:
         # Configured override maps to Ollama's ``think`` field and forces the
         # value over any client-supplied thinking.
         thinking = override
@@ -164,7 +188,17 @@ async def proxy_chat_to_ollama(
     requested_at = time.monotonic()
     try:
         sidecar_payload = build_ollama_chat_payload(
-            payload, wire_model or effective_model, client.config.default_reasoning_effort
+            payload,
+            wire_model or effective_model,
+            client.config.default_reasoning_effort,
+            api_key=api_key,
+        )
+    except ProxyReasoningEffortNotAllowed as exc:
+        await _release_ollama_reservation(reservation, api_key=api_key)
+        return JSONResponse(
+            status_code=exc.status_code,
+            content=reasoning_effort_denied_body(exc),
+            headers=dict(rate_limit_headers),
         )
     except ClientPayloadError as exc:
         await _release_ollama_reservation(reservation, api_key=api_key)

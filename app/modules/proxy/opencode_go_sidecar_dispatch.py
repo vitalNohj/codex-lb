@@ -47,6 +47,7 @@ from app.core.clients.opencode_go_sidecar import (
 from app.core.config.settings_cache import get_settings_cache
 from app.core.crypto import TokenEncryptor
 from app.core.errors import OpenAIErrorEnvelope, openai_error
+from app.core.exceptions import ProxyReasoningEffortNotAllowed
 from app.core.openai.chat_requests import ChatCompletionsRequest
 from app.core.openai.requests import ResponsesRequest
 from app.core.types import JsonObject, JsonValue
@@ -76,6 +77,7 @@ from app.modules.proxy.opencode_go_models import (
     is_opencode_go_model_supported,
     unsupported_model_message,
 )
+from app.modules.proxy.request_policy import apply_sidecar_chat_reasoning, reasoning_effort_denied_body
 from app.modules.proxy.responses_chat_bridge import (
     ResponsesChatTranslation,
     ResponsesStreamSynthesizer,
@@ -185,6 +187,8 @@ async def _settle_stream_terminal_state(
     completed: bool,
     error_code: str | None,
     error_message: str | None,
+    reasoning_effort: str | None = None,
+    requested_reasoning_effort: str | None = None,
 ) -> None:
     """Settle the reservation and write exactly one request-log row.
 
@@ -215,12 +219,16 @@ async def _settle_stream_terminal_state(
         error_message=None if completed else error_message,
         usage=settlement.usage,
         cost=settlement.cost,
+        reasoning_effort=reasoning_effort,
+        requested_reasoning_effort=requested_reasoning_effort,
     )
 
 
 @dataclass(frozen=True, slots=True)
 class OpenCodeGoChatPayload:
     body: dict[str, JsonValue]
+    requested_reasoning_effort: str | None = None
+    effective_reasoning_effort: str | None = None
 
 
 def opencode_go_is_usable(config: OpenCodeGoSidecarConfig | None) -> bool:
@@ -306,12 +314,26 @@ def _decrypt_opencode_go_secret(encrypted: bytes | None) -> str | None:
 def build_opencode_go_chat_payload(
     payload: ChatCompletionsRequest,
     effective_model: str,
+    *,
+    api_key: ApiKeyData | None = None,
 ) -> OpenCodeGoChatPayload:
     body = cast(dict[str, JsonValue], payload.model_dump(mode="json", exclude_none=True))
     # ``effective_model`` is the wire model already resolved (and stripped per
     # the matched prefix's flag) by the unified resolver.
     body["model"] = effective_model.strip()
-    return OpenCodeGoChatPayload(body=body)
+    # OpenCode Go has no operator default. A key enforced effort is the only
+    # rewrite; without one the body stays what the client sent.
+    requested_reasoning_effort, effective_reasoning_effort = apply_sidecar_chat_reasoning(
+        body,
+        payload=payload,
+        default_reasoning_effort=None,
+        api_key=api_key,
+    )
+    return OpenCodeGoChatPayload(
+        body=body,
+        requested_reasoning_effort=requested_reasoning_effort,
+        effective_reasoning_effort=effective_reasoning_effort,
+    )
 
 
 async def proxy_chat_to_opencode_go(
@@ -367,11 +389,21 @@ async def proxy_chat_to_opencode_go(
             headers=dict(rate_limit_headers),
         )
 
-    sidecar_payload = build_opencode_go_chat_payload(payload, forward_model)
+    try:
+        sidecar_payload = build_opencode_go_chat_payload(payload, forward_model, api_key=api_key)
+    except ProxyReasoningEffortNotAllowed as exc:
+        await _release_opencode_go_reservation(reservation, api_key=api_key)
+        return JSONResponse(
+            status_code=exc.status_code,
+            content=reasoning_effort_denied_body(exc),
+            headers=dict(rate_limit_headers),
+        )
     # Captured once, here: the inbound headers are read only to resolve the
     # conversation identity, never merged into the outbound header set.
     client_headers = dict(request.headers)
 
+    requested_reasoning_effort = sidecar_payload.requested_reasoning_effort
+    reasoning_effort = sidecar_payload.effective_reasoning_effort
     if payload.stream:
         ensure_stream_usage_requested(sidecar_payload.body)
         settling = SettlingStream(
@@ -383,6 +415,8 @@ async def proxy_chat_to_opencode_go(
                 started_at=requested_at,
                 client=client,
                 client_headers=client_headers,
+                reasoning_effort=reasoning_effort,
+                requested_reasoning_effort=requested_reasoning_effort,
             ),
             abandon=partial(
                 _abandon_unstarted_opencode_go_stream,
@@ -390,6 +424,8 @@ async def proxy_chat_to_opencode_go(
                 api_key=api_key,
                 model=effective_model,
                 started_at=requested_at,
+                reasoning_effort=reasoning_effort,
+                requested_reasoning_effort=requested_reasoning_effort,
             ),
         )
         return ClosingStreamingResponse(
@@ -414,6 +450,8 @@ async def proxy_chat_to_opencode_go(
             status="error",
             error_code="opencode_go_sidecar_unavailable",
             error_message="OpenCode Go unavailable",
+            reasoning_effort=reasoning_effort,
+            requested_reasoning_effort=requested_reasoning_effort,
         )
         return JSONResponse(
             status_code=503,
@@ -449,6 +487,8 @@ async def proxy_chat_to_opencode_go(
             error_message=sanitized_message,
             usage=settlement.usage,
             cost=settlement.cost,
+            reasoning_effort=reasoning_effort,
+            requested_reasoning_effort=requested_reasoning_effort,
         )
         client_error = client_facing_sidecar_error(
             status_code=exc.status_code,
@@ -482,6 +522,8 @@ async def proxy_chat_to_opencode_go(
         status="success",
         usage=usage,
         cost=cost,
+        reasoning_effort=reasoning_effort,
+        requested_reasoning_effort=requested_reasoning_effort,
     )
     return JSONResponse(content=response_body, status_code=200, headers=dict(rate_limit_headers))
 
@@ -553,8 +595,21 @@ async def proxy_responses_to_opencode_go(
 
     # The caller translates before reserving quota so an untranslatable
     # request is refused with a 400 rather than sent with parts missing.
+    # This dispatcher runs before Responses enforcement, so the key's effort
+    # has to be applied here or the forwarded chat body keeps the client value.
     translation = translation or translate_responses_to_chat(payload, forward_model)
-    chat_body = build_opencode_go_chat_payload(translation.chat_request, forward_model).body
+    try:
+        chat_payload = build_opencode_go_chat_payload(translation.chat_request, forward_model, api_key=api_key)
+    except ProxyReasoningEffortNotAllowed as exc:
+        await _release_opencode_go_reservation(reservation, api_key=api_key)
+        return JSONResponse(
+            status_code=exc.status_code,
+            content=reasoning_effort_denied_body(exc),
+            headers=dict(rate_limit_headers),
+        )
+    chat_body = chat_payload.body
+    requested_reasoning_effort = chat_payload.requested_reasoning_effort
+    reasoning_effort = chat_payload.effective_reasoning_effort
     client_headers = dict(request.headers)
 
     if payload.stream:
@@ -569,6 +624,8 @@ async def proxy_responses_to_opencode_go(
                 client=client,
                 client_headers=client_headers,
                 translation=translation,
+                reasoning_effort=reasoning_effort,
+                requested_reasoning_effort=requested_reasoning_effort,
             ),
             abandon=partial(
                 _abandon_unstarted_opencode_go_stream,
@@ -576,6 +633,8 @@ async def proxy_responses_to_opencode_go(
                 api_key=api_key,
                 model=effective_model,
                 started_at=requested_at,
+                reasoning_effort=reasoning_effort,
+                requested_reasoning_effort=requested_reasoning_effort,
             ),
         )
         return ClosingStreamingResponse(
@@ -603,6 +662,8 @@ async def proxy_responses_to_opencode_go(
             status="error",
             error_code="opencode_go_sidecar_unavailable",
             error_message="OpenCode Go unavailable",
+            reasoning_effort=reasoning_effort,
+            requested_reasoning_effort=requested_reasoning_effort,
         )
         return JSONResponse(
             status_code=503,
@@ -638,6 +699,8 @@ async def proxy_responses_to_opencode_go(
             error_message=sanitized_message,
             usage=settlement.usage,
             cost=settlement.cost,
+            reasoning_effort=reasoning_effort,
+            requested_reasoning_effort=requested_reasoning_effort,
         )
         client_error = client_facing_sidecar_error(
             status_code=exc.status_code,
@@ -668,6 +731,8 @@ async def proxy_responses_to_opencode_go(
         status="success",
         usage=usage,
         cost=cost,
+        reasoning_effort=reasoning_effort,
+        requested_reasoning_effort=requested_reasoning_effort,
     )
     return JSONResponse(
         content=chat_to_responses_result(response_body, model=effective_model, translation=translation),
@@ -686,6 +751,8 @@ async def _opencode_go_responses_stream_iterator(
     client: OpenCodeGoSidecarClient,
     client_headers: Mapping[str, str] | None = None,
     translation: ResponsesChatTranslation | None = None,
+    reasoning_effort: str | None = None,
+    requested_reasoning_effort: str | None = None,
 ) -> AsyncIterator[bytes]:
     """Relay a Go chat stream as a Responses event stream.
 
@@ -799,6 +866,8 @@ async def _opencode_go_responses_stream_iterator(
                 completed=completed,
                 error_code=error_code,
                 error_message=error_message,
+                reasoning_effort=reasoning_effort,
+                requested_reasoning_effort=requested_reasoning_effort,
             )
         )
 
@@ -838,6 +907,8 @@ async def _opencode_go_stream_iterator(
     started_at: float,
     client: OpenCodeGoSidecarClient,
     client_headers: Mapping[str, str] | None = None,
+    reasoning_effort: str | None = None,
+    requested_reasoning_effort: str | None = None,
 ) -> AsyncIterator[bytes]:
     usage: SidecarUsage | None = None
     billed_cost = BilledCostAccumulator()
@@ -935,6 +1006,8 @@ async def _opencode_go_stream_iterator(
                 completed=completed,
                 error_code=error_code,
                 error_message=error_message,
+                reasoning_effort=reasoning_effort,
+                requested_reasoning_effort=requested_reasoning_effort,
             )
         )
 
@@ -974,6 +1047,8 @@ async def _abandon_unstarted_opencode_go_stream(
     api_key: ApiKeyData | None,
     model: str,
     started_at: float,
+    reasoning_effort: str | None = None,
+    requested_reasoning_effort: str | None = None,
 ) -> None:
     """Release and log a streamed request whose client left before its body started.
 
@@ -988,6 +1063,8 @@ async def _abandon_unstarted_opencode_go_stream(
         status=CANCELLED_STATUS,
         error_code=CLIENT_DISCONNECT_ERROR_CODE,
         error_message="client disconnected before the response started",
+        reasoning_effort=reasoning_effort,
+        requested_reasoning_effort=requested_reasoning_effort,
     )
 
 
@@ -1001,6 +1078,8 @@ async def _log_opencode_go_request(
     error_message: str | None = None,
     usage: SidecarUsage | None = None,
     cost: ExternalRequestCost | None = None,
+    reasoning_effort: str | None = None,
+    requested_reasoning_effort: str | None = None,
 ) -> None:
     try:
         # Resolved from persisted state before the write: an already-priced id
@@ -1029,6 +1108,8 @@ async def _log_opencode_go_request(
                 cost_usd=cost.cost_usd,
                 cost_source=cost.cost_source,
                 price_status=cost.price_status,
+                reasoning_effort=reasoning_effort,
+                requested_reasoning_effort=requested_reasoning_effort,
                 # No reference cost: "savings" compares a served request against
                 # its paid-equivalent list price, and a flat subscription has no
                 # meaningful paid equivalent per request. Reporting one would
