@@ -271,6 +271,7 @@ describe("ApiKeyEditDialog", () => {
         maxValue: 999999,
         modelFilter: null,
         modelFilters: [],
+        reasoningEffort: null,
       },
     ]);
   });

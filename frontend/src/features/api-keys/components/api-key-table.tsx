@@ -45,6 +45,13 @@ function formatLimitSummary(limits: LimitRule[], t: ReturnType<typeof useTransla
   if (limits.length === 0) return "-";
   return limits
     .map((l) => {
+      const models = formatRuleModels(l, "");
+      const modelSuffix = models ? ` ${models}` : "";
+      const effort = l.reasoningEffort ? ` · ${l.reasoningEffort}` : "";
+      if (l.limitType == null || l.limitWindow == null || l.maxValue == null) {
+        if (!l.reasoningEffort) return "";
+        return `${t("apiKeys.limitRule.effortSummary")}: ${l.reasoningEffort}${modelSuffix}`;
+      }
       const type = t(`apiKeys.limitTypes.${l.limitType}`, { defaultValue: LIMIT_TYPE_SHORT[l.limitType] });
       const isCost = l.limitType === "cost_usd";
       const current = isCost
@@ -59,10 +66,9 @@ function formatLimitSummary(limits: LimitRule[], t: ReturnType<typeof useTransla
         l.limitWindow === "lifetime"
           ? t("apiKeys.limitWindowsShort.lifetime", { defaultValue: "one-time" })
           : l.limitWindow;
-      const models = formatRuleModels(l, "");
-      const modelSuffix = models ? ` ${models}` : "";
-      return `${type}: ${current}/${max} ${suffix}${modelSuffix}`;
+      return `${type}: ${current}/${max} ${suffix}${modelSuffix}${effort}`;
     })
+    .filter((summary) => summary.length > 0)
     .join(" | ");
 }
 

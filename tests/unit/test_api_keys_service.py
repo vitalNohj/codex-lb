@@ -265,6 +265,7 @@ class _FakeApiKeysRepository(ApiKeysRepositoryProtocol):
             if matched is not None:
                 matched.max_value = incoming.max_value
                 matched.model_filter = incoming.model_filter
+                matched.reasoning_effort = incoming.reasoning_effort
                 if not preserve_matched_usage:
                     matched.current_value = incoming.current_value
                     matched.reset_at = incoming.reset_at
@@ -2958,3 +2959,138 @@ async def test_touch_usage_reservation_reports_the_exhausted_lock_budget(
         and "sqlite_errorname=SQLITE_BUSY" in message
         for message in warnings
     )
+
+
+@pytest.mark.asyncio
+async def test_effort_only_limit_rule_is_stored_and_does_not_reserve_usage() -> None:
+    repo = _FakeApiKeysRepository()
+    service = ApiKeysService(repo)
+
+    created = await service.create_key(
+        ApiKeyCreateData(
+            name="effort-only",
+            allowed_models=None,
+            limits=[
+                LimitRuleInput(
+                    reasoning_effort="MAX",
+                    model_filters=["cc/claude-opus-5-5", "cc/claude-sonnet"],
+                )
+            ],
+        )
+    )
+
+    assert created.limits[0].reasoning_effort == "max"
+    assert created.limits[0].limit_type is None
+    assert created.limits[0].max_value is None
+    assert created.limits[0].model_filters == ["cc/claude-opus-5-5", "cc/claude-sonnet"]
+    stored = await repo.get_limits_by_key(created.id)
+    assert stored[0].reasoning_effort == "max"
+    assert stored[0].reset_at is None
+
+    reservation = await service.enforce_limits_for_request(created.id, request_model="cc/claude-opus-5-5")
+
+    assert reservation is None
+    assert stored[0].current_value == 0
+
+
+@pytest.mark.asyncio
+async def test_limit_rule_keeps_a_budget_and_an_effort_together() -> None:
+    repo = _FakeApiKeysRepository()
+    service = ApiKeysService(repo)
+
+    created = await service.create_key(
+        ApiKeyCreateData(
+            name="budget-and-effort",
+            allowed_models=None,
+            limits=[
+                LimitRuleInput(
+                    limit_type="total_tokens",
+                    limit_window="weekly",
+                    max_value=10_000,
+                    model_filters=["gpt-5.3-codex"],
+                    reasoning_effort="high",
+                )
+            ],
+        )
+    )
+
+    assert created.limits[0].reasoning_effort == "high"
+    assert created.limits[0].max_value == 10_000
+    reservation = await service.enforce_limits_for_request(created.id, request_model="gpt-5.3-codex")
+    assert reservation is not None
+
+
+@pytest.mark.asyncio
+async def test_overlapping_explicit_limit_rules_cannot_set_different_efforts() -> None:
+    repo = _FakeApiKeysRepository()
+    service = ApiKeysService(repo)
+
+    with pytest.raises(ApiKeyValidationError, match="gpt-5.4"):
+        await service.create_key(
+            ApiKeyCreateData(
+                name="conflicting-efforts",
+                allowed_models=None,
+                limits=[
+                    LimitRuleInput(
+                        limit_type="total_tokens",
+                        limit_window="weekly",
+                        max_value=10_000,
+                        model_filters=["gpt-5.3-codex", "gpt-5.4"],
+                        reasoning_effort="max",
+                    ),
+                    LimitRuleInput(
+                        reasoning_effort="high",
+                        model_filters=["gpt-5.4"],
+                    ),
+                ],
+            )
+        )
+
+
+@pytest.mark.asyncio
+async def test_explicit_limit_rule_may_override_an_all_models_effort() -> None:
+    repo = _FakeApiKeysRepository()
+    service = ApiKeysService(repo)
+
+    created = await service.create_key(
+        ApiKeyCreateData(
+            name="specific-over-all",
+            allowed_models=None,
+            limits=[
+                LimitRuleInput(reasoning_effort="high"),
+                LimitRuleInput(
+                    limit_type="total_tokens",
+                    limit_window="weekly",
+                    max_value=10_000,
+                    model_filter="gpt-5.3-codex",
+                    reasoning_effort="max",
+                ),
+            ],
+        )
+    )
+
+    efforts = {tuple(limit.model_filters): limit.reasoning_effort for limit in created.limits}
+    assert efforts == {(): "high", ("gpt-5.3-codex",): "max"}
+
+
+@pytest.mark.asyncio
+async def test_two_all_models_rules_cannot_set_different_efforts() -> None:
+    repo = _FakeApiKeysRepository()
+    service = ApiKeysService(repo)
+
+    with pytest.raises(ApiKeyValidationError, match="every model"):
+        await service.create_key(
+            ApiKeyCreateData(
+                name="two-wildcards",
+                allowed_models=None,
+                limits=[
+                    LimitRuleInput(reasoning_effort="high"),
+                    LimitRuleInput(
+                        limit_type="cost_usd",
+                        limit_window="weekly",
+                        max_value=1_000_000,
+                        reasoning_effort="max",
+                    ),
+                ],
+            )
+        )

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import cast
 
@@ -11,7 +12,7 @@ from app.core.openai.exceptions import ClientPayloadError
 from app.core.openai.model_registry import ModelRegistry
 from app.core.openai.requests import ResponsesCompactRequest, ResponsesRequest
 from app.core.types import JsonValue
-from app.modules.api_keys.service import ApiKeyData
+from app.modules.api_keys.service import ApiKeyData, LimitRuleData
 from app.modules.proxy.request_policy import (
     apply_api_key_enforcement,
     apply_api_key_enforcement_to_chat_payload,
@@ -1173,6 +1174,118 @@ def test_source_route_excluded_for_terminal_compaction_trigger() -> None:
 
     assert responses_source_route_excluded(request) is True
     assert responses_source_route_excluded(request, exclude_compaction=False) is False
+
+
+def _reasoning_limit(
+    effort: str | None,
+    models: list[str],
+    *,
+    rule_id: int = 1,
+    budget: bool = True,
+) -> LimitRuleData:
+    return LimitRuleData(
+        id=rule_id,
+        limit_type="total_tokens" if budget else None,
+        limit_window="weekly" if budget else None,
+        max_value=1_000 if budget else None,
+        current_value=0,
+        model_filter=models[0] if len(models) == 1 else None,
+        model_filters=list(models),
+        reset_at=datetime(2026, 2, 1, tzinfo=timezone.utc) if budget else None,
+        reasoning_effort=effort,
+    )
+
+
+def _reasoning_key(
+    *,
+    enforced: str | None = None,
+    allowed: list[str] | None = None,
+    limits: list[LimitRuleData] | None = None,
+) -> ApiKeyData:
+    return ApiKeyData(
+        id="ak_limit_effort",
+        name="limit-effort",
+        key_prefix="sk-test",
+        allowed_models=None,
+        enforced_model=None,
+        enforced_reasoning_effort=enforced,
+        enforced_service_tier=None,
+        expires_at=None,
+        is_active=True,
+        created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        last_used_at=None,
+        allowed_reasoning_efforts=allowed,
+        limits=limits or [],
+    )
+
+
+def _codex_request(model: str, effort: str | None = "low") -> ResponsesRequest:
+    body: dict[str, object] = {"model": model, "instructions": "", "input": []}
+    if effort is not None:
+        body["reasoning"] = {"effort": effort}
+    return ResponsesRequest.model_validate(body)
+
+
+def test_limit_rule_effort_beats_key_and_client_on_a_codex_model() -> None:
+    request = _codex_request("gpt-5.3-codex-fast")
+    api_key = _reasoning_key(
+        enforced="high",
+        limits=[
+            _reasoning_limit("medium", []),
+            _reasoning_limit("max", ["gpt-5.3-codex"], rule_id=2, budget=False),
+        ],
+    )
+
+    apply_api_key_enforcement(request, api_key)
+
+    assert request.model == "gpt-5.3-codex"
+    assert request.reasoning is not None
+    assert request.reasoning.effort == "max"
+    assert request._codex_lb_client_reasoning_effort == "low"
+
+
+def test_all_models_limit_rule_beats_the_key_when_no_explicit_rule_matches() -> None:
+    request = _codex_request("gpt-5.4")
+    api_key = _reasoning_key(
+        enforced="high",
+        limits=[
+            _reasoning_limit("medium", []),
+            _reasoning_limit("max", ["gpt-5.3-codex"], rule_id=2),
+        ],
+    )
+
+    apply_api_key_enforcement(request, api_key)
+
+    assert request.reasoning is not None
+    assert request.reasoning.effort == "medium"
+
+
+def test_key_effort_stands_when_matching_rules_set_no_effort() -> None:
+    request = _codex_request("gpt-5.3-codex")
+    api_key = _reasoning_key(
+        enforced="high",
+        limits=[_reasoning_limit(None, ["gpt-5.3-codex"])],
+    )
+
+    apply_api_key_enforcement(request, api_key)
+
+    assert request.reasoning is not None
+    assert request.reasoning.effort == "high"
+
+
+def test_limit_rule_still_checks_the_client_effort_against_the_allowlist() -> None:
+    api_key = _reasoning_key(
+        allowed=["low"],
+        limits=[_reasoning_limit("max", ["gpt-5.3-codex"], budget=False)],
+    )
+
+    with pytest.raises(ProxyReasoningEffortNotAllowed):
+        apply_api_key_enforcement(_codex_request("gpt-5.3-codex", "high"), api_key)
+
+    allowed = _codex_request("gpt-5.3-codex", "low")
+    apply_api_key_enforcement(allowed, api_key)
+    assert allowed.reasoning is not None
+    assert allowed.reasoning.effort == "max"
 
 
 def test_source_route_excluded_raises_for_malformed_compaction_trigger() -> None:

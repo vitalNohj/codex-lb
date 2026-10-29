@@ -161,25 +161,39 @@ export function ApiKeyInfo({
 						</dd>
 					</div>
 					{apiKey.limits.map((limit) => {
-						const isCost = limit.limitType === "cost_usd";
+						const modelFilter = formatRuleModels(limit, t("common.options.allLower"));
+						const effortLabel = limit.reasoningEffort
+							? t(`common.reasoning.${limit.reasoningEffort}`, { defaultValue: limit.reasoningEffort })
+							: null;
+						const limitType = limit.limitType;
+						const limitWindow = limit.limitWindow;
+						const maxValue = limit.maxValue;
+						if (limitType == null || limitWindow == null || maxValue == null) {
+							if (effortLabel == null) return null;
+							return (
+								<div key={limit.id} className="pl-2 text-xs text-muted-foreground">
+									{t("apiKeys.limitRule.effortSummary")}: {effortLabel} ({modelFilter})
+								</div>
+							);
+						}
+						const isCost = limitType === "cost_usd";
 						const percent =
-							limit.maxValue > 0
-								? Math.min(100, (limit.currentValue / limit.maxValue) * 100)
+							maxValue > 0
+								? Math.min(100, (limit.currentValue / maxValue) * 100)
 								: 0;
 						const current = isCost
 							? `$${(limit.currentValue / 1_000_000).toFixed(2)}`
 							: formatCompactNumber(limit.currentValue);
 						const max = isCost
-							? `$${(limit.maxValue / 1_000_000).toFixed(2)}`
-							: formatCompactNumber(limit.maxValue);
-						const modelFilter = formatRuleModels(limit, t("common.options.allLower"));
+							? `$${(maxValue / 1_000_000).toFixed(2)}`
+							: formatCompactNumber(maxValue);
 
 						return (
 							<div key={limit.id} className="space-y-1 pl-2">
 								<div className="flex items-center justify-between gap-2 text-xs tabular-nums">
 									<span className="text-muted-foreground">
-										{t(`apis.keyInfo.limitTypes.${limit.limitType}`, { defaultValue: LIMIT_TYPE_LABEL[limit.limitType] })} ({limitWindowLabel(limit.limitWindow, t)},{" "}
-										{modelFilter})
+										{t(`apis.keyInfo.limitTypes.${limitType}`, { defaultValue: LIMIT_TYPE_LABEL[limitType] })} ({limitWindowLabel(limitWindow, t)},{" "}
+										{modelFilter}){effortLabel ? ` · ${effortLabel}` : ""}
 									</span>
 									<span className="font-medium">
 										{current} / {max}

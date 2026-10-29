@@ -44,6 +44,22 @@ describe("LimitRulesEditor", () => {
     expect(screen.getByText("Add limit rule")).toBeInTheDocument();
   });
 
+  it("starts in advanced mode when a rule forces a reasoning effort", () => {
+    const rules: LimitRuleCreate[] = [
+      {
+        limitType: "total_tokens",
+        limitWindow: "weekly",
+        maxValue: 100,
+        modelFilter: null,
+        reasoningEffort: "high",
+      },
+    ];
+    renderWithProviders(<LimitRulesEditor rules={rules} onChange={vi.fn()} />);
+
+    expect(screen.getByText("Add limit rule")).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "Reasoning effort" })).toHaveTextContent("High");
+  });
+
   it("starts in advanced mode when rules have model filters", () => {
     const rules: LimitRuleCreate[] = [
       { limitType: "total_tokens", limitWindow: "weekly", maxValue: 100, modelFilter: "gpt-5.1" },

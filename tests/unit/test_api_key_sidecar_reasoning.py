@@ -16,7 +16,7 @@ from app.core.clients.openrouter_sidecar import OpenRouterSidecarConfig
 from app.core.clients.orcarouter_sidecar import OrcaRouterSidecarConfig
 from app.core.exceptions import ProxyReasoningEffortNotAllowed
 from app.core.openai.chat_requests import ChatCompletionsRequest
-from app.modules.api_keys.service import ApiKeyData
+from app.modules.api_keys.service import ApiKeyData, LimitRuleData
 from app.modules.proxy.claude_sidecar_dispatch import build_sidecar_chat_payload
 from app.modules.proxy.ollama_sidecar_dispatch import build_ollama_chat_payload
 from app.modules.proxy.omniroute_sidecar_dispatch import build_omniroute_chat_payload
@@ -34,6 +34,7 @@ def _key(
     enforced: str | None = None,
     *,
     allowed: list[str] | None = None,
+    limits: list[LimitRuleData] | None = None,
 ) -> ApiKeyData:
     return ApiKeyData(
         id="ak_test",
@@ -48,6 +49,21 @@ def _key(
         created_at=_NOW,
         last_used_at=None,
         allowed_reasoning_efforts=allowed,
+        limits=limits or [],
+    )
+
+
+def _effort_rule(*models: str, effort: str) -> LimitRuleData:
+    return LimitRuleData(
+        id=1,
+        limit_type=None,
+        limit_window=None,
+        max_value=None,
+        current_value=0,
+        model_filter=models[0] if len(models) == 1 else None,
+        model_filters=list(models),
+        reset_at=None,
+        reasoning_effort=effort,
     )
 
 
@@ -128,6 +144,37 @@ def test_enforced_effort_wins_on_each_chat_sidecar_builder() -> None:
         ("medium", "high")
     ] * len(built)
     assert [item.effective_reasoning_effort for item in built] == ["high"] * len(built)
+
+
+def test_limit_rule_effort_wins_on_claude_sidecar_chat() -> None:
+    key = _key(
+        "low",
+        limits=[_effort_rule("cc/claude-opus-5-5", effort="max")],
+    )
+    payload = build_sidecar_chat_payload(
+        _chat(reasoning_effort="medium"),
+        "claude-opus-5-5",
+        _claude_config("high"),
+        api_key=key,
+    )
+
+    assert payload.body["reasoning_effort"] == "max"
+    assert (payload.requested_reasoning_effort, payload.effective_reasoning_effort) == ("medium", "max")
+
+
+def test_limit_rule_allowlist_still_rejects_the_client_effort() -> None:
+    key = _key(
+        allowed=["high"],
+        limits=[_effort_rule("cc/claude-opus-5-5", effort="max")],
+    )
+
+    with pytest.raises(ProxyReasoningEffortNotAllowed):
+        build_sidecar_chat_payload(
+            _chat(reasoning_effort="low"),
+            "claude-opus-5-5",
+            _claude_config("high"),
+            api_key=key,
+        )
 
 
 def test_enforced_effort_wins_on_ollama_think_field() -> None:

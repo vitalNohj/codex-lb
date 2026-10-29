@@ -419,6 +419,7 @@ from app.modules.proxy.request_policy import (
     reject_disallowed_sidecar_reasoning,
     resolve_model_alias,
     resolve_wire_reasoning_effort,
+    resolved_enforced_reasoning_effort,
     responses_source_route_excluded,
     restore_source_reasoning_effort,
     sanitize_source_chat_payload,
@@ -6954,8 +6955,9 @@ def _shape_source_responses_payload(
     """Project the client body onto what the source may see (telemetry stripped, reasoning aliases resolved)."""
 
     source_payload = strip_source_telemetry(payload.model_dump_for_forwarding())
+    enforced_effort = resolved_enforced_reasoning_effort(api_key, payload.model)
     preserve_materialized_provider_alias = payload._codex_lb_provider_reasoning_effort_materialized and (
-        api_key is None or (api_key.enforced_reasoning_effort is None and api_key.allowed_reasoning_efforts is None)
+        api_key is None or (enforced_effort is None and api_key.allowed_reasoning_efforts is None)
     )
     if preserve_materialized_provider_alias:
         reasoning = source_payload.get("reasoning")
@@ -6966,14 +6968,12 @@ def _shape_source_responses_payload(
             else:
                 source_payload.pop("reasoning")
     if api_key is not None and (
-        api_key.enforced_reasoning_effort is not None
+        enforced_effort is not None
         or (api_key.allowed_reasoning_efforts is not None and payload._codex_lb_client_reasoning_effort is not None)
     ):
         normalize_source_reasoning_aliases(source_payload)
     source_reasoning_effort = (
-        api_key.enforced_reasoning_effort
-        if api_key is not None and api_key.enforced_reasoning_effort is not None
-        else payload._codex_lb_client_reasoning_effort
+        enforced_effort if enforced_effort is not None else payload._codex_lb_client_reasoning_effort
     )
     if source_reasoning_effort is not None and not preserve_materialized_provider_alias:
         source_reasoning_effort = resolve_wire_reasoning_effort(source_reasoning_effort)

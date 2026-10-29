@@ -8,9 +8,10 @@ type ModelFilterRule = {
 type NormalizedLimitRule = {
   limitType: LimitRuleCreate["limitType"];
   limitWindow: LimitRuleCreate["limitWindow"];
-  maxValue: number;
+  maxValue: number | null;
   modelFilter: string | null;
   modelFilters: string[];
+  reasoningEffort: NonNullable<LimitRuleCreate["reasoningEffort"]> | null;
 };
 
 export function ruleModelFilters(rule: ModelFilterRule): string[] {
@@ -45,14 +46,19 @@ export function limitRuleWithModels(rule: LimitRuleCreate, models: readonly stri
   };
 }
 
-function normalizeLimitRule(rule: LimitRuleCreate): NormalizedLimitRule {
+function ruleReasoningEffort(rule: LimitRuleCreate): NormalizedLimitRule["reasoningEffort"] {
+  return rule.reasoningEffort ?? null;
+}
+
+function normalizeLimitRule(rule: LimitRuleCreate, hasBudget: boolean): NormalizedLimitRule {
   const modelFilters = ruleModelFilters(rule);
   return {
-    limitType: rule.limitType,
-    limitWindow: rule.limitWindow,
-    maxValue: rule.maxValue,
+    limitType: hasBudget ? rule.limitType : null,
+    limitWindow: hasBudget ? rule.limitWindow : null,
+    maxValue: hasBudget ? (rule.maxValue ?? null) : null,
     modelFilters,
     modelFilter: modelFilters.length === 1 ? modelFilters[0] : null,
+    reasoningEffort: ruleReasoningEffort(rule),
   };
 }
 
@@ -62,14 +68,16 @@ function limitRuleSortKey(rule: NormalizedLimitRule): string {
     rule.limitWindow,
     JSON.stringify(rule.modelFilters),
     String(rule.maxValue),
+    rule.reasoningEffort ?? "",
   ].join("::");
 }
 
 export function normalizeLimitRules(rules: LimitRuleCreate[]): NormalizedLimitRule[] {
   return rules
     .reduce<NormalizedLimitRule[]>((normalizedRules, rule) => {
-      if (rule.maxValue > 0) {
-        normalizedRules.push(normalizeLimitRule(rule));
+      const hasBudget = (rule.maxValue ?? 0) > 0 && rule.limitType != null && rule.limitWindow != null;
+      if (hasBudget || ruleReasoningEffort(rule) != null) {
+        normalizedRules.push(normalizeLimitRule(rule, hasBudget));
       }
       return normalizedRules;
     }, [])
@@ -94,6 +102,7 @@ export function hasLimitRuleChanges(
       rule.limitType !== candidate.limitType
       || rule.limitWindow !== candidate.limitWindow
       || rule.maxValue !== candidate.maxValue
+      || rule.reasoningEffort !== candidate.reasoningEffort
       || rule.modelFilters.join("\0") !== candidate.modelFilters.join("\0")
     );
   });

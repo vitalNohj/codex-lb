@@ -34,6 +34,7 @@ export function LimitRulesEditor({ rules, onChange }: LimitRulesEditorProps) {
     // If any non-standard rule exists, start in advanced mode
     return rules.some(
       (r) =>
+        r.reasoningEffort != null ||
         (r.limitType !== "total_tokens" && r.limitType !== "cost_usd") ||
         r.limitWindow !== "weekly" ||
         ruleModelFilters(r).length > 0,
@@ -47,6 +48,8 @@ export function LimitRulesEditor({ rules, onChange }: LimitRulesEditorProps) {
   const weeklyCostRule = rules.find(
     (r) => r.limitType === "cost_usd" && r.limitWindow === "weekly" && ruleModelFilters(r).length === 0,
   );
+  const weeklyCostMax = weeklyCostRule?.maxValue ?? 0;
+  const weeklyTokenMax = weeklyTokenRule?.maxValue ?? 0;
 
   const handleBasicTokenChange = (raw: string) => {
     const val = raw ? parseInt(raw, 10) : 0;
@@ -56,7 +59,13 @@ export function LimitRulesEditor({ rules, onChange }: LimitRulesEditorProps) {
     if (val > 0) {
       onChange([
         ...otherRules,
-        { limitType: "total_tokens", limitWindow: "weekly", maxValue: val, modelFilter: null },
+        {
+          limitType: "total_tokens",
+          limitWindow: "weekly",
+          maxValue: val,
+          modelFilter: null,
+          reasoningEffort: weeklyTokenRule?.reasoningEffort ?? null,
+        },
       ]);
     } else {
       onChange(otherRules);
@@ -76,6 +85,7 @@ export function LimitRulesEditor({ rules, onChange }: LimitRulesEditorProps) {
           limitWindow: "weekly",
           maxValue: Math.round(usd * 1_000_000),
           modelFilter: null,
+          reasoningEffort: weeklyCostRule?.reasoningEffort ?? null,
         },
       ]);
     } else {
@@ -121,7 +131,7 @@ export function LimitRulesEditor({ rules, onChange }: LimitRulesEditorProps) {
               id="weekly-token-limit"
               type="number"
               min={1}
-              value={weeklyTokenRule ? String(weeklyTokenRule.maxValue) : ""}
+              value={weeklyTokenMax > 0 ? String(weeklyTokenMax) : ""}
               onChange={(e) => handleBasicTokenChange(e.target.value)}
               placeholder={t("apiKeys.limitRules.noLimit")}
             />
@@ -133,11 +143,7 @@ export function LimitRulesEditor({ rules, onChange }: LimitRulesEditorProps) {
               type="number"
               min={0.01}
               step={0.01}
-              value={
-                weeklyCostRule && weeklyCostRule.maxValue > 0
-                  ? String(weeklyCostRule.maxValue / 1_000_000)
-                  : ""
-              }
+              value={weeklyCostMax > 0 ? String(weeklyCostMax / 1_000_000) : ""}
               onChange={(e) => handleBasicCostChange(e.target.value)}
               placeholder={t("apiKeys.limitRules.noLimit")}
             />
