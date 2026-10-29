@@ -7,27 +7,51 @@ export const LIMIT_WINDOWS = ["daily", "weekly", "monthly", "5h", "7d", "lifetim
 export type LimitType = (typeof LIMIT_TYPES)[number];
 export type LimitWindowType = (typeof LIMIT_WINDOWS)[number];
 
+export const REASONING_EFFORTS = ["minimal", "low", "medium", "high", "xhigh", "max", "ultra"] as const;
+export type ReasoningEffortType = (typeof REASONING_EFFORTS)[number];
+export const ENFORCED_REASONING_EFFORTS = ["none", ...REASONING_EFFORTS] as const;
+
 const LimitRuleSchema = z.object({
   id: z.number(),
-  limitType: z.enum(LIMIT_TYPES),
-  limitWindow: z.enum(LIMIT_WINDOWS),
-  maxValue: z.number(),
+  // Null together when the rule only forces a reasoning effort.
+  limitType: z.enum(LIMIT_TYPES).nullable(),
+  limitWindow: z.enum(LIMIT_WINDOWS).nullable(),
+  maxValue: z.number().nullable(),
   currentValue: z.number(),
   modelFilter: z.string().nullable(),
   // Models that share this rule's budget. Missing on older payloads; an empty
   // list means every model.
   modelFilters: z.array(z.string()).optional(),
-  // Null for a lifetime limit, which never resets.
+  reasoningEffort: z.enum(ENFORCED_REASONING_EFFORTS).nullish(),
+  // Null for a lifetime limit, which never resets, and for an effort-only rule.
   resetAt: z.iso.datetime({ offset: true }).nullable(),
 });
 
-export const LimitRuleCreateSchema = z.object({
-  limitType: z.enum(LIMIT_TYPES),
-  limitWindow: z.enum(LIMIT_WINDOWS),
-  maxValue: z.number().int().positive(),
-  modelFilter: z.string().nullable().optional(),
-  modelFilters: z.array(z.string().min(1)).optional(),
-});
+export const LimitRuleCreateSchema = z
+  .object({
+    limitType: z.enum(LIMIT_TYPES).nullable().optional(),
+    limitWindow: z.enum(LIMIT_WINDOWS).nullable().optional(),
+    maxValue: z.number().int().positive().nullable().optional(),
+    modelFilter: z.string().nullable().optional(),
+    modelFilters: z.array(z.string().min(1)).optional(),
+    reasoningEffort: z.enum(ENFORCED_REASONING_EFFORTS).nullable().optional(),
+  })
+  .superRefine((rule, ctx) => {
+    const hasBudgetField = rule.limitType != null || rule.limitWindow != null || rule.maxValue != null;
+    const complete = rule.limitType != null && rule.limitWindow != null && rule.maxValue != null;
+    if (hasBudgetField && !complete) {
+      ctx.addIssue({
+        code: "custom",
+        message: "A limit rule needs a type, window, and maximum, or only a reasoning effort",
+      });
+    }
+    if (!hasBudgetField && rule.reasoningEffort == null) {
+      ctx.addIssue({
+        code: "custom",
+        message: "A limit rule needs a budget or a reasoning effort",
+      });
+    }
+  });
 
 const ApiKeyUsageSummarySchema = z.object({
   requestCount: z.number().int().nonnegative(),
@@ -43,10 +67,6 @@ export const TRAFFIC_CLASSES = ["foreground", "opportunistic"] as const;
 export type TrafficClass = (typeof TRAFFIC_CLASSES)[number];
 export const TRANSPORT_POLICY_OVERRIDES = ["smart", "always_http", "always_websocket"] as const;
 export type TransportPolicyOverride = (typeof TRANSPORT_POLICY_OVERRIDES)[number];
-export const REASONING_EFFORTS = ["minimal", "low", "medium", "high", "xhigh", "max", "ultra"] as const;
-export type ReasoningEffortType = (typeof REASONING_EFFORTS)[number];
-export const ENFORCED_REASONING_EFFORTS = ["none", ...REASONING_EFFORTS] as const;
-
 export const ApiKeySchema = z.object({
   id: z.string(),
   name: z.string(),

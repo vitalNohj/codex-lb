@@ -8,26 +8,34 @@ from app.modules.shared.schemas import DashboardModel
 
 
 class LimitRuleCreate(DashboardModel):
-    limit_type: str = Field(pattern=r"^(total_tokens|input_tokens|output_tokens|cost_usd|credits)$")
-    limit_window: str = Field(pattern=r"^(daily|weekly|monthly|5h|7d|lifetime)$")
-    max_value: int = Field(ge=1)
+    # Omitted together when the rule only forces a reasoning effort.
+    limit_type: str | None = Field(
+        default=None, pattern=r"^(total_tokens|input_tokens|output_tokens|cost_usd|credits)$"
+    )
+    limit_window: str | None = Field(default=None, pattern=r"^(daily|weekly|monthly|5h|7d|lifetime)$")
+    max_value: int | None = Field(default=None, ge=1)
     # Legacy single model. Ignored when ``model_filters`` is sent.
     model_filter: str | None = None
     # The models that share this rule's budget. Empty or omitted with no
     # ``model_filter`` means every model.
     model_filters: list[str] | None = None
+    reasoning_effort: str | None = Field(
+        default=None, pattern=r"(?i)^(none|minimal|low|medium|high|xhigh|max|ultra)$"
+    )
 
 
 class LimitRuleResponse(DashboardModel):
     id: int
-    limit_type: str
-    limit_window: str
-    max_value: int
+    # Null when the rule only forces a reasoning effort.
+    limit_type: str | None = None
+    limit_window: str | None = None
+    max_value: int | None = None
     current_value: int
     # The single selected model, or null when the rule is global or names several.
     model_filter: str | None
     model_filters: list[str] = Field(default_factory=list)
-    # None for a lifetime (one-time) limit, which never resets.
+    reasoning_effort: str | None = None
+    # None for a lifetime (one-time) limit, which never resets, and for an effort-only rule.
     reset_at: datetime | None
 
 

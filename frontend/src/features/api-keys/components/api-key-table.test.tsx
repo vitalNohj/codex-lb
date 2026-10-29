@@ -112,6 +112,50 @@ describe("ApiKeyTable", () => {
     expect(within(row).getByText("Cost: $0.00/$500.00 weekly gpt-5.1, gpt-5.4")).toBeInTheDocument();
   });
 
+  it("shows a rule effort in the limit summary, including an effort-only rule", () => {
+    const keys = [
+      createApiKey({
+        id: "effort-key",
+        name: "Effort key",
+        limits: [
+          {
+            id: 9,
+            limitType: "total_tokens",
+            limitWindow: "weekly",
+            maxValue: 1000,
+            currentValue: 0,
+            modelFilter: "gpt-5.3-codex",
+            reasoningEffort: "max",
+            resetAt: "2026-01-08T00:00:00Z",
+          },
+          {
+            id: 10,
+            limitType: null,
+            limitWindow: null,
+            maxValue: null,
+            currentValue: 0,
+            modelFilter: null,
+            modelFilters: ["claude-opus", "claude-sonnet"],
+            reasoningEffort: "high",
+            resetAt: null,
+          },
+        ],
+      }),
+    ];
+    renderWithProviders(
+      <ApiKeyTable
+        keys={keys}
+        busy={false}
+        onEdit={vi.fn()}
+        onDelete={vi.fn()}
+        onRegenerate={vi.fn()}
+      />,
+    );
+
+    const row = screen.getAllByRole("row")[1];
+    expect(within(row).getByText("Tokens: 0/1K weekly gpt-5.3-codex · max | Effort: high claude-opus, claude-sonnet")).toBeInTheDocument();
+  });
+
   it("badges shared keys only", () => {
     const keys = [
       createApiKey({ id: "shared-key", name: "Friend key", isShared: true }),

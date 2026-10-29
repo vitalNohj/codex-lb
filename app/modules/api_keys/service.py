@@ -317,24 +317,26 @@ class ApiKeyRequestUsageBudget:
 @dataclass(frozen=True, slots=True)
 class LimitRuleData:
     id: int
-    limit_type: str
-    limit_window: str
-    max_value: int
+    limit_type: str | None
+    limit_window: str | None
+    max_value: int | None
     current_value: int
     model_filter: str | None
-    # None for a lifetime limit, which never resets.
+    # None for a lifetime limit, which never resets, and for an effort-only rule.
     reset_at: datetime | None
     model_filters: list[str] = field(default_factory=list)
+    reasoning_effort: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class LimitRuleInput:
-    limit_type: str
-    limit_window: str
-    max_value: int
+    limit_type: str | None = None
+    limit_window: str | None = None
+    max_value: int | None = None
     model_filter: str | None = None
     # None means the caller did not send a list, so ``model_filter`` is used.
     model_filters: list[str] | None = None
+    reasoning_effort: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -548,7 +550,7 @@ class ApiKeysService:
         self._last_used_coalescer = last_used_coalescer or get_api_key_last_used_coalescer()
 
     async def create_key(self, payload: ApiKeyCreateData) -> ApiKeyCreatedData:
-        _validate_unique_limit_rule_identities(payload.limits)
+        _validate_submitted_limits(payload.limits)
         now = utcnow()
         expires_at = _normalize_expires_at(payload.expires_at)
         plain_key = _generate_plain_key()
@@ -1041,9 +1043,19 @@ class ApiKeysService:
                 if _meters_cost_for_sharing(refreshed) and not await model_is_priced():
                     raise ApiKeyUnpricedModelError(request_model)
                 for limit in refreshed.limits:
+                    max_value = limit.max_value
+                    limit_type = limit.limit_type
+                    reset_at = limit.reset_at
+                    if (
+                        not _limit_meters_usage(limit)
+                        or max_value is None
+                        or limit_type is None
+                        or reset_at is None
+                    ):
+                        continue
                     if not _limit_applies_for_request(limit, request_model=request_model):
                         continue
-                    if limit.current_value >= limit.max_value:
+                    if limit.current_value >= max_value:
                         raise _rate_limit_exceeded_error(limit)
                     reserve_delta = _reserve_delta_for_limit(
                         limit,
@@ -1055,16 +1067,16 @@ class ApiKeysService:
                         result = await self._repository.try_reserve_usage(
                             limit.id,
                             delta=reserve_delta,
-                            expected_reset_at=limit.reset_at,
+                            expected_reset_at=reset_at,
                         )
                         if not result.success:
                             raise _rate_limit_exceeded_error(limit)
                     reservation_items.append(
                         UsageReservationItemData(
                             limit_id=limit.id,
-                            limit_type=limit.limit_type,
+                            limit_type=limit_type,
                             reserved_delta=reserve_delta,
-                            expected_reset_at=limit.reset_at,
+                            expected_reset_at=reset_at,
                         )
                     )
 
@@ -1479,20 +1491,7 @@ class ApiKeysService:
             return None
 
         usage = await self._repository.get_usage_summary_by_key_id(key_id)
-        limits = [
-            ApiKeySelfLimitData(
-                limit_type=limit.limit_type.value,
-                limit_window=limit.limit_window.value,
-                max_value=limit.max_value,
-                current_value=max(0, min(limit.current_value, limit.max_value)),
-                remaining_value=max(0, limit.max_value - max(0, min(limit.current_value, limit.max_value))),
-                model_filter=singular_model_filter(decode_model_filters(limit.model_filter)),
-                model_filters=decode_model_filters(limit.model_filter),
-                reset_at=public_limit_reset_at(limit.limit_window, limit.reset_at),
-                source="api_key_limit",
-            )
-            for limit in refreshed.limits
-        ]
+        limits = [item for limit in refreshed.limits if (item := _to_self_limit(limit)) is not None]
         return ApiKeySelfUsageData(
             request_count=usage.request_count,
             total_tokens=usage.total_tokens,
@@ -1852,17 +1851,44 @@ def _validate_reasoning_effort_policy(
         )
 
 
+def _to_self_limit(limit: ApiKeyLimit) -> ApiKeySelfLimitData | None:
+    """A budget row for the key's own usage view. Effort-only rules are omitted."""
+
+    limit_type = limit.limit_type
+    window = limit.limit_window
+    max_value = limit.max_value
+    reset_at = limit.reset_at
+    if limit_type is None or window is None or max_value is None or reset_at is None:
+        return None
+    current_value = max(0, min(limit.current_value, max_value))
+    return ApiKeySelfLimitData(
+        limit_type=limit_type.value,
+        limit_window=window.value,
+        max_value=max_value,
+        current_value=current_value,
+        remaining_value=max(0, max_value - current_value),
+        model_filter=singular_model_filter(decode_model_filters(limit.model_filter)),
+        model_filters=decode_model_filters(limit.model_filter),
+        reset_at=public_limit_reset_at(window, reset_at),
+    )
+
+
 def _to_limit_rule_data(limit: ApiKeyLimit) -> LimitRuleData:
     models = decode_model_filters(limit.model_filter)
+    window = limit.limit_window
+    reset_at = (
+        public_limit_reset_at(window, limit.reset_at) if window is not None and limit.reset_at is not None else None
+    )
     return LimitRuleData(
         id=limit.id,
-        limit_type=limit.limit_type.value,
-        limit_window=limit.limit_window.value,
+        limit_type=limit.limit_type.value if limit.limit_type is not None else None,
+        limit_window=window.value if window is not None else None,
         max_value=limit.max_value,
         current_value=limit.current_value,
         model_filter=singular_model_filter(models),
         model_filters=models,
-        reset_at=public_limit_reset_at(limit.limit_window, limit.reset_at),
+        reset_at=reset_at,
+        reasoning_effort=_normalize_reasoning_effort_lenient(limit.reasoning_effort),
     )
 
 
@@ -1880,7 +1906,12 @@ async def _lazy_reset_expired_limits(
 ) -> bool:
     reset_performed = False
     for limit in limits:
-        if limit.reset_at >= now or is_lifetime_window(limit.limit_window):
+        if (
+            limit.reset_at is None
+            or limit.limit_window is None
+            or limit.reset_at >= now
+            or is_lifetime_window(limit.limit_window)
+        ):
             continue
         new_reset_at = advance_limit_reset(limit.reset_at, now, limit.limit_window)
         await repository.reset_limit(
@@ -1902,7 +1933,14 @@ def _meters_cost_for_sharing(row: ApiKey) -> bool:
     return row.is_shared and any(limit.limit_type == LimitType.COST_USD for limit in row.limits)
 
 
+def _limit_meters_usage(limit: ApiKeyLimit) -> bool:
+    """A rule with a type, window, and maximum draws on a budget. Effort-only rules do not."""
+    return limit.limit_type is not None and limit.limit_window is not None and limit.max_value is not None
+
+
 def _rate_limit_exceeded_error(limit: ApiKeyLimit) -> ApiKeyRateLimitExceededError:
+    if limit.limit_type is None or limit.limit_window is None:
+        raise TypeError("effort-only limit rules are not usage budgets")
     model_suffix = model_filter_scope_suffix(decode_model_filters(limit.model_filter))
     if is_lifetime_window(limit.limit_window):
         return ApiKeyRateLimitExceededError(
@@ -1926,6 +1964,8 @@ def _reserve_delta_for_limit(
     request_service_tier: str | None,
     request_usage_budget: ApiKeyRequestUsageBudget,
 ) -> int:
+    if limit.max_value is None:
+        return 0
     remaining = limit.max_value - limit.current_value
     if remaining <= 0:
         return 0
@@ -2142,8 +2182,23 @@ def _limit_input_to_row(
     current_value: int = 0,
     reset_at: datetime | None = None,
 ) -> ApiKeyLimit:
-    window = LimitWindow(li.limit_window)
+    effort = _normalize_reasoning_effort(li.reasoning_effort)
     models = resolve_model_filters(model_filter=li.model_filter, model_filters=li.model_filters)
+    if not _limit_input_has_budget(li):
+        if effort is None:
+            raise ApiKeyValidationError("A limit rule needs a budget or a reasoning effort")
+        return ApiKeyLimit(
+            api_key_id=key_id,
+            limit_type=None,
+            limit_window=None,
+            max_value=None,
+            current_value=0,
+            model_filter=encode_model_filters(models),
+            reset_at=None,
+            reasoning_effort=effort,
+        )
+    assert li.limit_type is not None and li.limit_window is not None and li.max_value is not None
+    window = LimitWindow(li.limit_window)
     if li.limit_type == LimitType.CREDITS.value and models:
         raise ApiKeyValidationError("credits limits do not support model_filter")
     return ApiKeyLimit(
@@ -2154,6 +2209,7 @@ def _limit_input_to_row(
         current_value=current_value,
         model_filter=encode_model_filters(models),
         reset_at=reset_at if reset_at is not None else next_limit_reset(now, window),
+        reasoning_effort=effort,
     )
 
 
@@ -2168,18 +2224,27 @@ async def _build_limit_rows_for_update(
     repository: ApiKeysRepositoryProtocol | None = None,
 ) -> list[ApiKeyLimit]:
     existing_by_key = {_limit_identity_from_row(limit): limit for limit in existing_limits}
-    _validate_unique_limit_rule_identities(submitted_limits)
+    _validate_submitted_limits(submitted_limits)
 
     rows: list[ApiKeyLimit] = []
     for submitted in submitted_limits:
         identity = _limit_identity_from_input(submitted)
         matched = existing_by_key.get(identity)
+        has_budget = _limit_input_has_budget(submitted)
         # Reset usage never clears a lifetime budget: it is one-time spend, and
-        # raising its maximum is the top-up.
-        if reset_usage and not is_lifetime_window(LimitWindow(submitted.limit_window)):
+        # raising its maximum is the top-up. An effort-only rule has no spend.
+        if (
+            reset_usage
+            and has_budget
+            and submitted.limit_window is not None
+            and not is_lifetime_window(LimitWindow(submitted.limit_window))
+        ):
             rows.append(_limit_input_to_row(submitted, key_id, now))
             continue
         if matched is None:
+            if not has_budget:
+                rows.append(_limit_input_to_row(submitted, key_id, now))
+                continue
             if repository is None:
                 raise TypeError("repository is required to backfill new API key limit usage")
             rows.append(
@@ -2217,6 +2282,8 @@ async def _new_limit_input_to_backfilled_row(
     A lifetime budget's window is the key's whole life, so everything the key
     spent since it was created counts against it.
     """
+    if submitted.limit_type is None or submitted.limit_window is None:
+        raise TypeError("effort-only limit rules are not backfilled from usage")
     limit_type = LimitType(submitted.limit_type)
     window = LimitWindow(submitted.limit_window)
     reset_at = next_limit_reset(now, window)
@@ -2246,6 +2313,20 @@ def _build_reset_limit_rows(
 ) -> list[ApiKeyLimit]:
     rows: list[ApiKeyLimit] = []
     for existing in existing_limits:
+        if not _limit_meters_usage(existing) or existing.limit_window is None:
+            rows.append(
+                ApiKeyLimit(
+                    api_key_id=key_id,
+                    limit_type=None,
+                    limit_window=None,
+                    max_value=None,
+                    current_value=0,
+                    model_filter=existing.model_filter,
+                    reset_at=None,
+                    reasoning_effort=existing.reasoning_effort,
+                )
+            )
+            continue
         # A lifetime budget keeps its spend; see _build_limit_rows_for_update.
         lifetime = is_lifetime_window(existing.limit_window)
         rows.append(
@@ -2257,13 +2338,69 @@ def _build_reset_limit_rows(
                 current_value=existing.current_value if lifetime else 0,
                 model_filter=existing.model_filter,
                 reset_at=existing.reset_at if lifetime else next_limit_reset(now, existing.limit_window),
+                reasoning_effort=existing.reasoning_effort,
             )
         )
     return rows
 
 
+def _limit_input_has_budget(limit: LimitRuleInput) -> bool:
+    return limit.limit_type is not None or limit.limit_window is not None or limit.max_value is not None
+
+
+def _validate_limit_rule_shape(limit: LimitRuleInput) -> None:
+    effort = _normalize_reasoning_effort(limit.reasoning_effort)
+    has_budget_field = _limit_input_has_budget(limit)
+    if has_budget_field and (limit.limit_type is None or limit.limit_window is None or limit.max_value is None):
+        raise ApiKeyValidationError("A limit rule needs a type, window, and maximum, or only a reasoning effort")
+    if not has_budget_field and effort is None:
+        raise ApiKeyValidationError("A limit rule needs a budget or a reasoning effort")
+
+
+def _validate_submitted_limits(limits: list[LimitRuleInput]) -> None:
+    for limit in limits:
+        _validate_limit_rule_shape(limit)
+    _validate_unique_limit_rule_identities(limits)
+    _validate_limit_reasoning_efforts(limits)
+
+
+def _validate_limit_reasoning_efforts(limits: list[LimitRuleInput]) -> None:
+    """Refuse two same-specificity rules that cover one model with different efforts.
+
+    An explicit model list wins over an all-models rule at request time, so
+    those two may name different efforts. Two explicit rules that share a
+    model, or two all-models rules, cannot.
+    """
+    prepared: list[tuple[list[str], str]] = []
+    for limit in limits:
+        effort = _normalize_reasoning_effort(limit.reasoning_effort)
+        if effort is None:
+            continue
+        models = resolve_model_filters(model_filter=limit.model_filter, model_filters=limit.model_filters)
+        prepared.append((models, effort))
+    for index, (left_models, left_effort) in enumerate(prepared):
+        left_explicit = bool(left_models)
+        for right_models, right_effort in prepared[index + 1 :]:
+            if left_effort == right_effort or left_explicit != bool(right_models):
+                continue
+            if left_explicit:
+                overlap = sorted(set(left_models) & set(right_models))
+                if not overlap:
+                    continue
+                covered = ", ".join(overlap)
+            else:
+                covered = "every model"
+            efforts = " and ".join(sorted({left_effort, right_effort}))
+            raise ApiKeyValidationError(
+                f"Limit rules covering {covered} set different reasoning efforts: {efforts}"
+            )
+
+
 def _limit_identity_from_input(limit: LimitRuleInput) -> tuple[str, str, str | tuple[str, ...] | None]:
     models = resolve_model_filters(model_filter=limit.model_filter, model_filters=limit.model_filters)
+    if not _limit_input_has_budget(limit):
+        return ("reasoning_effort", "", model_filter_identity(models))
+    assert limit.limit_type is not None and limit.limit_window is not None
     return (limit.limit_type, limit.limit_window, model_filter_identity(models))
 
 
@@ -2277,6 +2414,8 @@ def _validate_unique_limit_rule_identities(limits: list[LimitRuleInput]) -> None
 
 
 def _limit_identity_from_row(limit: ApiKeyLimit) -> tuple[str, str, str | tuple[str, ...] | None]:
+    if limit.limit_type is None or limit.limit_window is None:
+        return ("reasoning_effort", "", stored_model_identity(limit.model_filter))
     return (limit.limit_type.value, limit.limit_window.value, stored_model_identity(limit.model_filter))
 
 

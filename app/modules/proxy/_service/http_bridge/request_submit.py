@@ -817,6 +817,7 @@ class _HTTPBridgeRequestSubmitMixin:
             model=payload.model,
             service_tier=forwarded_service_tier,
             reasoning_effort=payload.reasoning.effort if payload.reasoning else None,
+            requested_reasoning_effort=payload._codex_lb_client_reasoning_effort,
             api_key_reservation=api_key_reservation,
             started_at=clock_for(self).monotonic(),
             thread_affinity_last_touch_at=clock_for(self).monotonic(),

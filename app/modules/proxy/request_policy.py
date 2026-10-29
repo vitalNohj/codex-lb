@@ -31,7 +31,7 @@ from app.core.usage.pricing import resolve_model_alias as resolve_pricing_model_
 from app.core.utils.json_guards import is_json_list, is_json_mapping
 from app.core.utils.request_id import get_request_id
 from app.db.models import ModelSource
-from app.modules.api_keys.service import ApiKeyData
+from app.modules.api_keys.service import ApiKeyData, LimitRuleData, _normalize_reasoning_effort_lenient
 from app.modules.model_sources.catalog import source_model_reasoning_levels
 from app.modules.proxy.sidecar_model_profiles import (
     canonical_sidecar_model,
@@ -356,13 +356,102 @@ def authorize_sidecar_reasoning_effort(
     return requested
 
 
-def enforced_wire_reasoning_effort(api_key: ApiKeyData | None) -> str | None:
-    """The effort a key forces onto the upstream body, or ``None`` when it does not."""
+def _rule_models(limit: LimitRuleData) -> list[str]:
+    models = [item.strip() for item in limit.model_filters if item.strip()]
+    if models:
+        return models
+    single = limit.model_filter
+    if isinstance(single, str) and single.strip():
+        return [single.strip()]
+    return []
+
+
+def _policy_limits(api_key: ApiKeyData) -> list[LimitRuleData]:
+    """Limit rules on a real key. Incomplete test doubles have none."""
+
+    raw_limits = api_key.limits if isinstance(api_key, ApiKeyData) else getattr(api_key, "limits", None)
+    if not isinstance(raw_limits, list):
+        return []
+    return [limit for limit in raw_limits if isinstance(limit, LimitRuleData)]
+
+
+def _stored_policy_effort(value: str | None) -> str | None:
+    return _normalize_reasoning_effort_lenient(value)
+
+
+def _key_enforced_effort(api_key: ApiKeyData) -> str | None:
+    raw_effort = (
+        api_key.enforced_reasoning_effort
+        if isinstance(api_key, ApiKeyData)
+        else getattr(api_key, "enforced_reasoning_effort", None)
+    )
+    if not isinstance(raw_effort, str):
+        return None
+    return _stored_policy_effort(raw_effort)
+
+
+def sidecar_reasoning_model(api_key: ApiKeyData | None, requested_model: str | None) -> str | None:
+    """The model a sidecar limit-rule effort matches.
+
+    Routing sends the key's enforced model and leaves the client payload
+    unchanged. Match rules against that enforced model, so a rule for the
+    upstream model applies and a rule for the discarded client model does not.
+    Responses enforcement rewrites the payload model before it resolves an
+    effort and does not use this helper.
+    """
+
+    if api_key is not None:
+        raw_model = (
+            api_key.enforced_model if isinstance(api_key, ApiKeyData) else getattr(api_key, "enforced_model", None)
+        )
+        if isinstance(raw_model, str) and raw_model.strip():
+            return raw_model.strip()
+    if isinstance(requested_model, str) and requested_model.strip():
+        return requested_model.strip()
+    return None
+
+
+def resolved_enforced_reasoning_effort(api_key: ApiKeyData | None, model: str | None) -> str | None:
+    """The effort to force, or ``None`` when the client value stands.
+
+    A matching limit rule beats the key-level effort, which beats the client.
+    Among matching rules that set an effort, an explicit model list beats an
+    all-models rule. Save-time validation rejects two explicit rules, or two
+    all-models rules, that cover one model with different efforts.
+    """
 
     if api_key is None:
         return None
-    enforced = api_key.enforced_reasoning_effort
-    if not isinstance(enforced, str) or not enforced.strip():
+    request_model = model.strip() if isinstance(model, str) and model.strip() else None
+    explicit: list[str] = []
+    wildcard: list[str] = []
+    for limit in _policy_limits(api_key):
+        effort = _stored_policy_effort(limit.reasoning_effort)
+        if effort is None:
+            continue
+        models = _rule_models(limit)
+        if not models:
+            wildcard.append(effort)
+            continue
+        if request_model is not None and request_model in models:
+            explicit.append(effort)
+    chosen = explicit or wildcard
+    if chosen:
+        effort = chosen[0]
+        if any(item != effort for item in chosen):
+            raise ProxyReasoningEffortNotAllowed(
+                "Limit rules set different reasoning efforts for this model",
+                param="reasoning.effort",
+            )
+        return effort
+    return _key_enforced_effort(api_key)
+
+
+def enforced_wire_reasoning_effort(api_key: ApiKeyData | None, model: str | None = None) -> str | None:
+    """The effort a key or matching limit rule forces onto the wire, or ``None``."""
+
+    enforced = resolved_enforced_reasoning_effort(api_key, model)
+    if enforced is None:
         return None
     return resolve_wire_reasoning_effort(enforced)
 
@@ -377,15 +466,19 @@ def apply_sidecar_chat_reasoning(
     """Apply sidecar reasoning precedence and return ``(requested, effective)``.
 
     The sidecar default keeps its current meaning (it replaces a client effort
-    on chat routes). A key enforced effort is written after that default, so
-    it wins. A key with no enforced effort leaves the body as the default
-    step left it. ``allowed_reasoning_efforts`` is checked against the
-    client's effort, matching :func:`apply_api_key_enforcement`.
+    on chat routes). A matching limit-rule effort, then a key enforced effort,
+    is written after that default, so the rule wins and the key wins over the
+    client. Rules match the key's enforced model when one is set, and the
+    client model otherwise. A key with no enforced effort and no matching rule
+    leaves the body as the default step left it. ``allowed_reasoning_efforts``
+    is checked against the client's effort, matching
+    :func:`apply_api_key_enforcement`.
     """
 
     requested = authorize_sidecar_reasoning_effort(payload, body, api_key)
     set_reasoning_effort_override(body, default_reasoning_effort)
-    enforced = enforced_wire_reasoning_effort(api_key)
+    request_model = payload.model if isinstance(payload.model, str) else None
+    enforced = enforced_wire_reasoning_effort(api_key, sidecar_reasoning_model(api_key, request_model))
     if enforced is not None:
         set_reasoning_effort_override(body, enforced)
     return requested, read_reasoning_effort(body)
@@ -580,19 +673,20 @@ def apply_api_key_enforcement(
                 code="responses_lite_model_mismatch",
             )
 
-    if api_key.enforced_reasoning_effort is not None:
+    enforced_effort = resolved_enforced_reasoning_effort(api_key, payload.model)
+    if enforced_effort is not None:
         requested_effort = payload.reasoning.effort if payload.reasoning else None
         if payload.reasoning is None:
-            payload.reasoning = ResponsesReasoning(effort=api_key.enforced_reasoning_effort)
+            payload.reasoning = ResponsesReasoning(effort=enforced_effort)
         else:
-            payload.reasoning.effort = api_key.enforced_reasoning_effort
-        if requested_effort != api_key.enforced_reasoning_effort:
+            payload.reasoning.effort = enforced_effort
+        if requested_effort != enforced_effort:
             logger.info(
                 "api_key_reasoning_enforced request_id=%s key_id=%s requested_effort=%s enforced_effort=%s",
                 get_request_id(),
                 api_key.id,
                 requested_effort,
-                api_key.enforced_reasoning_effort,
+                enforced_effort,
             )
 
     _materialize_provider_reasoning_effort(payload, provider_reasoning_effort)
@@ -811,8 +905,11 @@ def apply_api_key_enforcement_to_chat_payload(
     if api_key is None:
         return
 
-    if api_key.enforced_reasoning_effort is not None:
-        enforced_effort = resolve_wire_reasoning_effort(api_key.enforced_reasoning_effort)
+    raw_model = payload.get("model")
+    request_model = raw_model if isinstance(raw_model, str) else None
+    enforced_effort = resolved_enforced_reasoning_effort(api_key, request_model)
+    if enforced_effort is not None:
+        enforced_effort = resolve_wire_reasoning_effort(enforced_effort)
         payload["reasoning_effort"] = enforced_effort
         reasoning = payload.get("reasoning")
         if isinstance(reasoning, dict):

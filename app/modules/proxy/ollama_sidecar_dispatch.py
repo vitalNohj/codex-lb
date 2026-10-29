@@ -48,6 +48,7 @@ from app.modules.proxy.request_policy import (
     authorize_sidecar_reasoning_effort,
     enforced_wire_reasoning_effort,
     reasoning_effort_denied_body,
+    sidecar_reasoning_model,
 )
 from app.modules.proxy.sidecar_routing import (
     SidecarRoutingEntry,
@@ -155,7 +156,8 @@ def build_ollama_chat_payload(
     ):
         requested_reasoning_effort = thinking.strip()
     override = default_reasoning_effort.strip() if default_reasoning_effort else None
-    enforced = enforced_wire_reasoning_effort(api_key)
+    request_model = payload.model if isinstance(payload.model, str) else None
+    enforced = enforced_wire_reasoning_effort(api_key, sidecar_reasoning_model(api_key, request_model))
     if enforced is not None:
         thinking = enforced
     elif override:

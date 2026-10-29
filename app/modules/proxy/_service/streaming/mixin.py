@@ -1063,6 +1063,7 @@ class _StreamingMixin(_StreamingRetryMixin):
                 cached_input_tokens=cached_input_tokens,
                 reasoning_tokens=reasoning_tokens,
                 reasoning_effort=reasoning_effort,
+                requested_reasoning_effort=payload._codex_lb_client_reasoning_effort,
                 transport=request_transport,
                 upstream_transport=upstream_stream_transport,
                 service_tier=service_tier,

@@ -1273,6 +1273,7 @@ class _HTTPBridgeStreamingMixin:
                             error_code=bridge_error_code,
                             error_message=bridge_error_message or "Continuity owner account is unavailable",
                             reasoning_effort=payload.reasoning.effort if payload.reasoning else None,
+                            requested_reasoning_effort=payload._codex_lb_client_reasoning_effort,
                             service_tier=payload.service_tier,
                             useragent=useragent,
                             useragent_group=useragent_group,

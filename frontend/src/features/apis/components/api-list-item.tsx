@@ -39,8 +39,9 @@ function formatLimitPercent(apiKey: ApiKey): number | null {
   if (apiKey.limits.length === 0) return null;
   let maxPercent = 0;
   for (const limit of apiKey.limits) {
-    if (limit.maxValue > 0) {
-      const pct = (limit.currentValue / limit.maxValue) * 100;
+    const maxValue = limit.maxValue;
+    if (maxValue != null && maxValue > 0) {
+      const pct = (limit.currentValue / maxValue) * 100;
       if (pct > maxPercent) maxPercent = pct;
     }
   }

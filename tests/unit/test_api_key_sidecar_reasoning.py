@@ -16,7 +16,7 @@ from app.core.clients.openrouter_sidecar import OpenRouterSidecarConfig
 from app.core.clients.orcarouter_sidecar import OrcaRouterSidecarConfig
 from app.core.exceptions import ProxyReasoningEffortNotAllowed
 from app.core.openai.chat_requests import ChatCompletionsRequest
-from app.modules.api_keys.service import ApiKeyData
+from app.modules.api_keys.service import ApiKeyData, LimitRuleData
 from app.modules.proxy.claude_sidecar_dispatch import build_sidecar_chat_payload
 from app.modules.proxy.ollama_sidecar_dispatch import build_ollama_chat_payload
 from app.modules.proxy.omniroute_sidecar_dispatch import build_omniroute_chat_payload
@@ -34,13 +34,15 @@ def _key(
     enforced: str | None = None,
     *,
     allowed: list[str] | None = None,
+    limits: list[LimitRuleData] | None = None,
+    enforced_model: str | None = None,
 ) -> ApiKeyData:
     return ApiKeyData(
         id="ak_test",
         name="mikey",
         key_prefix="sk-test",
         allowed_models=None,
-        enforced_model=None,
+        enforced_model=enforced_model,
         enforced_reasoning_effort=enforced,
         enforced_service_tier=None,
         expires_at=None,
@@ -48,6 +50,21 @@ def _key(
         created_at=_NOW,
         last_used_at=None,
         allowed_reasoning_efforts=allowed,
+        limits=limits or [],
+    )
+
+
+def _effort_rule(*models: str, effort: str) -> LimitRuleData:
+    return LimitRuleData(
+        id=1,
+        limit_type=None,
+        limit_window=None,
+        max_value=None,
+        current_value=0,
+        model_filter=models[0] if len(models) == 1 else None,
+        model_filters=list(models),
+        reset_at=None,
+        reasoning_effort=effort,
     )
 
 
@@ -128,6 +145,97 @@ def test_enforced_effort_wins_on_each_chat_sidecar_builder() -> None:
         ("medium", "high")
     ] * len(built)
     assert [item.effective_reasoning_effort for item in built] == ["high"] * len(built)
+
+
+def test_limit_rule_effort_wins_on_claude_sidecar_chat() -> None:
+    key = _key(
+        "low",
+        limits=[_effort_rule("cc/claude-opus-5-5", effort="max")],
+    )
+    payload = build_sidecar_chat_payload(
+        _chat(reasoning_effort="medium"),
+        "claude-opus-5-5",
+        _claude_config("high"),
+        api_key=key,
+    )
+
+    assert payload.body["reasoning_effort"] == "max"
+    assert (payload.requested_reasoning_effort, payload.effective_reasoning_effort) == ("medium", "max")
+
+
+def test_sidecar_limit_rule_matches_the_enforced_model_not_the_client_model() -> None:
+    key = _key(
+        "low",
+        enforced_model="cc/claude-opus-5-5",
+        limits=[
+            _effort_rule("cc/claude-haiku", effort="high"),
+            _effort_rule("cc/claude-opus-5-5", effort="max"),
+        ],
+    )
+
+    payload = build_sidecar_chat_payload(
+        _chat(model="cc/claude-haiku", reasoning_effort="medium"),
+        "claude-opus-5-5",
+        _claude_config("high"),
+        api_key=key,
+    )
+
+    assert payload.body["reasoning_effort"] == "max"
+    assert (payload.requested_reasoning_effort, payload.effective_reasoning_effort) == ("medium", "max")
+
+
+def test_sidecar_client_model_rule_does_not_apply_when_the_key_enforces_another_model() -> None:
+    key = _key(
+        "low",
+        enforced_model="cc/claude-opus-5-5",
+        limits=[_effort_rule("cc/claude-haiku", effort="max")],
+    )
+
+    payload = build_sidecar_chat_payload(
+        _chat(model="cc/claude-haiku", reasoning_effort="medium"),
+        "claude-opus-5-5",
+        _claude_config("high"),
+        api_key=key,
+    )
+
+    assert payload.body["reasoning_effort"] == "low"
+
+
+def test_ollama_limit_rule_matches_the_enforced_model() -> None:
+    key = _key(
+        "low",
+        enforced_model="gpt-oss:120b-cloud",
+        limits=[
+            _effort_rule("cc/claude-haiku", effort="high"),
+            _effort_rule("gpt-oss:120b-cloud", effort="max"),
+        ],
+    )
+
+    payload = build_ollama_chat_payload(
+        _chat(model="cc/claude-haiku", reasoning_effort="medium"),
+        "gpt-oss:120b-cloud",
+        "low",
+        api_key=key,
+    )
+
+    assert payload.body["model"] == "gpt-oss:120b-cloud"
+    assert payload.body["think"] == "max"
+    assert (payload.requested_reasoning_effort, payload.effective_reasoning_effort) == ("medium", "max")
+
+
+def test_limit_rule_allowlist_still_rejects_the_client_effort() -> None:
+    key = _key(
+        allowed=["high"],
+        limits=[_effort_rule("cc/claude-opus-5-5", effort="max")],
+    )
+
+    with pytest.raises(ProxyReasoningEffortNotAllowed):
+        build_sidecar_chat_payload(
+            _chat(reasoning_effort="low"),
+            "claude-opus-5-5",
+            _claude_config("high"),
+            api_key=key,
+        )
 
 
 def test_enforced_effort_wins_on_ollama_think_field() -> None:

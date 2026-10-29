@@ -176,8 +176,9 @@ def build_cliproxy_xai_responses_body(
     conversation id codex-lb pins on, so xAI's cache and the pin agree. An
     operator default effort fills ``reasoning.effort`` only when the forwarded
     body still has none: unlike the chat route's override, a client effort is
-    the client's to choose here. A key enforced effort is written after that
-    fill, so it wins over both the client value and the default. Everything
+    the client's to choose here. A matching limit-rule effort, else the key's
+    enforced effort, is written after that fill, so the rule wins over the
+    key, the client, and the default. Everything
     else, including reasoning items with their ``encrypted_content``, is
     forwarded as sent.
     """
@@ -192,7 +193,8 @@ def build_cliproxy_xai_responses_body(
         default_effort = default_reasoning_effort.strip() if default_reasoning_effort else ""
         if default_effort:
             _write_native_reasoning_effort(body, default_effort)
-    enforced = enforced_wire_reasoning_effort(api_key)
+    request_model = payload.model if isinstance(payload.model, str) else None
+    enforced = enforced_wire_reasoning_effort(api_key, request_model)
     if enforced is not None:
         _write_native_reasoning_effort(body, enforced)
     return CliproxyResponsesBody(

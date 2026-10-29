@@ -532,6 +532,7 @@ class ApiKeysRepository:
                 continue
             matched.max_value = incoming.max_value
             matched.model_filter = incoming.model_filter
+            matched.reasoning_effort = incoming.reasoning_effort
             if not preserve_matched_usage:
                 matched.current_value = incoming.current_value
                 matched.reset_at = incoming.reset_at
@@ -646,6 +647,8 @@ class ApiKeysRepository:
                 return reset_count
 
             for limit in expired_limits:
+                if limit.reset_at is None or limit.limit_window is None:
+                    continue
                 update_result = await self._session.execute(
                     update(ApiKeyLimit)
                     .where(ApiKeyLimit.id == limit.id)
@@ -1203,5 +1206,5 @@ def _compute_increment(limit: ApiKeyLimit, input_tokens: int, output_tokens: int
     return 0
 
 
-def _limit_key(limit: ApiKeyLimit) -> tuple[LimitType, LimitWindow, str | tuple[str, ...] | None]:
+def _limit_key(limit: ApiKeyLimit) -> tuple[LimitType | None, LimitWindow | None, str | tuple[str, ...] | None]:
     return (limit.limit_type, limit.limit_window, stored_model_identity(limit.model_filter))

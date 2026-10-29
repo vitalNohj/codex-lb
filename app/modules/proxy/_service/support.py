@@ -1025,6 +1025,7 @@ class _WebSocketRequestState:
     reasoning_effort: str | None
     api_key_reservation: ApiKeyUsageReservationData | None
     started_at: float
+    requested_reasoning_effort: str | None = None
     responses_lite_model: str | None = None
     latency_first_token_ms: int | None = None
     ttft_reasoning_deltas: dict[tuple[str | None, int | None, int | None], _TTFTReasoningDeltaState] = field(

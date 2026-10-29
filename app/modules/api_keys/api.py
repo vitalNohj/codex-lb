@@ -80,6 +80,7 @@ def _to_response(row: ApiKeyData) -> ApiKeyResponse:
                 current_value=li.current_value,
                 model_filter=li.model_filter,
                 model_filters=li.model_filters,
+                reasoning_effort=li.reasoning_effort,
                 reset_at=li.reset_at,
             )
             for li in row.limits
@@ -117,6 +118,7 @@ def _build_limit_inputs(payload: ApiKeyCreateRequest | ApiKeyUpdateRequest) -> l
                     max_value=lr.max_value,
                     model_filter=lr.model_filter,
                     model_filters=submitted_filters,
+                    reasoning_effort=lr.reasoning_effort,
                 )
             )
     elif (

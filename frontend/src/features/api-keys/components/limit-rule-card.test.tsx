@@ -198,4 +198,17 @@ describe("LimitRuleCard", () => {
       }),
     );
   });
+
+  it("defaults the effort selector to client choice and saves a selected effort", async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    renderWithProviders(<LimitRuleCard rule={tokenRule()} onChange={onChange} onRemove={vi.fn()} />);
+
+    expect(screen.getByRole("combobox", { name: "Reasoning effort" })).toHaveTextContent("Client choice");
+
+    await user.click(screen.getByRole("combobox", { name: "Reasoning effort" }));
+    await user.click(await screen.findByRole("option", { name: "Max" }));
+
+    expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ reasoningEffort: "max" }));
+  });
 });

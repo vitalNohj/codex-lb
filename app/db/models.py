@@ -2856,28 +2856,30 @@ class ApiKeyLimit(Base):
         ForeignKey("api_keys.id", ondelete="CASCADE"),
         nullable=False,
     )
-    limit_type: Mapped[LimitType] = mapped_column(
+    # Null together with window, max, and reset_at: the rule only forces an effort.
+    limit_type: Mapped[LimitType | None] = mapped_column(
         SqlEnum(
             LimitType,
             name="limit_type",
             validate_strings=True,
             values_callable=_enum_values,
         ),
-        nullable=False,
+        nullable=True,
     )
-    limit_window: Mapped[LimitWindow] = mapped_column(
+    limit_window: Mapped[LimitWindow | None] = mapped_column(
         SqlEnum(
             LimitWindow,
             name="limit_window",
             validate_strings=True,
             values_callable=_enum_values,
         ),
-        nullable=False,
+        nullable=True,
     )
-    max_value: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    max_value: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     current_value: Mapped[int] = mapped_column(BigInteger, default=0, server_default=text("0"), nullable=False)
     model_filter: Mapped[str | None] = mapped_column(String, nullable=True)
-    reset_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    reset_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    reasoning_effort: Mapped[str | None] = mapped_column(String, nullable=True)
 
     api_key: Mapped["ApiKey"] = relationship("ApiKey", back_populates="limits")
 

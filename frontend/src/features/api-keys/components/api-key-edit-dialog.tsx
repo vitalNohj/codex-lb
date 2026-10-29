@@ -86,6 +86,7 @@ function limitsToCreateRules(apiKey: ApiKey): LimitRuleCreate[] {
         limitType: limit.limitType,
         limitWindow: limit.limitWindow,
         maxValue: limit.maxValue,
+        reasoningEffort: limit.reasoningEffort ?? null,
       },
       ruleModelFilters(limit),
     ),
@@ -464,19 +465,33 @@ function ApiKeyEditForm({ apiKey, busy, onSubmit, onClose }: ApiKeyEditFormProps
 
 function LimitUsageBar({ limit }: { limit: ApiKey["limits"][number] }) {
   const { t } = useTranslation();
-  const isCost = limit.limitType === "cost_usd";
-  const percent = limit.maxValue > 0 ? Math.min(100, (limit.currentValue / limit.maxValue) * 100) : 0;
-  const current = isCost ? `$${(limit.currentValue / 1_000_000).toFixed(2)}` : formatTokenCount(limit.currentValue);
-  const max = isCost ? `$${(limit.maxValue / 1_000_000).toFixed(2)}` : formatTokenCount(limit.maxValue);
-  const typeLabel = LIMIT_TYPE_SHORT[limit.limitType];
-  const windowLabel = limitWindowLabel(limit.limitWindow, t);
   const modelLabel = formatRuleModels(limit, "all");
+  const effortLabel = limit.reasoningEffort
+    ? t(`common.reasoning.${limit.reasoningEffort}`, { defaultValue: limit.reasoningEffort })
+    : null;
+  const limitType = limit.limitType;
+  const limitWindow = limit.limitWindow;
+  const maxValue = limit.maxValue;
+  if (limitType == null || limitWindow == null || maxValue == null) {
+    if (effortLabel == null) return null;
+    return (
+      <div className="rounded border p-1.5 text-xs text-muted-foreground">
+        {t("apiKeys.limitRule.effortSummary")}: {effortLabel} ({modelLabel})
+      </div>
+    );
+  }
+  const isCost = limitType === "cost_usd";
+  const percent = maxValue > 0 ? Math.min(100, (limit.currentValue / maxValue) * 100) : 0;
+  const current = isCost ? `$${(limit.currentValue / 1_000_000).toFixed(2)}` : formatTokenCount(limit.currentValue);
+  const max = isCost ? `$${(maxValue / 1_000_000).toFixed(2)}` : formatTokenCount(maxValue);
+  const typeLabel = LIMIT_TYPE_SHORT[limitType];
+  const windowLabel = limitWindowLabel(limitWindow, t);
 
   return (
     <div className="rounded border p-1.5">
       <div className="flex items-center justify-between text-xs">
         <span className="text-muted-foreground">
-          {typeLabel} ({windowLabel}, {modelLabel})
+          {typeLabel} ({windowLabel}, {modelLabel}){effortLabel ? ` · ${effortLabel}` : ""}
         </span>
         <span className="tabular-nums">
           {current} / {max}

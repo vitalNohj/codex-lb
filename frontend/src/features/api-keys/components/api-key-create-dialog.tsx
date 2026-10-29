@@ -26,6 +26,7 @@ import {
 import { AccountMultiSelect } from "@/features/api-keys/components/account-multi-select";
 import { ExpiryPicker } from "@/features/api-keys/components/expiry-picker";
 import { LimitRulesEditor } from "@/features/api-keys/components/limit-rules-editor";
+import { normalizeLimitRules } from "@/features/api-keys/components/limit-rules-utils";
 import { ModelMultiSelect } from "@/features/api-keys/components/model-multi-select";
 import { ReasoningEffortsMultiSelect } from "@/features/api-keys/components/reasoning-efforts-multi-select";
 import { ApiKeyVisibilityFields } from "@/features/api-keys/components/api-key-visibility-fields";
@@ -119,7 +120,7 @@ function ApiKeyCreateForm({ busy, onClose, onSubmit }: ApiKeyCreateFormProps) {
   const [draft, updateDraft] = useReducer(apiKeyCreateDraftReducer, initialApiKeyCreateDraft);
 
   const handleSubmit = async (values: FormValues) => {
-    const validLimits = draft.limitRules.filter((rule) => rule.maxValue > 0);
+    const validLimits = normalizeLimitRules(draft.limitRules);
     const payload: ApiKeyCreateRequest = {
       name: values.name,
       allowedModels: draft.selectedModels.length > 0 ? draft.selectedModels : undefined,
