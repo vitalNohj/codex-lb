@@ -20,6 +20,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { formatRuleModels } from "@/features/api-keys/components/limit-rules-utils";
 import type { ApiKey, LimitRule, LimitType } from "@/features/api-keys/schemas";
 import { useDateDisplayFormatStore, type DateDisplayFormat } from "@/hooks/use-date-format";
 import { formatCompactNumber, formatCurrency, formatTimeLong } from "@/utils/formatters";
@@ -58,7 +59,9 @@ function formatLimitSummary(limits: LimitRule[], t: ReturnType<typeof useTransla
         l.limitWindow === "lifetime"
           ? t("apiKeys.limitWindowsShort.lifetime", { defaultValue: "one-time" })
           : l.limitWindow;
-      return `${type}: ${current}/${max} ${suffix}`;
+      const models = formatRuleModels(l, "");
+      const modelSuffix = models ? ` ${models}` : "";
+      return `${type}: ${current}/${max} ${suffix}${modelSuffix}`;
     })
     .join(" | ");
 }

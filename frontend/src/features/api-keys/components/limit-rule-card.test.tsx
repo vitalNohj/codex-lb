@@ -1,5 +1,6 @@
 import { fireEvent, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { useState } from "react";
 import { describe, expect, it, vi } from "vitest";
 
 import type { LimitRuleCreate } from "@/features/api-keys/schemas";
@@ -160,5 +161,41 @@ describe("LimitRuleCard", () => {
     await waitFor(() => {
       expect(screen.getByText("1 model selected")).toBeInTheDocument();
     });
+  });
+
+  it("keeps every selected model when two are chosen", async () => {
+    const user = userEvent.setup();
+    const saved: LimitRuleCreate[] = [];
+
+    function SelectingCard() {
+      const [rule, setRule] = useState(tokenRule());
+      return (
+        <LimitRuleCard
+          rule={rule}
+          onChange={(next) => {
+            saved.push(next);
+            setRule(next);
+          }}
+          onRemove={vi.fn()}
+        />
+      );
+    }
+
+    renderWithProviders(<SelectingCard />);
+
+    await user.click(await screen.findByRole("button", { name: "All models" }));
+    await user.click(await screen.findByRole("menuitemcheckbox", { name: /GPT 4o Mini/ }));
+    await user.click(screen.getByRole("menuitemcheckbox", { name: /Claude/ }));
+    await user.keyboard("{Escape}");
+
+    expect(screen.getByRole("button", { name: "2 models selected" })).toBeInTheDocument();
+    expect(screen.getByText("gpt-4o-mini")).toBeInTheDocument();
+    expect(screen.getByText("claude-sonnet")).toBeInTheDocument();
+    expect(saved.at(-1)).toEqual(
+      expect.objectContaining({
+        modelFilters: ["gpt-4o-mini", "claude-sonnet"],
+        modelFilter: null,
+      }),
+    );
   });
 });

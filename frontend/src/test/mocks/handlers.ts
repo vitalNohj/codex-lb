@@ -191,6 +191,7 @@ const ApiKeyUpdatePayloadSchema = z.looseObject({
         limitWindow: z.enum(LIMIT_WINDOWS),
         maxValue: z.number(),
         modelFilter: z.string().nullable().optional(),
+        modelFilters: z.array(z.string()).optional(),
       }),
     )
     .optional(),
@@ -3351,15 +3352,19 @@ export const handlers = [
     };
 
     if (payload.limits) {
-      overrides.limits = payload.limits.map((l, idx) => ({
-        id: idx + 100,
-        limitType: l.limitType,
-        limitWindow: l.limitWindow,
-        maxValue: l.maxValue,
-        currentValue: 0,
-        modelFilter: l.modelFilter ?? null,
-        resetAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
-      }));
+      overrides.limits = payload.limits.map((l, idx) => {
+        const modelFilters = l.modelFilters ?? (l.modelFilter ? [l.modelFilter] : []);
+        return {
+          id: idx + 100,
+          limitType: l.limitType,
+          limitWindow: l.limitWindow,
+          maxValue: l.maxValue,
+          currentValue: 0,
+          modelFilter: modelFilters.length === 1 ? modelFilters[0] : null,
+          modelFilters,
+          resetAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
+        };
+      });
     }
 
     const updated = createApiKey({

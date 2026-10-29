@@ -312,7 +312,7 @@ async def test_cost_limit_backfill_uses_bigint_cast_for_microdollars() -> None:
         limit_type=LimitType.COST_USD,
         since=since,
         until=until,
-        model_filter=None,
+        model_filters=None,
     )
 
     assert value == overflow_total
@@ -320,3 +320,36 @@ async def test_cost_limit_backfill_uses_bigint_cast_for_microdollars() -> None:
     assert "BIGINT" in executed_sql[0]
     assert "sum(CAST(floor(coalesce(request_logs.cost_usd, 0.0) * 1000000) AS BIGINT))" in executed_sql[0]
     assert "request_logs.request_kind NOT IN ('warmup', 'limit_warmup')" in executed_sql[0]
+
+
+@pytest.mark.asyncio
+async def test_limit_usage_counts_only_the_models_in_the_filter() -> None:
+    session = AsyncMock()
+    repo = ApiKeysRepository(session)
+    since = datetime(2026, 5, 1, 0, 0, 0)
+    until = datetime(2026, 5, 8, 0, 0, 0)
+    executed_sql: list[str] = []
+
+    async def _execute(statement):
+        executed_sql.append(
+            str(
+                statement.compile(
+                    dialect=postgresql_dialect(),
+                    compile_kwargs={"literal_binds": True},
+                )
+            )
+        )
+        return SimpleNamespace(scalar_one=lambda: 30)
+
+    session.execute.side_effect = _execute
+
+    value = await repo.get_limit_usage_value(
+        "key_1",
+        limit_type=LimitType.TOTAL_TOKENS,
+        since=since,
+        until=until,
+        model_filters=["gpt-5.4", "gpt-5.1"],
+    )
+
+    assert value == 30
+    assert "request_logs.model IN ('gpt-5.4', 'gpt-5.1')" in executed_sql[0]

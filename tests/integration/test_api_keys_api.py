@@ -36,6 +36,7 @@ from app.db.models import (
 )
 from app.db.session import SessionLocal
 from app.modules.api_keys.last_used_coalescer import get_api_key_last_used_coalescer
+from app.modules.api_keys.model_filters import stored_model_identity
 from app.modules.api_keys.repository import ApiKeysRepository
 from app.modules.api_keys.service import ApiKeyCreateData, ApiKeyInvalidError, ApiKeysService, LimitRuleInput
 from app.modules.model_sources.forwarding import (
@@ -643,6 +644,117 @@ async def test_api_keys_update_limits(async_client):
     assert types == {"total_tokens", "cost_usd"}
 
     await async_client.delete(f"/api/api-keys/{key_id}")
+
+
+@pytest.mark.asyncio
+async def test_api_key_model_filters_round_trip_and_keep_the_legacy_field(async_client):
+    multi = await async_client.post(
+        "/api/api-keys/",
+        json={
+            "name": "multi-model-limit",
+            "limits": [
+                {
+                    "limitType": "cost_usd",
+                    "limitWindow": "weekly",
+                    "maxValue": 500_000_000,
+                    "modelFilters": ["model-beta", "model-alpha"],
+                }
+            ],
+        },
+    )
+    assert multi.status_code == 200
+    multi_body = multi.json()
+    multi_rule = multi_body["limits"][0]
+    assert multi_rule["modelFilter"] is None
+    assert multi_rule["modelFilters"] == ["model-beta", "model-alpha"]
+
+    listed = await async_client.get("/api/api-keys/")
+    assert listed.status_code == 200
+    saved = next(item for item in listed.json() if item["id"] == multi_body["id"])
+    assert saved["limits"][0]["modelFilter"] is None
+    assert saved["limits"][0]["modelFilters"] == ["model-beta", "model-alpha"]
+
+    async with SessionLocal() as session:
+        repo = ApiKeysRepository(session)
+        stored = await repo.get_limits_by_key(multi_body["id"])
+        assert stored[0].model_filter == '["model-beta","model-alpha"]'
+
+    legacy = await async_client.post(
+        "/api/api-keys/",
+        json={
+            "name": "legacy-model-filter",
+            "limits": [
+                {
+                    "limitType": "total_tokens",
+                    "limitWindow": "weekly",
+                    "maxValue": 1000,
+                    "modelFilter": "model-alpha",
+                }
+            ],
+        },
+    )
+    assert legacy.status_code == 200
+    legacy_rule = legacy.json()["limits"][0]
+    assert legacy_rule["modelFilter"] == "model-alpha"
+    assert legacy_rule["modelFilters"] == ["model-alpha"]
+
+    cleared = await async_client.patch(
+        f"/api/api-keys/{legacy.json()['id']}",
+        json={
+            "limits": [
+                {
+                    "limitType": "total_tokens",
+                    "limitWindow": "weekly",
+                    "maxValue": 1000,
+                    "modelFilter": "model-alpha",
+                    "modelFilters": [],
+                }
+            ],
+        },
+    )
+    assert cleared.status_code == 200
+    assert cleared.json()["limits"][0]["modelFilter"] is None
+    assert cleared.json()["limits"][0]["modelFilters"] == []
+
+    duplicate = await async_client.post(
+        "/api/api-keys/",
+        json={
+            "name": "duplicate-model-set",
+            "limits": [
+                {
+                    "limitType": "total_tokens",
+                    "limitWindow": "weekly",
+                    "maxValue": 10,
+                    "modelFilters": ["model-beta", "model-alpha"],
+                },
+                {
+                    "limitType": "total_tokens",
+                    "limitWindow": "weekly",
+                    "maxValue": 20,
+                    "modelFilters": ["model-alpha", "model-beta"],
+                },
+            ],
+        },
+    )
+    assert duplicate.status_code == 400
+    assert duplicate.json()["error"]["code"] == "invalid_api_key_payload"
+
+    credits = await async_client.post(
+        "/api/api-keys/",
+        json={
+            "name": "credits-with-models",
+            "limits": [
+                {
+                    "limitType": "credits",
+                    "limitWindow": "weekly",
+                    "maxValue": 10,
+                    "modelFilters": ["model-alpha"],
+                }
+            ],
+        },
+    )
+    assert credits.status_code == 400
+    assert credits.json()["error"]["code"] == "invalid_api_key_payload"
 
 
 @pytest.mark.asyncio
@@ -3591,7 +3703,7 @@ async def test_api_key_limit_atomic_with_global_and_model_scope(async_client):
     async with SessionLocal() as session:
         repo = ApiKeysRepository(session)
         limits = await repo.get_limits_by_key(key_id)
-        model_limit = next(limit for limit in limits if limit.model_filter == _TEST_MODELS[0])
+        model_limit = next(limit for limit in limits if stored_model_identity(limit.model_filter) == _TEST_MODELS[0])
         model_limit.current_value = 5
         await session.commit()
 
@@ -3605,8 +3717,8 @@ async def test_api_key_limit_atomic_with_global_and_model_scope(async_client):
     async with SessionLocal() as session:
         repo = ApiKeysRepository(session)
         limits = await repo.get_limits_by_key(key_id)
-        global_limit = next(limit for limit in limits if limit.model_filter is None)
-        model_limit = next(limit for limit in limits if limit.model_filter == _TEST_MODELS[0])
+        global_limit = next(limit for limit in limits if stored_model_identity(limit.model_filter) is None)
+        model_limit = next(limit for limit in limits if stored_model_identity(limit.model_filter) == _TEST_MODELS[0])
         assert global_limit.current_value == 0
         assert model_limit.current_value == 5
 
@@ -3671,6 +3783,114 @@ async def test_model_scoped_limit_allows_other_models(async_client, monkeypatch)
         json={"model": _TEST_MODELS[1], "instructions": "hi", "input": []},
     )
     assert allowed.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_multi_model_limit_counts_either_listed_model_and_blocks_both(async_client, monkeypatch):
+    enable = await async_client.put(
+        "/api/settings",
+        json={
+            "stickyThreadsEnabled": False,
+            "preferEarlierResetAccounts": False,
+            "totpRequiredOnLogin": False,
+            "apiKeyAuthEnabled": True,
+        },
+    )
+    assert enable.status_code == 200
+
+    created = await async_client.post(
+        "/api/api-keys/",
+        json={
+            "name": "shared-model-budget",
+            "limits": [
+                {
+                    "limitType": "total_tokens",
+                    "limitWindow": "weekly",
+                    "maxValue": 100,
+                    "modelFilters": [_TEST_MODELS[0], _TEST_MODELS[1]],
+                },
+            ],
+        },
+    )
+    assert created.status_code == 200
+    payload = created.json()
+    key = payload["key"]
+    key_id = payload["id"]
+    assert payload["limits"][0]["modelFilter"] is None
+    assert payload["limits"][0]["modelFilters"] == [_TEST_MODELS[0], _TEST_MODELS[1]]
+
+    await _import_account(async_client, "acc_shared_model_budget", "shared-model-budget@example.com")
+
+    async def fake_compact(_payload, _headers, _access_token, _account_id):
+        return OpenAIResponsePayload.model_validate(
+            {
+                "id": "resp_shared_model_budget",
+                "model": _payload.model,
+                "status": "completed",
+                "usage": {"input_tokens": 3, "output_tokens": 2, "total_tokens": 5},
+                "output": [],
+            }
+        )
+
+    monkeypatch.setattr(proxy_module, "core_compact_responses", fake_compact)
+
+    for model in _TEST_MODELS:
+        response = await async_client.post(
+            "/v1/responses/compact",
+            headers={"Authorization": f"Bearer {key}"},
+            json={"model": model, "instructions": "hi", "input": []},
+        )
+        assert response.status_code == 200
+
+    async with SessionLocal() as session:
+        repo = ApiKeysRepository(session)
+        limits = await repo.get_limits_by_key(key_id)
+        assert len(limits) == 1
+        assert limits[0].current_value == 10
+
+    outsider = await async_client.post(
+        "/api/api-keys/",
+        json={
+            "name": "outsider-model-budget",
+            "limits": [
+                {
+                    "limitType": "total_tokens",
+                    "limitWindow": "weekly",
+                    "maxValue": 5,
+                    "modelFilters": [_TEST_MODELS[0]],
+                },
+            ],
+        },
+    )
+    assert outsider.status_code == 200
+    outsider_body = outsider.json()
+    outsider_key = outsider_body["key"]
+    outsider_id = outsider_body["id"]
+
+    async with SessionLocal() as session:
+        repo = ApiKeysRepository(session)
+        limits = await repo.get_limits_by_key(outsider_id)
+        limits[0].current_value = 5
+        await session.commit()
+
+    allowed = await async_client.post(
+        "/v1/responses/compact",
+        headers={"Authorization": f"Bearer {outsider_key}"},
+        json={"model": _TEST_MODELS[1], "instructions": "hi", "input": []},
+    )
+    assert allowed.status_code == 200
+
+    blocked = await async_client.post(
+        "/v1/responses/compact",
+        headers={"Authorization": f"Bearer {outsider_key}"},
+        json={"model": _TEST_MODELS[0], "instructions": "hi", "input": []},
+    )
+    assert blocked.status_code == 429
+
+    async with SessionLocal() as session:
+        repo = ApiKeysRepository(session)
+        limits = await repo.get_limits_by_key(outsider_id)
+        assert limits[0].current_value == 5
 
 
 @pytest.mark.asyncio

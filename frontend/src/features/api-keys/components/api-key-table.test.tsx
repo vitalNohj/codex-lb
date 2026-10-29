@@ -79,6 +79,39 @@ describe("ApiKeyTable", () => {
     expect(within(row).getByText("Cost: $1.25/$5.00 one-time")).toBeInTheDocument();
   });
 
+  it("names every model that shares a limit in the summary", () => {
+    const keys = [
+      createApiKey({
+        id: "shared-models",
+        name: "Shared models",
+        limits: [
+          {
+            id: 8,
+            limitType: "cost_usd",
+            limitWindow: "weekly",
+            maxValue: 500_000_000,
+            currentValue: 0,
+            modelFilter: null,
+            modelFilters: ["gpt-5.1", "gpt-5.4"],
+            resetAt: "2026-01-08T00:00:00Z",
+          },
+        ],
+      }),
+    ];
+    renderWithProviders(
+      <ApiKeyTable
+        keys={keys}
+        busy={false}
+        onEdit={vi.fn()}
+        onDelete={vi.fn()}
+        onRegenerate={vi.fn()}
+      />,
+    );
+
+    const row = screen.getAllByRole("row")[1];
+    expect(within(row).getByText("Cost: $0.00/$500.00 weekly gpt-5.1, gpt-5.4")).toBeInTheDocument();
+  });
+
   it("badges shared keys only", () => {
     const keys = [
       createApiKey({ id: "shared-key", name: "Friend key", isShared: true }),

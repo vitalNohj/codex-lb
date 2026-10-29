@@ -1,5 +1,6 @@
 import { useTranslation } from "react-i18next";
 
+import { formatRuleModels } from "@/features/api-keys/components/limit-rules-utils";
 import type { ApiKey, LimitType } from "@/features/api-keys/schemas";
 import { limitWindowLabel } from "@/features/api-keys/limit-windows";
 import { useDateDisplayFormatStore, type DateDisplayFormat } from "@/hooks/use-date-format";
@@ -171,7 +172,7 @@ export function ApiKeyInfo({
 						const max = isCost
 							? `$${(limit.maxValue / 1_000_000).toFixed(2)}`
 							: formatCompactNumber(limit.maxValue);
-						const modelFilter = limit.modelFilter || t("common.options.allLower");
+						const modelFilter = formatRuleModels(limit, t("common.options.allLower"));
 
 						return (
 							<div key={limit.id} className="space-y-1 pl-2">

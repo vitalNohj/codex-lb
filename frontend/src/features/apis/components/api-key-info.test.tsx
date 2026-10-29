@@ -157,7 +157,30 @@ describe("ApiKeyInfo", () => {
 		expect(screen.getByText(/Total Tokens \(Weekly, gpt-5.1\)/)).toBeInTheDocument();
 		expect(screen.getByText(/750K \/ 1M/)).toBeInTheDocument();
 		expect(screen.getByText(/Cost \(USD\) \(Monthly, all\)/)).toBeInTheDocument();
-		expect(screen.getByText(/\$1.50 \/ \$5.00/)).toBeInTheDocument();
+	});
+
+	it("shows every model that shares a limit", () => {
+		render(
+			<ApiKeyInfo
+				apiKey={createApiKey({
+					limits: [
+						{
+							id: 3,
+							limitType: "cost_usd",
+							limitWindow: "weekly",
+							maxValue: 500_000_000,
+							currentValue: 0,
+							modelFilter: null,
+							modelFilters: ["gpt-5.1", "gpt-5.4"],
+							resetAt: "2026-01-08T00:00:00Z",
+						},
+					],
+				})}
+			/>,
+		);
+
+		expect(screen.getByText(/Cost \(USD\) \(Weekly, gpt-5.1, gpt-5.4\)/)).toBeInTheDocument();
+		expect(screen.getByText(/\$0.00 \/ \$500.00/)).toBeInTheDocument();
 	});
 
 	it("labels a one-time budget, which has no reset time", () => {

@@ -48,6 +48,18 @@ def test_validate_model_enforcement_raises_typed_validation_error_when_enforced_
         )
 
 
+def test_limit_input_to_row_raises_typed_validation_error_for_credits_with_model_filters() -> None:
+    rule = LimitRuleInput(
+        limit_type=LimitType.CREDITS.value,
+        limit_window=LimitWindow.DAILY.value,
+        max_value=100,
+        model_filters=["gpt-5", "gpt-5.1"],
+    )
+    with pytest.raises(ApiKeyValidationError) as info:
+        _limit_input_to_row(rule, key_id="key-1", now=__import__("datetime").datetime(2026, 5, 15))
+    assert "credits" in str(info.value).lower()
+
+
 def test_limit_input_to_row_raises_typed_validation_error_for_credits_with_model_filter() -> None:
     rule = LimitRuleInput(
         limit_type=LimitType.CREDITS.value,
@@ -79,6 +91,33 @@ async def test_build_limit_rows_for_update_raises_typed_validation_error_on_dupl
         )
     assert "duplicate" in str(info.value).lower()
     assert "('total_tokens', 'daily', None)" in str(info.value)
+
+
+@pytest.mark.asyncio
+async def test_build_limit_rows_treats_reordered_model_sets_as_one_rule() -> None:
+    first = LimitRuleInput(
+        limit_type=LimitType.TOTAL_TOKENS.value,
+        limit_window=LimitWindow.WEEKLY.value,
+        max_value=100,
+        model_filters=["gpt-5.4", "gpt-5.1"],
+    )
+    second = LimitRuleInput(
+        limit_type=LimitType.TOTAL_TOKENS.value,
+        limit_window=LimitWindow.WEEKLY.value,
+        max_value=200,
+        model_filter="gpt-5.1",
+        model_filters=["gpt-5.1", "gpt-5.4"],
+    )
+    with pytest.raises(ApiKeyValidationError) as info:
+        await _build_limit_rows_for_update(
+            key_id="key-1",
+            now=__import__("datetime").datetime(2026, 5, 15),
+            submitted_limits=[first, second],
+            existing_limits=[],
+            reset_usage=False,
+            key_created_at=__import__("datetime").datetime(2026, 5, 1),
+        )
+    assert "duplicate" in str(info.value).lower()
 
 
 def test_api_key_validation_error_is_value_error_subclass_for_back_compat() -> None:

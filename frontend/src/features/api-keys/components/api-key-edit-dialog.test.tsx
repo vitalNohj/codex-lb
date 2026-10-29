@@ -270,6 +270,7 @@ describe("ApiKeyEditDialog", () => {
         limitWindow: "weekly",
         maxValue: 999999,
         modelFilter: null,
+        modelFilters: [],
       },
     ]);
   });
@@ -697,6 +698,33 @@ describe("ApiKeyEditDialog", () => {
     );
 
     expect(screen.getByRole("combobox", { name: /enforced service tier/i })).toHaveTextContent("Ultrafast");
+  });
+
+  it("shows every model on the current usage bar", () => {
+    renderWithProviders(
+      <ApiKeyEditDialog
+        open
+        busy={false}
+        apiKey={createApiKey({
+          limits: [
+            {
+              id: 4,
+              limitType: "cost_usd",
+              limitWindow: "weekly",
+              maxValue: 500_000_000,
+              currentValue: 0,
+              modelFilter: null,
+              modelFilters: ["gpt-5.1", "gpt-5.4"],
+              resetAt: "2026-01-08T00:00:00Z",
+            },
+          ],
+        })}
+        onOpenChange={vi.fn()}
+        onSubmit={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText("Cost (Weekly, gpt-5.1, gpt-5.4)")).toBeInTheDocument();
   });
 });
 
