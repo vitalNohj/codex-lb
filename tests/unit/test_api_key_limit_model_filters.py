@@ -98,6 +98,22 @@ def test_downgrade_refuses_a_multi_model_rule_without_writing(tmp_path: Path) ->
     }
 
 
+def test_upgrade_pages_past_the_first_batch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(_MIGRATION, "_BATCH_SIZE", 2)
+    engine = _engine(tmp_path)
+    _insert(engine, [(1, "gpt-5.1"), (2, None), (3, "gpt-5.4"), (4, "gpt-5"), (5, '["gpt-5.4"]')])
+
+    _run(engine, _MIGRATION.upgrade)
+
+    assert _stored(engine) == {
+        1: '["gpt-5.1"]',
+        2: None,
+        3: '["gpt-5.4"]',
+        4: '["gpt-5"]',
+        5: '["gpt-5.4"]',
+    }
+
+
 def test_quota_token_keeps_one_model_bare_and_sorts_a_set() -> None:
     assert model_filter_quota_token([]) is None
     assert model_filter_quota_token(["gpt-5.1"]) == "gpt-5.1"

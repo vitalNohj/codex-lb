@@ -15,9 +15,12 @@ Create Date: 2026-10-29
 
 from __future__ import annotations
 
+from collections.abc import Iterator, Sequence
+from typing import Any
+
 import sqlalchemy as sa
 from alembic import op
-from sqlalchemy.engine import Connection
+from sqlalchemy.engine import Connection, Row
 
 from app.modules.api_keys.model_filters import downgrade_stored_model_filter, upgrade_stored_model_filter
 
@@ -28,6 +31,11 @@ depends_on = None
 
 _TABLE = "api_key_limits"
 _COLUMN = "model_filter"
+# Two bound parameters per row. 250 stays under SQLite's default 999-variable limit.
+_BATCH_SIZE = 250
+
+_PAGE = sa.text("SELECT id, model_filter FROM api_key_limits WHERE id > :last_id ORDER BY id LIMIT :batch_size")
+_UPDATE = sa.text("UPDATE api_key_limits SET model_filter = :value WHERE id = :id")
 
 
 def _columns(connection: Connection) -> set[str]:
@@ -37,21 +45,32 @@ def _columns(connection: Connection) -> set[str]:
     return {str(column["name"]) for column in inspector.get_columns(_TABLE) if column.get("name") is not None}
 
 
+def _pages(bind: Connection) -> Iterator[Sequence[Row[Any]]]:
+    last_id = 0
+    while True:
+        rows = bind.execute(_PAGE, {"last_id": last_id, "batch_size": _BATCH_SIZE}).fetchall()
+        if not rows:
+            return
+        yield rows
+        last_id = int(rows[-1].id)
+
+
 def _rewrite(convert) -> None:
     bind = op.get_bind()
     if _COLUMN not in _columns(bind):
         return
-    rows = bind.execute(sa.text("SELECT id, model_filter FROM api_key_limits")).fetchall()
     # Convert every row before the first write so a refused downgrade changes nothing.
-    planned: list[tuple[int, str | None]] = []
-    for row in rows:
-        current = row.model_filter
-        updated = convert(current)
-        if updated != current:
-            planned.append((row.id, updated))
-    statement = sa.text("UPDATE api_key_limits SET model_filter = :value WHERE id = :id")
-    for row_id, value in planned:
-        bind.execute(statement, {"value": value, "id": row_id})
+    for rows in _pages(bind):
+        for row in rows:
+            convert(row.model_filter)
+    for rows in _pages(bind):
+        planned = [
+            {"value": updated, "id": row.id}
+            for row in rows
+            if (updated := convert(row.model_filter)) != row.model_filter
+        ]
+        if planned:
+            bind.execute(_UPDATE, planned)
 
 
 def upgrade() -> None:
