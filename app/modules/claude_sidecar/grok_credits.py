@@ -43,6 +43,7 @@ _RESPONSE_LIMIT_BYTES = 64 * 1024
 _MAX_SAFE_INTEGER = 9007199254740991
 _EMPTY_GRPC_WEB_TEXT_BODY = base64.b64encode(bytes(5)).decode("ascii")
 
+# xAI billing_product enum (github.com/xai-org/xai/go/gen/billing_product).
 _PRODUCT_NAMES = {
     0: ("unspecified", "Other"),
     1: ("api", "API"),
@@ -51,6 +52,11 @@ _PRODUCT_NAMES = {
     4: ("chat", "Chat"),
     5: ("imagine", "Imagine"),
     6: ("voice", "Voice"),
+    7: ("grok_app_builder", "Grok App Builder"),
+    8: ("grok_tasks", "Grok Tasks"),
+    9: ("grok_bot", "Grok Bot"),
+    10: ("cursor", "Cursor"),
+    11: ("bugbot", "Bugbot"),
 }
 
 

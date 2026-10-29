@@ -140,6 +140,20 @@ def test_parser_reads_quota_axi_weekly_windows_and_prepaid() -> None:
     assert product.kind == "weekly"
 
 
+def test_parser_names_grok_bot_and_falls_back_for_an_unmapped_product() -> None:
+    products = b"".join(_message(7, _field_varint(1, number) + _float(2, 10.0)) for number in (7, 8, 9, 10, 11, 12))
+    config = _float(1, 1.0) + products + _message(8, _period(2, _START, _RESET))
+    parsed = normalize_grok_consumer_payload(_message(1, config), now=_NOW)
+
+    by_id = {window.id: window.label for window in parsed.windows}
+    assert by_id["product:grok_app_builder"] == "Grok App Builder"
+    assert by_id["product:grok_tasks"] == "Grok Tasks"
+    assert by_id["product:grok_bot"] == "Grok Bot"
+    assert by_id["product:cursor"] == "Cursor"
+    assert by_id["product:bugbot"] == "Bugbot"
+    assert by_id["product:unknown_12"] == "Product 12"
+
+
 def test_parser_uses_zero_when_a_valid_period_has_no_explicit_percent() -> None:
     config = _message(8, _period(1, _START, _RESET)) + _message(7, _field_varint(1, 4))
     parsed = normalize_grok_consumer_payload(_message(1, config), now=_NOW)
