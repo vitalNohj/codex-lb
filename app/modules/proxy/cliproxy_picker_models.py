@@ -79,10 +79,11 @@ def cliproxy_picker_model_ids(
 
     for base in upstream:
         lowered = base.casefold()
-        if any(lowered.startswith(variant) for variant in strip_variants):
-            if _owns(base, entries):
-                add(base)
-            continue
+        # A discovered id may begin with a stripping prefix (``claude-`` and
+        # ``claude-sonnet-4-6``). That does not make it the client id: routing
+        # would remove the prefix and forward a different model. Offer
+        # ``<prefix><id>`` when that alias forwards this id, and keep the
+        # discovered id only when dispatch leaves it unchanged.
         for variant in strip_variants:
             alias = f"{variant}{base}"
             decision = resolve_sidecar_route(alias, entries)
@@ -98,11 +99,6 @@ def cliproxy_picker_model_ids(
             continue
         add(base)
     return ids
-
-
-def _owns(model_id: str, entries: tuple[SidecarRoutingEntry, ...]) -> bool:
-    decision = resolve_sidecar_route(model_id, entries)
-    return decision is not None and decision.provider == "claude"
 
 
 def _dispatch_model(wire_model: str) -> str:

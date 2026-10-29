@@ -77,14 +77,31 @@ def test_stripping_and_plain_prefixes_both_stay_selectable() -> None:
     assert ids == ["cc/claude-sonnet-5", "claude-sonnet-5"]
 
 
-def test_discovered_prefix_alias_is_not_prefixed_again() -> None:
+def test_upstream_id_that_starts_with_a_stripping_prefix_is_prefixed_again() -> None:
+    """``claude-`` + ``claude-sonnet-4-6`` must not be offered as the bare id.
+
+    Routing would strip ``claude-`` and forward ``sonnet-4-6``. The client id
+    that forwards the discovered model is ``claude-claude-sonnet-4-6``.
+    """
+
+    ids = cliproxy_picker_model_ids(
+        ("claude-sonnet-4-6",),
+        prefixes=(SidecarPrefix(prefix="claude-", strip=True),),
+        full_models=(),
+    )
+
+    assert "claude-claude-sonnet-4-6" in ids
+    assert "claude-sonnet-4-6" not in ids
+
+
+def test_discovered_client_prefix_round_trips_to_that_discovered_id() -> None:
     ids = cliproxy_picker_model_ids(
         ("cc/claude-opus-5-5",),
         prefixes=(SidecarPrefix(prefix="cc/", strip=True),),
         full_models=(),
     )
 
-    assert ids == ["cc/claude-opus-5-5"]
+    assert ids == ["cc/cc/claude-opus-5-5"]
 
 
 def test_configured_full_model_is_listed_when_discovery_is_empty() -> None:
