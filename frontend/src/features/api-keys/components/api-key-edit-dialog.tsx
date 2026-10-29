@@ -44,7 +44,13 @@ import type {
 import { parseDate } from "@/utils/formatters";
 
 import { limitWindowLabel } from "@/features/api-keys/limit-windows";
-import { hasLimitRuleChanges, normalizeLimitRules } from "./limit-rules-utils";
+import {
+  formatRuleModels,
+  hasLimitRuleChanges,
+  limitRuleWithModels,
+  normalizeLimitRules,
+  ruleModelFilters,
+} from "./limit-rules-utils";
 
 const TRANSPORT_POLICY_FOLLOW_GLOBAL = "follow_global";
 const TRANSPORT_POLICY_LABELS = {
@@ -74,12 +80,16 @@ type ApiKeyEditFormProps = {
 };
 
 function limitsToCreateRules(apiKey: ApiKey): LimitRuleCreate[] {
-  return apiKey.limits.map((l) => ({
-    limitType: l.limitType,
-    limitWindow: l.limitWindow,
-    maxValue: l.maxValue,
-    modelFilter: l.modelFilter,
-  }));
+  return apiKey.limits.map((limit) =>
+    limitRuleWithModels(
+      {
+        limitType: limit.limitType,
+        limitWindow: limit.limitWindow,
+        maxValue: limit.maxValue,
+      },
+      ruleModelFilters(limit),
+    ),
+  );
 }
 
 function hasSelectionChange(initialIds: string[], nextIds: string[]): boolean {
@@ -460,7 +470,7 @@ function LimitUsageBar({ limit }: { limit: ApiKey["limits"][number] }) {
   const max = isCost ? `$${(limit.maxValue / 1_000_000).toFixed(2)}` : formatTokenCount(limit.maxValue);
   const typeLabel = LIMIT_TYPE_SHORT[limit.limitType];
   const windowLabel = limitWindowLabel(limit.limitWindow, t);
-  const modelLabel = limit.modelFilter || "all";
+  const modelLabel = formatRuleModels(limit, "all");
 
   return (
     <div className="rounded border p-1.5">

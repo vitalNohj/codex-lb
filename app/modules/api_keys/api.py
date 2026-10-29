@@ -79,6 +79,7 @@ def _to_response(row: ApiKeyData) -> ApiKeyResponse:
                 max_value=li.max_value,
                 current_value=li.current_value,
                 model_filter=li.model_filter,
+                model_filters=li.model_filters,
                 reset_at=li.reset_at,
             )
             for li in row.limits
@@ -106,12 +107,16 @@ def _build_limit_inputs(payload: ApiKeyCreateRequest | ApiKeyUpdateRequest) -> l
 
     if hasattr(payload, "limits") and payload.limits is not None:
         for lr in payload.limits:
+            submitted_filters = (
+                lr.model_filters if "model_filters" in lr.model_fields_set and lr.model_filters is not None else None
+            )
             limit_inputs.append(
                 LimitRuleInput(
                     limit_type=lr.limit_type,
                     limit_window=lr.limit_window,
                     max_value=lr.max_value,
                     model_filter=lr.model_filter,
+                    model_filters=submitted_filters,
                 )
             )
     elif (

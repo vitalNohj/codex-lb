@@ -14,6 +14,9 @@ const LimitRuleSchema = z.object({
   maxValue: z.number(),
   currentValue: z.number(),
   modelFilter: z.string().nullable(),
+  // Models that share this rule's budget. Missing on older payloads; an empty
+  // list means every model.
+  modelFilters: z.array(z.string()).optional(),
   // Null for a lifetime limit, which never resets.
   resetAt: z.iso.datetime({ offset: true }).nullable(),
 });
@@ -23,6 +26,7 @@ export const LimitRuleCreateSchema = z.object({
   limitWindow: z.enum(LIMIT_WINDOWS),
   maxValue: z.number().int().positive(),
   modelFilter: z.string().nullable().optional(),
+  modelFilters: z.array(z.string().min(1)).optional(),
 });
 
 const ApiKeyUsageSummarySchema = z.object({

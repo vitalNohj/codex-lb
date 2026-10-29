@@ -184,6 +184,7 @@ async def test_adding_model_scoped_limit_backfills_only_matching_model(async_cli
     limit = _only_limit(response.json())
     assert limit["currentValue"] == 500
     assert limit["modelFilter"] == "gpt-5.1"
+    assert limit["modelFilters"] == ["gpt-5.1"]
 
 
 @pytest.mark.asyncio

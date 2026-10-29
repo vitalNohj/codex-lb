@@ -1,19 +1,58 @@
 import type { LimitRuleCreate } from "@/features/api-keys/schemas";
 
+type ModelFilterRule = {
+  modelFilters?: readonly string[] | null;
+  modelFilter?: string | null;
+};
+
 type NormalizedLimitRule = {
   limitType: LimitRuleCreate["limitType"];
   limitWindow: LimitRuleCreate["limitWindow"];
   maxValue: number;
   modelFilter: string | null;
+  modelFilters: string[];
 };
 
+export function ruleModelFilters(rule: ModelFilterRule): string[] {
+  if (rule.modelFilters != null) {
+    const seen = new Set<string>();
+    const models: string[] = [];
+    for (const model of rule.modelFilters) {
+      const cleaned = model.trim();
+      if (!cleaned || seen.has(cleaned)) {
+        continue;
+      }
+      seen.add(cleaned);
+      models.push(cleaned);
+    }
+    return models;
+  }
+  const single = typeof rule.modelFilter === "string" ? rule.modelFilter.trim() : "";
+  return single ? [single] : [];
+}
+
+export function formatRuleModels(rule: ModelFilterRule, allLabel: string): string {
+  const models = ruleModelFilters(rule);
+  return models.length > 0 ? models.join(", ") : allLabel;
+}
+
+export function limitRuleWithModels(rule: LimitRuleCreate, models: readonly string[]): LimitRuleCreate {
+  const modelFilters = ruleModelFilters({ modelFilters: models });
+  return {
+    ...rule,
+    modelFilters,
+    modelFilter: modelFilters.length === 1 ? modelFilters[0] : null,
+  };
+}
+
 function normalizeLimitRule(rule: LimitRuleCreate): NormalizedLimitRule {
-  const rawModelFilter = typeof rule.modelFilter === "string" ? rule.modelFilter.trim() : null;
+  const modelFilters = ruleModelFilters(rule);
   return {
     limitType: rule.limitType,
     limitWindow: rule.limitWindow,
     maxValue: rule.maxValue,
-    modelFilter: rawModelFilter || null,
+    modelFilters,
+    modelFilter: modelFilters.length === 1 ? modelFilters[0] : null,
   };
 }
 
@@ -21,7 +60,7 @@ function limitRuleSortKey(rule: NormalizedLimitRule): string {
   return [
     rule.limitType,
     rule.limitWindow,
-    rule.modelFilter ?? "",
+    JSON.stringify(rule.modelFilters),
     String(rule.maxValue),
   ].join("::");
 }
@@ -55,7 +94,7 @@ export function hasLimitRuleChanges(
       rule.limitType !== candidate.limitType
       || rule.limitWindow !== candidate.limitWindow
       || rule.maxValue !== candidate.maxValue
-      || rule.modelFilter !== candidate.modelFilter
+      || rule.modelFilters.join("\0") !== candidate.modelFilters.join("\0")
     );
   });
 }

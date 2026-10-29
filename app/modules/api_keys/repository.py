@@ -36,6 +36,7 @@ from app.modules.accounts.usage_rollup import api_key_usage_aggregate_stmt, read
 from app.modules.accounts.usage_time_rollup import HOURLY_BUCKET_SECONDS, WARMUP_REQUEST_KINDS, to_dimension
 from app.modules.accounts.usage_time_rollup_read import RawWindow, raw_windows_clause, read_hourly_window
 from app.modules.api_keys.limit_windows import advance_limit_reset
+from app.modules.api_keys.model_filters import limit_matches_request_model, stored_model_identity
 
 
 class ApiKeyOwnerDisabledError(ValueError):
@@ -317,7 +318,7 @@ class ApiKeysRepository:
         limit_type: LimitType,
         since: datetime,
         until: datetime,
-        model_filter: str | None,
+        model_filters: list[str] | None,
     ) -> int:
         if limit_type == LimitType.CREDITS:
             return 0
@@ -344,8 +345,8 @@ class ApiKeysRepository:
             RequestLog.requested_at >= since,
             RequestLog.requested_at < until,
         )
-        if model_filter is not None:
-            stmt = stmt.where(RequestLog.model == model_filter)
+        if model_filters:
+            stmt = stmt.where(RequestLog.model.in_(model_filters))
 
         result = await self._session.execute(stmt)
         value = result.scalar_one()
@@ -530,6 +531,7 @@ class ApiKeysRepository:
                 self._session.add(incoming)
                 continue
             matched.max_value = incoming.max_value
+            matched.model_filter = incoming.model_filter
             if not preserve_matched_usage:
                 matched.current_value = incoming.current_value
                 matched.reset_at = incoming.reset_at
@@ -602,7 +604,7 @@ class ApiKeysRepository:
     ) -> None:
         limits = await self.get_limits_by_key(key_id)
         for limit in limits:
-            if limit.model_filter is not None and limit.model_filter != model:
+            if not limit_matches_request_model(limit.model_filter, model):
                 continue
             increment = _compute_increment(limit, input_tokens, output_tokens, cost_microdollars)
             if increment > 0:
@@ -1201,5 +1203,5 @@ def _compute_increment(limit: ApiKeyLimit, input_tokens: int, output_tokens: int
     return 0
 
 
-def _limit_key(limit: ApiKeyLimit) -> tuple[LimitType, LimitWindow, str | None]:
-    return (limit.limit_type, limit.limit_window, limit.model_filter)
+def _limit_key(limit: ApiKeyLimit) -> tuple[LimitType, LimitWindow, str | tuple[str, ...] | None]:
+    return (limit.limit_type, limit.limit_window, stored_model_identity(limit.model_filter))

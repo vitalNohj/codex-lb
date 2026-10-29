@@ -37,6 +37,16 @@ from app.modules.api_keys.limit_windows import (
     next_limit_reset,
     public_limit_reset_at,
 )
+from app.modules.api_keys.model_filters import (
+    decode_model_filters,
+    encode_model_filters,
+    limit_matches_request_model,
+    model_filter_identity,
+    model_filter_scope_suffix,
+    resolve_model_filters,
+    singular_model_filter,
+    stored_model_identity,
+)
 from app.modules.api_keys.repository import (
     _UNSET,
     ApiKeyTrendBucket,
@@ -85,7 +95,7 @@ class ApiKeysRepositoryProtocol(Protocol):
         limit_type: LimitType,
         since: datetime,
         until: datetime,
-        model_filter: str | None,
+        model_filters: list[str] | None,
     ) -> int: ...
     async def list_accounts_by_ids(self, account_ids: list[str]) -> list[Account]: ...
     async def list_model_sources_by_ids(self, source_ids: list[str]) -> list[ModelSource]: ...
@@ -314,6 +324,7 @@ class LimitRuleData:
     model_filter: str | None
     # None for a lifetime limit, which never resets.
     reset_at: datetime | None
+    model_filters: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True, slots=True)
@@ -322,6 +333,8 @@ class LimitRuleInput:
     limit_window: str
     max_value: int
     model_filter: str | None = None
+    # None means the caller did not send a list, so ``model_filter`` is used.
+    model_filters: list[str] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1473,7 +1486,8 @@ class ApiKeysService:
                 max_value=limit.max_value,
                 current_value=max(0, min(limit.current_value, limit.max_value)),
                 remaining_value=max(0, limit.max_value - max(0, min(limit.current_value, limit.max_value))),
-                model_filter=limit.model_filter,
+                model_filter=singular_model_filter(decode_model_filters(limit.model_filter)),
+                model_filters=decode_model_filters(limit.model_filter),
                 reset_at=public_limit_reset_at(limit.limit_window, limit.reset_at),
                 source="api_key_limit",
             )
@@ -1554,6 +1568,7 @@ class ApiKeySelfLimitData:
     # None for a lifetime limit, which never resets.
     reset_at: datetime | None
     source: str = "api_key_limit"
+    model_filters: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1838,13 +1853,15 @@ def _validate_reasoning_effort_policy(
 
 
 def _to_limit_rule_data(limit: ApiKeyLimit) -> LimitRuleData:
+    models = decode_model_filters(limit.model_filter)
     return LimitRuleData(
         id=limit.id,
         limit_type=limit.limit_type.value,
         limit_window=limit.limit_window.value,
         max_value=limit.max_value,
         current_value=limit.current_value,
-        model_filter=limit.model_filter,
+        model_filter=singular_model_filter(models),
+        model_filters=models,
         reset_at=public_limit_reset_at(limit.limit_window, limit.reset_at),
     )
 
@@ -1886,7 +1903,7 @@ def _meters_cost_for_sharing(row: ApiKey) -> bool:
 
 
 def _rate_limit_exceeded_error(limit: ApiKeyLimit) -> ApiKeyRateLimitExceededError:
-    model_suffix = f" for model {limit.model_filter}" if limit.model_filter else ""
+    model_suffix = model_filter_scope_suffix(decode_model_filters(limit.model_filter))
     if is_lifetime_window(limit.limit_window):
         return ApiKeyRateLimitExceededError(
             message=f"API key {limit.limit_type.value} lifetime budget exhausted{model_suffix}",
@@ -1899,11 +1916,7 @@ def _rate_limit_exceeded_error(limit: ApiKeyLimit) -> ApiKeyRateLimitExceededErr
 
 
 def _limit_applies_for_request(limit: ApiKeyLimit, *, request_model: str | None) -> bool:
-    if limit.model_filter is None:
-        return True
-    if request_model is None:
-        return False
-    return limit.model_filter == request_model
+    return limit_matches_request_model(limit.model_filter, request_model)
 
 
 def _reserve_delta_for_limit(
@@ -2130,7 +2143,8 @@ def _limit_input_to_row(
     reset_at: datetime | None = None,
 ) -> ApiKeyLimit:
     window = LimitWindow(li.limit_window)
-    if li.limit_type == LimitType.CREDITS.value and li.model_filter is not None:
+    models = resolve_model_filters(model_filter=li.model_filter, model_filters=li.model_filters)
+    if li.limit_type == LimitType.CREDITS.value and models:
         raise ApiKeyValidationError("credits limits do not support model_filter")
     return ApiKeyLimit(
         api_key_id=key_id,
@@ -2138,7 +2152,7 @@ def _limit_input_to_row(
         limit_window=window,
         max_value=li.max_value,
         current_value=current_value,
-        model_filter=li.model_filter,
+        model_filter=encode_model_filters(models),
         reset_at=reset_at if reset_at is not None else next_limit_reset(now, window),
     )
 
@@ -2213,7 +2227,7 @@ async def _new_limit_input_to_backfilled_row(
         limit_type=limit_type,
         since=since,
         until=now,
-        model_filter=submitted.model_filter,
+        model_filters=resolve_model_filters(model_filter=submitted.model_filter, model_filters=submitted.model_filters),
     )
     return _limit_input_to_row(
         submitted,
@@ -2248,12 +2262,13 @@ def _build_reset_limit_rows(
     return rows
 
 
-def _limit_identity_from_input(limit: LimitRuleInput) -> tuple[str, str, str | None]:
-    return (limit.limit_type, limit.limit_window, limit.model_filter)
+def _limit_identity_from_input(limit: LimitRuleInput) -> tuple[str, str, str | tuple[str, ...] | None]:
+    models = resolve_model_filters(model_filter=limit.model_filter, model_filters=limit.model_filters)
+    return (limit.limit_type, limit.limit_window, model_filter_identity(models))
 
 
 def _validate_unique_limit_rule_identities(limits: list[LimitRuleInput]) -> None:
-    identities: set[tuple[str, str, str | None]] = set()
+    identities: set[tuple[str, str, str | tuple[str, ...] | None]] = set()
     for limit in limits:
         identity = _limit_identity_from_input(limit)
         if identity in identities:
@@ -2261,8 +2276,8 @@ def _validate_unique_limit_rule_identities(limits: list[LimitRuleInput]) -> None
         identities.add(identity)
 
 
-def _limit_identity_from_row(limit: ApiKeyLimit) -> tuple[str, str, str | None]:
-    return (limit.limit_type.value, limit.limit_window.value, limit.model_filter)
+def _limit_identity_from_row(limit: ApiKeyLimit) -> tuple[str, str, str | tuple[str, ...] | None]:
+    return (limit.limit_type.value, limit.limit_window.value, stored_model_identity(limit.model_filter))
 
 
 def _calculate_cost_microdollars(

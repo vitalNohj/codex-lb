@@ -207,6 +207,7 @@ from app.db.session import detach_session_objects, get_background_session
 from app.dependencies import ProxyContext, get_proxy_context, get_proxy_websocket_context
 from app.modules.accounts.auth_manager import AuthManager
 from app.modules.accounts.repository import AccountsRepository
+from app.modules.api_keys.model_filters import model_filter_quota_token
 from app.modules.api_keys.repository import ApiKeysRepository
 from app.modules.api_keys.service import (
     TRAFFIC_CLASS_OPPORTUNISTIC,
@@ -2825,6 +2826,7 @@ def _to_v1_usage_limit_response(limit: ApiKeySelfLimitData) -> V1UsageLimitRespo
         current_value=current_value,
         remaining_value=max(0, limit.max_value - current_value),
         model_filter=limit.model_filter,
+        model_filters=list(limit.model_filters),
         reset_at=None if limit.reset_at is None else limit.reset_at.isoformat() + "Z",
         source=limit.source,
     )
@@ -2860,6 +2862,14 @@ async def _build_codex_usage_payload_for_api_key(api_key: ApiKeyData) -> RateLim
     )
 
 
+def _usage_limit_models(limit: V1UsageLimitResponse) -> list[str]:
+    if limit.model_filters:
+        return list(limit.model_filters)
+    if limit.model_filter:
+        return [limit.model_filter]
+    return []
+
+
 def _codex_usage_additional_key_limits(
     limits: list[V1UsageLimitResponse],
     *,
@@ -2880,12 +2890,16 @@ def _codex_usage_additional_key_limits(
         if window is None:
             continue
         name_parts = ["api_key", limit.limit_type, limit.limit_window]
-        if limit.model_filter is not None:
-            name_parts.append(limit.model_filter)
+        scope_models = _usage_limit_models(limit)
+        quota_scope = model_filter_quota_token(scope_models)
+        if quota_scope is not None:
+            name_parts.append(quota_scope)
         quota_key = ":".join(name_parts)
         label = f"API key {limit.limit_type} ({limit.limit_window})"
-        if limit.model_filter is not None:
-            label = f"{label} {limit.model_filter}"
+        if len(scope_models) == 1:
+            label = f"{label} {scope_models[0]}"
+        elif scope_models:
+            label = f"{label} {', '.join(scope_models)}"
         additional.append(
             AdditionalRateLimitData(
                 limit_name=quota_key,
@@ -3078,7 +3092,7 @@ def _select_codex_usage_limit(
     candidates = [
         limit
         for limit in limits
-        if limit.limit_window == window and limit.model_filter is None and limit.limit_type == "credits"
+        if (limit.limit_window == window and not _usage_limit_models(limit) and limit.limit_type == "credits")
     ]
     return candidates[0] if candidates else None
 
@@ -3189,6 +3203,7 @@ async def _build_aggregate_credit_limits(session: AsyncSession) -> dict[str, V1U
             current_value=current_value,
             remaining_value=max(0, max_value - current_value),
             model_filter=None,
+            model_filters=[],
             reset_at=datetime.fromtimestamp(summary.reset_at, tz=timezone.utc).isoformat().replace("+00:00", "Z"),
             source="aggregate",
         )

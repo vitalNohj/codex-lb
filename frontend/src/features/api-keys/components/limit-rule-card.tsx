@@ -12,6 +12,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { ModelMultiSelect } from "@/features/api-keys/components/model-multi-select";
+import { limitRuleWithModels, ruleModelFilters } from "@/features/api-keys/components/limit-rules-utils";
 import {
   LIMIT_TYPES,
   LIMIT_WINDOWS,
@@ -77,11 +78,10 @@ export function LimitRuleCard({ rule, onChange, onRemove }: LimitRuleCardProps) 
 
   const handleLimitTypeChange = (v: string) => {
     if (isLimitType(v)) {
-      onChange({
-        ...rule,
-        limitType: v,
-        modelFilter: v === "credits" ? null : rule.modelFilter,
-      });
+      onChange(limitRuleWithModels(
+        { ...rule, limitType: v },
+        v === "credits" ? [] : ruleModelFilters(rule),
+      ));
     }
   };
 
@@ -91,7 +91,7 @@ export function LimitRuleCard({ rule, onChange, onRemove }: LimitRuleCardProps) 
     }
   };
 
-  const modelFilterArray = rule.modelFilter ? [rule.modelFilter] : [];
+  const modelFilterArray = isCredits ? [] : ruleModelFilters(rule);
 
   return (
     <div className="flex flex-col gap-2 rounded-lg border p-3">
@@ -161,7 +161,7 @@ export function LimitRuleCard({ rule, onChange, onRemove }: LimitRuleCardProps) 
           value={modelFilterArray}
           onChange={(models) => {
             if (isCredits) return;
-            onChange({ ...rule, modelFilter: models[0] || null });
+            onChange(limitRuleWithModels(rule, models));
           }}
           placeholder={isCredits ? t("apiKeys.limitRule.creditsGlobal") : t("apiKeys.modelSelect.all")}
         />

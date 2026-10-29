@@ -27,6 +27,7 @@ from app.db.models import (
 )
 from app.db.sqlite_lock_retry import is_sqlite_lock_error
 from app.modules.api_keys.last_used_coalescer import ApiKeyLastUsedCoalescer
+from app.modules.api_keys.model_filters import limit_matches_request_model, stored_model_identity
 from app.modules.api_keys.repository import (
     _UNSET,
     ApiKeyTrendBucket,
@@ -87,6 +88,7 @@ class _FakeApiKeysRepository(ApiKeysRepositoryProtocol):
         self.rollback_calls = 0
         self.commit_count = 0
         self.touched_reservations: list[str] = []
+        self.limit_usage_filters: list[list[str] | None] = []
 
     async def create(self, row: ApiKey, *, commit: bool = True) -> ApiKey:
         del commit
@@ -145,9 +147,12 @@ class _FakeApiKeysRepository(ApiKeysRepositoryProtocol):
         limit_type: LimitType,
         since: datetime,
         until: datetime,
-        model_filter: str | None,
+        model_filters: list[str] | None,
     ) -> int:
-        del key_id, limit_type, since, until, model_filter
+        del key_id, limit_type, since, until
+        self.limit_usage_filters.append(list(model_filters) if model_filters else None)
+        if model_filters == ["gpt-5.1", "gpt-5.4"]:
+            return 42
         return 0
 
     async def update(
@@ -248,14 +253,18 @@ class _FakeApiKeysRepository(ApiKeysRepositoryProtocol):
     ) -> list[ApiKeyLimit]:
         del commit
         existing = self._limits.get(key_id, [])
-        existing_by_key = {(limit.limit_type, limit.limit_window, limit.model_filter): limit for limit in existing}
+        existing_by_key = {
+            (limit.limit_type, limit.limit_window, stored_model_identity(limit.model_filter)): limit
+            for limit in existing
+        }
 
         updated: list[ApiKeyLimit] = []
         for incoming in limits:
-            key = (incoming.limit_type, incoming.limit_window, incoming.model_filter)
+            key = (incoming.limit_type, incoming.limit_window, stored_model_identity(incoming.model_filter))
             matched = existing_by_key.get(key)
             if matched is not None:
                 matched.max_value = incoming.max_value
+                matched.model_filter = incoming.model_filter
                 if not preserve_matched_usage:
                     matched.current_value = incoming.current_value
                     matched.reset_at = incoming.reset_at
@@ -299,7 +308,7 @@ class _FakeApiKeysRepository(ApiKeysRepositoryProtocol):
     ) -> None:
         limits = self._limits.get(key_id, [])
         for limit in limits:
-            if limit.model_filter is not None and limit.model_filter != model:
+            if not limit_matches_request_model(limit.model_filter, model):
                 continue
             increment = _compute_increment(limit, input_tokens, output_tokens, cost_microdollars)
             if increment > 0:
@@ -2134,8 +2143,8 @@ async def test_record_usage_model_filter_matching() -> None:
     )
 
     limits = await repo.get_limits_by_key(created.id)
-    global_limit = next(lim for lim in limits if lim.model_filter is None)
-    model_limit = next(lim for lim in limits if lim.model_filter == "gpt-5.1")
+    global_limit = next(lim for lim in limits if stored_model_identity(lim.model_filter) is None)
+    model_limit = next(lim for lim in limits if stored_model_identity(lim.model_filter) == "gpt-5.1")
     assert global_limit.current_value == 150
     assert model_limit.current_value == 150
 
@@ -2148,10 +2157,116 @@ async def test_record_usage_model_filter_matching() -> None:
     )
 
     limits = await repo.get_limits_by_key(created.id)
-    global_limit = next(lim for lim in limits if lim.model_filter is None)
-    model_limit = next(lim for lim in limits if lim.model_filter == "gpt-5.1")
+    global_limit = next(lim for lim in limits if stored_model_identity(lim.model_filter) is None)
+    model_limit = next(lim for lim in limits if stored_model_identity(lim.model_filter) == "gpt-5.1")
     assert global_limit.current_value == 450  # 150 + 300
     assert model_limit.current_value == 150  # unchanged
+
+
+@pytest.mark.asyncio
+async def test_multi_model_filter_shares_one_budget() -> None:
+    repo = _FakeApiKeysRepository()
+    service = ApiKeysService(repo)
+    created = await service.create_key(
+        ApiKeyCreateData(
+            name="shared-model-budget",
+            allowed_models=None,
+            expires_at=None,
+            limits=[
+                LimitRuleInput(
+                    limit_type="total_tokens",
+                    limit_window="weekly",
+                    max_value=500_000,
+                    model_filters=["gpt-5.1", "gpt-5.4"],
+                ),
+            ],
+        )
+    )
+
+    stored = await repo.get_limits_by_key(created.id)
+    assert stored[0].model_filter == '["gpt-5.1","gpt-5.4"]'
+
+    await service.record_usage(created.id, model="gpt-5.1", input_tokens=100, output_tokens=50)
+    await service.record_usage(created.id, model="gpt-5.4", input_tokens=20, output_tokens=10)
+    await service.record_usage(created.id, model="gpt-4o-mini", input_tokens=200, output_tokens=100)
+
+    limits = await repo.get_limits_by_key(created.id)
+    assert limits[0].current_value == 180
+
+    viewed = await service.get_key_by_id(created.id)
+    assert viewed.limits[0].model_filter is None
+    assert viewed.limits[0].model_filters == ["gpt-5.1", "gpt-5.4"]
+
+    limits[0].current_value = limits[0].max_value
+    outsider = await service.enforce_limits_for_request(created.id, request_model="gpt-4o-mini")
+    assert outsider is None
+    with pytest.raises(ApiKeyRateLimitExceededError) as exc_info:
+        await service.enforce_limits_for_request(created.id, request_model="gpt-5.4")
+    assert "for models gpt-5.1, gpt-5.4" in str(exc_info.value)
+
+
+@pytest.mark.asyncio
+async def test_new_multi_model_limit_backfills_usage_from_either_model() -> None:
+    repo = _FakeApiKeysRepository()
+    service = ApiKeysService(repo)
+    created = await service.create_key(ApiKeyCreateData(name="backfill-models", allowed_models=None, expires_at=None))
+
+    updated = await service.update_key(
+        created.id,
+        ApiKeyUpdateData(
+            limits=[
+                LimitRuleInput(
+                    limit_type="total_tokens",
+                    limit_window="weekly",
+                    max_value=500_000,
+                    model_filters=["gpt-5.1", "gpt-5.4"],
+                )
+            ],
+            limits_set=True,
+        ),
+    )
+
+    assert repo.limit_usage_filters == [["gpt-5.1", "gpt-5.4"]]
+    assert updated.limits[0].current_value == 42
+    assert updated.limits[0].model_filters == ["gpt-5.1", "gpt-5.4"]
+    assert updated.limits[0].model_filter is None
+
+
+@pytest.mark.asyncio
+async def test_legacy_plain_model_filter_still_matches_only_that_model() -> None:
+    repo = _FakeApiKeysRepository()
+    service = ApiKeysService(repo)
+    created = await service.create_key(
+        ApiKeyCreateData(
+            name="legacy-stored-filter",
+            allowed_models=None,
+            expires_at=None,
+            limits=[
+                LimitRuleInput(
+                    limit_type="total_tokens",
+                    limit_window="weekly",
+                    max_value=500_000,
+                    model_filter="gpt-5.1",
+                )
+            ],
+        )
+    )
+    limits = await repo.get_limits_by_key(created.id)
+    limits[0].model_filter = "gpt-5.1"
+
+    await service.record_usage(created.id, model="gpt-5.1", input_tokens=40, output_tokens=10)
+    await service.record_usage(created.id, model="gpt-5.4", input_tokens=80, output_tokens=20)
+
+    assert limits[0].current_value == 50
+    viewed = await service.get_key_by_id(created.id)
+    assert viewed.limits[0].model_filter == "gpt-5.1"
+    assert viewed.limits[0].model_filters == ["gpt-5.1"]
+
+    limits[0].current_value = limits[0].max_value
+    other = await service.enforce_limits_for_request(created.id, request_model="gpt-5.4")
+    assert other is None
+    with pytest.raises(ApiKeyRateLimitExceededError):
+        await service.enforce_limits_for_request(created.id, request_model="gpt-5.1")
 
 
 @pytest.mark.asyncio

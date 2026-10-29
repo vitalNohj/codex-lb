@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { LimitRuleCard } from "@/features/api-keys/components/limit-rule-card";
 import type { LimitRuleCreate } from "@/features/api-keys/schemas";
+import { ruleModelFilters } from "@/features/api-keys/components/limit-rules-utils";
 
 export type LimitRulesEditorProps = {
   rules: LimitRuleCreate[];
@@ -35,22 +36,22 @@ export function LimitRulesEditor({ rules, onChange }: LimitRulesEditorProps) {
       (r) =>
         (r.limitType !== "total_tokens" && r.limitType !== "cost_usd") ||
         r.limitWindow !== "weekly" ||
-        (r.modelFilter !== null && r.modelFilter !== undefined),
+        ruleModelFilters(r).length > 0,
     );
   });
 
   // Derive basic mode values from rules
   const weeklyTokenRule = rules.find(
-    (r) => r.limitType === "total_tokens" && r.limitWindow === "weekly" && !r.modelFilter,
+    (r) => r.limitType === "total_tokens" && r.limitWindow === "weekly" && ruleModelFilters(r).length === 0,
   );
   const weeklyCostRule = rules.find(
-    (r) => r.limitType === "cost_usd" && r.limitWindow === "weekly" && !r.modelFilter,
+    (r) => r.limitType === "cost_usd" && r.limitWindow === "weekly" && ruleModelFilters(r).length === 0,
   );
 
   const handleBasicTokenChange = (raw: string) => {
     const val = raw ? parseInt(raw, 10) : 0;
     const otherRules = rules.filter(
-      (r) => !(r.limitType === "total_tokens" && r.limitWindow === "weekly" && !r.modelFilter),
+      (r) => !(r.limitType === "total_tokens" && r.limitWindow === "weekly" && ruleModelFilters(r).length === 0),
     );
     if (val > 0) {
       onChange([
@@ -65,7 +66,7 @@ export function LimitRulesEditor({ rules, onChange }: LimitRulesEditorProps) {
   const handleBasicCostChange = (raw: string) => {
     const usd = raw ? parseFloat(raw) : 0;
     const otherRules = rules.filter(
-      (r) => !(r.limitType === "cost_usd" && r.limitWindow === "weekly" && !r.modelFilter),
+      (r) => !(r.limitType === "cost_usd" && r.limitWindow === "weekly" && ruleModelFilters(r).length === 0),
     );
     if (usd > 0) {
       onChange([
