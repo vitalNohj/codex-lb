@@ -13,8 +13,19 @@ describe("ModelMultiSelect", () => {
     renderWithProviders(<ModelMultiSelect value={[]} onChange={onChange} />);
 
     await user.click(screen.getByRole("button"));
-    expect(await screen.findByText("Claude: claude-sonnet")).toBeInTheDocument();
+    expect(await screen.findByText("CLIProxyAPI: claude-sonnet")).toBeInTheDocument();
     expect(screen.getByText("claude-sonnet")).toBeInTheDocument();
+  });
+
+  it("keeps a saved account alias visible when it is not in the catalog", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(
+      <ModelMultiSelect value={["lb2a7d4938e6/claude-sonnet-5"]} onChange={vi.fn()} />,
+    );
+
+    expect(await screen.findByText("lb2a7d4938e6/claude-sonnet-5")).toBeInTheDocument();
+    await user.click(await screen.findByRole("button", { name: "1 model selected" }));
+    expect(await screen.findAllByText("lb2a7d4938e6/claude-sonnet-5")).toHaveLength(2);
   });
 
   it("shows placeholder when no models selected", async () => {

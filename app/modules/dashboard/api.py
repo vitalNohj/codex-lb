@@ -29,6 +29,7 @@ from app.modules.dashboard.schemas import (
 from app.modules.model_sources.catalog import source_models_to_upstream_models
 from app.modules.model_sources.repository import ModelSourcesRepository
 from app.modules.proxy.claude_sidecar_dispatch import load_sidecar_config
+from app.modules.proxy.cliproxy_picker_models import cliproxy_picker_model_ids
 from app.modules.proxy.omniroute_sidecar_dispatch import load_omniroute_sidecar_config
 from app.modules.proxy.openai_compat_dispatch import load_openai_compat_configs
 from app.modules.proxy.opencode_go_models import is_opencode_go_model_supported
@@ -125,11 +126,17 @@ async def list_models() -> dict:
         except Exception:
             logger.warning("failed to append Claude sidecar models to dashboard model list", exc_info=True)
             sidecar_models = []
-        for sidecar_model in sidecar_models:
-            if sidecar_model.id in seen_model_ids:
+        # Raw ``/v1/models`` ids include per-account ``lb<hash>/`` aliases.
+        # Pickers store the client model, which is what logs and limits compare.
+        for model_id in cliproxy_picker_model_ids(
+            tuple(sidecar_model.id for sidecar_model in sidecar_models),
+            prefixes=sidecar_config.prefixes,
+            full_models=sidecar_config.full_models,
+        ):
+            if model_id in seen_model_ids:
                 continue
-            seen_model_ids.add(sidecar_model.id)
-            models.append({"id": sidecar_model.id, "name": f"Claude: {sidecar_model.id}", "sourceOnly": False})
+            seen_model_ids.add(model_id)
+            models.append({"id": model_id, "name": f"CLIProxyAPI: {model_id}", "sourceOnly": False})
     openrouter_config = await load_openrouter_sidecar_config()
     # Usable credential required, as for OpenCode Go: the picker must not poll
     # an upstream the deployment has no key for, nor offer models it would refuse.

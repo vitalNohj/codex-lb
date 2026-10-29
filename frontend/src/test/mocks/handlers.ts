@@ -3190,7 +3190,7 @@ export const handlers = [
         { id: "gpt-5.1", name: "GPT 5.1" },
         { id: "gpt-5.1-codex-mini", name: "GPT 5.1 Codex Mini" },
         { id: "gpt-4o-mini", name: "GPT 4o Mini" },
-        { id: "claude-sonnet", name: "Claude: claude-sonnet" },
+        { id: "claude-sonnet", name: "CLIProxyAPI: claude-sonnet" },
         { id: "gpt-oss:120b-cloud", name: "Ollama: gpt-oss:120b-cloud" },
       ],
     });
