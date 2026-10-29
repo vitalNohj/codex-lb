@@ -13,6 +13,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { useModels } from "@/features/api-keys/hooks/use-models";
+import type { ModelItem } from "@/features/api-keys/schemas";
 
 export type ModelMultiSelectProps = {
   value: string[];
@@ -30,13 +31,28 @@ export function ModelMultiSelect({
   const { data: models = [], isLoading } = useModels();
   const [search, setSearch] = useState("");
 
+  const options = useMemo(() => {
+    const known = new Set(models.map((model) => model.id));
+    const saved: ModelItem[] = [];
+    for (const id of value) {
+      if (known.has(id)) continue;
+      saved.push({
+        id,
+        name: id,
+        sourceOnly: false,
+        supportedReasoningEfforts: [],
+      });
+    }
+    return [...saved, ...models];
+  }, [models, value]);
+
   const filtered = useMemo(() => {
-    if (!search.trim()) return models;
+    if (!search.trim()) return options;
     const q = search.toLowerCase();
-    return models.filter(
+    return options.filter(
       (m) => m.id.toLowerCase().includes(q) || m.name.toLowerCase().includes(q),
     );
-  }, [models, search]);
+  }, [options, search]);
 
   const selectedSet = useMemo(() => new Set(value), [value]);
 
