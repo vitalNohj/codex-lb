@@ -1201,13 +1201,14 @@ def _reasoning_key(
     enforced: str | None = None,
     allowed: list[str] | None = None,
     limits: list[LimitRuleData] | None = None,
+    enforced_model: str | None = None,
 ) -> ApiKeyData:
     return ApiKeyData(
         id="ak_limit_effort",
         name="limit-effort",
         key_prefix="sk-test",
         allowed_models=None,
-        enforced_model=None,
+        enforced_model=enforced_model,
         enforced_reasoning_effort=enforced,
         enforced_service_tier=None,
         expires_at=None,
@@ -1232,6 +1233,25 @@ def test_limit_rule_effort_beats_key_and_client_on_a_codex_model() -> None:
         enforced="high",
         limits=[
             _reasoning_limit("medium", []),
+            _reasoning_limit("max", ["gpt-5.3-codex"], rule_id=2, budget=False),
+        ],
+    )
+
+    apply_api_key_enforcement(request, api_key)
+
+    assert request.model == "gpt-5.3-codex"
+    assert request.reasoning is not None
+    assert request.reasoning.effort == "max"
+    assert request._codex_lb_client_reasoning_effort == "low"
+
+
+def test_enforced_model_selects_its_limit_rule_not_the_client_model() -> None:
+    request = _codex_request("gpt-5.4", "low")
+    api_key = _reasoning_key(
+        enforced="high",
+        enforced_model="gpt-5.3-codex",
+        limits=[
+            _reasoning_limit("medium", ["gpt-5.4"]),
             _reasoning_limit("max", ["gpt-5.3-codex"], rule_id=2, budget=False),
         ],
     )

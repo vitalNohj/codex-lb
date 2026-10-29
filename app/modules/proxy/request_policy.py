@@ -390,6 +390,27 @@ def _key_enforced_effort(api_key: ApiKeyData) -> str | None:
     return _stored_policy_effort(raw_effort)
 
 
+def sidecar_reasoning_model(api_key: ApiKeyData | None, requested_model: str | None) -> str | None:
+    """The model a sidecar limit-rule effort matches.
+
+    Routing sends the key's enforced model and leaves the client payload
+    unchanged. Match rules against that enforced model, so a rule for the
+    upstream model applies and a rule for the discarded client model does not.
+    Responses enforcement rewrites the payload model before it resolves an
+    effort and does not use this helper.
+    """
+
+    if api_key is not None:
+        raw_model = (
+            api_key.enforced_model if isinstance(api_key, ApiKeyData) else getattr(api_key, "enforced_model", None)
+        )
+        if isinstance(raw_model, str) and raw_model.strip():
+            return raw_model.strip()
+    if isinstance(requested_model, str) and requested_model.strip():
+        return requested_model.strip()
+    return None
+
+
 def resolved_enforced_reasoning_effort(api_key: ApiKeyData | None, model: str | None) -> str | None:
     """The effort to force, or ``None`` when the client value stands.
 
@@ -447,15 +468,17 @@ def apply_sidecar_chat_reasoning(
     The sidecar default keeps its current meaning (it replaces a client effort
     on chat routes). A matching limit-rule effort, then a key enforced effort,
     is written after that default, so the rule wins and the key wins over the
-    client. A key with no enforced effort and no matching rule leaves the body
-    as the default step left it. ``allowed_reasoning_efforts`` is checked
-    against the client's effort, matching :func:`apply_api_key_enforcement`.
+    client. Rules match the key's enforced model when one is set, and the
+    client model otherwise. A key with no enforced effort and no matching rule
+    leaves the body as the default step left it. ``allowed_reasoning_efforts``
+    is checked against the client's effort, matching
+    :func:`apply_api_key_enforcement`.
     """
 
     requested = authorize_sidecar_reasoning_effort(payload, body, api_key)
     set_reasoning_effort_override(body, default_reasoning_effort)
     request_model = payload.model if isinstance(payload.model, str) else None
-    enforced = enforced_wire_reasoning_effort(api_key, request_model)
+    enforced = enforced_wire_reasoning_effort(api_key, sidecar_reasoning_model(api_key, request_model))
     if enforced is not None:
         set_reasoning_effort_override(body, enforced)
     return requested, read_reasoning_effort(body)

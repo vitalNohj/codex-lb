@@ -35,13 +35,14 @@ def _key(
     *,
     allowed: list[str] | None = None,
     limits: list[LimitRuleData] | None = None,
+    enforced_model: str | None = None,
 ) -> ApiKeyData:
     return ApiKeyData(
         id="ak_test",
         name="mikey",
         key_prefix="sk-test",
         allowed_models=None,
-        enforced_model=None,
+        enforced_model=enforced_model,
         enforced_reasoning_effort=enforced,
         enforced_service_tier=None,
         expires_at=None,
@@ -159,6 +160,66 @@ def test_limit_rule_effort_wins_on_claude_sidecar_chat() -> None:
     )
 
     assert payload.body["reasoning_effort"] == "max"
+    assert (payload.requested_reasoning_effort, payload.effective_reasoning_effort) == ("medium", "max")
+
+
+def test_sidecar_limit_rule_matches_the_enforced_model_not_the_client_model() -> None:
+    key = _key(
+        "low",
+        enforced_model="cc/claude-opus-5-5",
+        limits=[
+            _effort_rule("cc/claude-haiku", effort="high"),
+            _effort_rule("cc/claude-opus-5-5", effort="max"),
+        ],
+    )
+
+    payload = build_sidecar_chat_payload(
+        _chat(model="cc/claude-haiku", reasoning_effort="medium"),
+        "claude-opus-5-5",
+        _claude_config("high"),
+        api_key=key,
+    )
+
+    assert payload.body["reasoning_effort"] == "max"
+    assert (payload.requested_reasoning_effort, payload.effective_reasoning_effort) == ("medium", "max")
+
+
+def test_sidecar_client_model_rule_does_not_apply_when_the_key_enforces_another_model() -> None:
+    key = _key(
+        "low",
+        enforced_model="cc/claude-opus-5-5",
+        limits=[_effort_rule("cc/claude-haiku", effort="max")],
+    )
+
+    payload = build_sidecar_chat_payload(
+        _chat(model="cc/claude-haiku", reasoning_effort="medium"),
+        "claude-opus-5-5",
+        _claude_config("high"),
+        api_key=key,
+    )
+
+    assert payload.body["reasoning_effort"] == "low"
+
+
+def test_ollama_limit_rule_matches_the_enforced_model() -> None:
+    key = _key(
+        "low",
+        enforced_model="gpt-oss:120b-cloud",
+        limits=[
+            _effort_rule("cc/claude-haiku", effort="high"),
+            _effort_rule("gpt-oss:120b-cloud", effort="max"),
+        ],
+    )
+
+    payload = build_ollama_chat_payload(
+        _chat(model="cc/claude-haiku", reasoning_effort="medium"),
+        "gpt-oss:120b-cloud",
+        "low",
+        api_key=key,
+    )
+
+    assert payload.body["model"] == "gpt-oss:120b-cloud"
+    assert payload.body["think"] == "max"
     assert (payload.requested_reasoning_effort, payload.effective_reasoning_effort) == ("medium", "max")
 
 
