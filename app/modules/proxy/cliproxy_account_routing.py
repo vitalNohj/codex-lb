@@ -751,7 +751,7 @@ async def _load_candidates(
     if exclude_account_ids:
         candidates = [item for item in candidates if item.account_id not in exclude_account_ids]
     filled = await _fill_empty_prefixes(candidates, model, client, failed_snapshot=snapshot)
-    if management_failures or _snapshot_read_failed(snapshot):
+    if management_failures or _snapshot_read_failed(snapshot) or _MANAGEMENT_OUTAGE is not None:
         _warn_management_outage(snapshot, management_failures, using=filled)
     elif snapshot is None or snapshot.status == "healthy":
         _note_management_recovered()
@@ -1369,12 +1369,12 @@ def _management_outage_fail_open(settings: DashboardSettings, model: str) -> boo
     """
 
     if _MANAGEMENT_OUTAGE is None or _LAST_GOOD_FORGOTTEN:
-        return _MANAGEMENT_OUTAGE is not None and not _LAST_GOOD_FORGOTTEN
+        return False
     snapshot = _routing_snapshot(settings)
     now = datetime.now(timezone.utc)
     known = candidates_from_snapshot(snapshot, now=now)
     if not known:
-        return True
+        return False
     known_prefixes = _known_credential_prefixes(known)
     return not any(
         item.excluded_models

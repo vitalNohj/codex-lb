@@ -765,7 +765,7 @@ async def test_healthy_empty_listing_forgets_the_removed_credential(
     assert body["model"] == "claude-opus-5-5"
 
 
-async def test_cold_management_outage_lets_cliproxy_choose_the_claude_credential(
+async def test_cold_management_outage_refuses_without_a_known_credential(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     settings = _settings()
@@ -778,9 +778,29 @@ async def test_cold_management_outage_lets_cliproxy_choose_the_claude_credential
     client = _ApiKeyClient(error=ClaudeSidecarError(403, "IP banned"))
     body: dict[str, JsonValue] = {"model": "claude-opus-5-5"}
 
-    choice = await apply_cliproxy_account_route(body, client=client)
+    with pytest.raises(routing.CliproxyClaudeRouteRefused):
+        await apply_cliproxy_account_route(body, client=client)
+
+    assert body["model"] == "claude-opus-5-5"
+
+
+async def test_prefix_assignment_failure_keeps_the_management_outage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    account = _claude_account("acct", prefix=None)
+    settings = _settings()
+    _install_settings(monkeypatch, settings)
+    monkeypatch.setattr(routing._SNAPSHOTS, "read", lambda _raw: _claude_snapshot(account))
+
+    class _PrefixFails(_ApiKeyClient):
+        async def patch_auth_file_fields(self, _name: str, _fields: Mapping[str, JsonValue]) -> None:
+            raise ClaudeSidecarError(503, "management down")
+
+    body: dict[str, JsonValue] = {"model": "claude-opus-5-5"}
+    choice = await apply_cliproxy_account_route(body, client=_PrefixFails())
 
     assert choice is None
+    assert routing._MANAGEMENT_OUTAGE is not None
     assert body["model"] == "claude-opus-5-5"
 
 
