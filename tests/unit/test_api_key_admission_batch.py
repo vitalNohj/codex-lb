@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager, contextmanager
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -17,8 +18,10 @@ from app.modules.api_keys.repository import ApiKeysRepository
 from app.modules.api_keys.service import (
     ApiKeyCreateData,
     ApiKeyData,
+    ApiKeyInvalidError,
     ApiKeyRateLimitExceededError,
     ApiKeyRequestUsageBudget,
+    ApiKeyUpdateData,
     ApiKeysService,
     LimitRuleInput,
 )
@@ -91,7 +94,7 @@ async def _create_limited_key(
 
 
 @pytest.mark.asyncio
-async def test_two_limit_rules_use_one_write_each_and_skip_the_key_row(tmp_path: Path) -> None:
+async def test_two_limit_rules_use_one_write_each_and_one_key_read(tmp_path: Path) -> None:
     database_path = tmp_path / "statements.db"
     engine = create_async_engine(
         f"sqlite+aiosqlite:///{database_path}",
@@ -121,7 +124,9 @@ async def test_two_limit_rules_use_one_write_each_and_skip_the_key_row(tmp_path:
                     admission_key=created,
                 )
         assert reservation is not None
-        assert not any(_mentions_api_keys_table(statement) for statement in reserve_statements)
+        # One current-row read validates existence, is_active, and expires_at.
+        # The cached admission key must not replace that read.
+        assert sum(1 for statement in reserve_statements if _mentions_api_keys_table(statement)) == 1
         assert (
             sum(1 for statement in reserve_statements if "update api_key_limits" in statement.lower()) == 1
         )
@@ -238,3 +243,55 @@ async def test_overlapped_reserves_do_not_overspend_the_limit(tmp_path: Path, mo
         assert limit.current_value <= 100
         assert limit.current_value == 80
         assert [first, second].count(True) == 1
+
+
+async def test_cached_admission_key_is_rejected_after_revoke_delete_or_expiry(tmp_path: Path) -> None:
+    async with _file_engine(tmp_path) as factory:
+        async with factory() as session:
+            created = await ApiKeysService(ApiKeysRepository(session)).create_key(
+                ApiKeyCreateData(
+                    name="cached",
+                    allowed_models=None,
+                    limits=[LimitRuleInput(limit_type="total_tokens", limit_window="daily", max_value=100)],
+                )
+            )
+
+        async with factory() as session:
+            service = ApiKeysService(ApiKeysRepository(session))
+            await service.update_key(created.id, ApiKeyUpdateData(is_active=False, is_active_set=True))
+            with pytest.raises(ApiKeyInvalidError, match="Invalid API key"):
+                await service.enforce_limits_for_request(
+                    created.id,
+                    request_model="gpt-5.4",
+                    request_usage_budget=ApiKeyRequestUsageBudget(input_tokens=10, output_tokens=0),
+                    admission_key=created,
+                )
+            await service.update_key(created.id, ApiKeyUpdateData(is_active=True, is_active_set=True))
+
+        past = datetime(2020, 1, 1)
+        async with factory() as session:
+            service = ApiKeysService(ApiKeysRepository(session))
+            await service.update_key(
+                created.id,
+                ApiKeyUpdateData(expires_at=past, expires_at_set=True),
+            )
+            with pytest.raises(ApiKeyInvalidError, match="API key has expired"):
+                await service.enforce_limits_for_request(
+                    created.id,
+                    request_model="gpt-5.4",
+                    request_usage_budget=ApiKeyRequestUsageBudget(input_tokens=10, output_tokens=0),
+                    admission_key=created,
+                )
+            await service.update_key(created.id, ApiKeyUpdateData(expires_at=None, expires_at_set=True))
+
+        stale = created
+        async with factory() as session:
+            await ApiKeysService(ApiKeysRepository(session)).delete_key(created.id)
+        async with factory() as session:
+            with pytest.raises(ApiKeyInvalidError, match="Invalid API key"):
+                await ApiKeysService(ApiKeysRepository(session)).enforce_limits_for_request(
+                    created.id,
+                    request_model="gpt-5.4",
+                    request_usage_budget=ApiKeyRequestUsageBudget(input_tokens=10, output_tokens=0),
+                    admission_key=stale,
+                )

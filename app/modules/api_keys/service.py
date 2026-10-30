@@ -1004,10 +1004,11 @@ class ApiKeysService:
         price table decides. Keys that are not shared, or have no cost limit,
         are served as before.
 
-        ``admission_key`` is the key row already loaded for this request. When
-        it is the same key, admission does not read ``api_keys`` again. Limit
-        counters are still read from the database so concurrent requests clip
-        against the live balance.
+        ``admission_key`` is the key row already loaded for this request. It
+        does not decide whether the key still exists or is still active:
+        admission reads the current row for that, and reads limit counters
+        from the same query so concurrent requests clip against the live
+        balance.
         """
         if model_is_priced is None:
 
@@ -1048,34 +1049,23 @@ class ApiKeysService:
         admission_key: ApiKeyData | None = None,
     ) -> ApiKeyUsageReservationData | None:
         now = utcnow()
-        cached_key = admission_key if admission_key is not None and admission_key.id == key_id else None
+        del admission_key
         async with sqlite_writer_section():
-            if cached_key is not None:
-                if not cached_key.is_active:
-                    raise ApiKeyInvalidError("Invalid API key")
-                if cached_key.expires_at is not None and cached_key.expires_at < now:
-                    raise ApiKeyInvalidError("API key has expired")
-                limits = await self._repository.get_limits_by_key(key_id)
-                is_shared = cached_key.is_shared
-                expires_at = cached_key.expires_at
-            else:
+            # The caller's cached key can be stale: revocation, deletion, or
+            # a new expiry can land after authentication. The current row is
+            # the only source for existence, is_active, and expires_at.
+            row = _ensure_valid_api_key_row(await self._repository.get_for_limit_enforcement(key_id))
+            if row.expires_at is not None and row.expires_at < now:
+                raise ApiKeyInvalidError("API key has expired")
+            limits = list(row.limits)
+            is_shared = row.is_shared
+            limits_reset = await _lazy_reset_expired_limits(self._repository, limits, now=now)
+            if limits_reset:
                 row = _ensure_valid_api_key_row(await self._repository.get_for_limit_enforcement(key_id))
                 if row.expires_at is not None and row.expires_at < now:
                     raise ApiKeyInvalidError("API key has expired")
                 limits = list(row.limits)
                 is_shared = row.is_shared
-                expires_at = row.expires_at
-            limits_reset = await _lazy_reset_expired_limits(self._repository, limits, now=now)
-            if limits_reset:
-                if cached_key is not None:
-                    limits = await self._repository.get_limits_by_key(key_id)
-                else:
-                    refreshed = _ensure_valid_api_key_row(await self._repository.get_for_limit_enforcement(key_id))
-                    limits = list(refreshed.limits)
-                    is_shared = refreshed.is_shared
-                    expires_at = refreshed.expires_at
-            if expires_at is not None and expires_at < now:
-                raise ApiKeyInvalidError("API key has expired")
 
             reservation_items: list[UsageReservationItemData] = []
             reservation_id: str | None = None
