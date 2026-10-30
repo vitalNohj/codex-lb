@@ -52,6 +52,7 @@ from app.modules.accounts.usage_time_rollup import HOURLY_BUCKET_SECONDS, WARMUP
 from app.modules.accounts.usage_time_rollup_read import RawWindow, raw_windows_clause, read_hourly_window
 from app.modules.api_keys.admission_snapshot import (
     forget_admission_items,
+    forget_admission_items_for_limits,
     recall_admission_items,
     remember_admission_items,
 )
@@ -520,6 +521,7 @@ class ApiKeysRepository:
 
     async def replace_limits(self, key_id: str, limits: list[ApiKeyLimit]) -> list[ApiKeyLimit]:
         existing = await self.get_limits_by_key(key_id)
+        forget_admission_items_for_limits({limit.id for limit in existing})
         for limit in existing:
             await self._session.delete(limit)
         for limit in limits:
@@ -557,8 +559,12 @@ class ApiKeysRepository:
                 matched.current_value = incoming.current_value
                 matched.reset_at = incoming.reset_at
 
+        removed_limit_ids = {
+            old_limit.id for old_limit in existing if _limit_key(old_limit) not in incoming_keys
+        }
+        forget_admission_items_for_limits(removed_limit_ids)
         for old_limit in existing:
-            if _limit_key(old_limit) not in incoming_keys:
+            if old_limit.id in removed_limit_ids:
                 await self._session.delete(old_limit)
 
         if commit:

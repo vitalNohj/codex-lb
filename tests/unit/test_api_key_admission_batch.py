@@ -13,7 +13,7 @@ from sqlalchemy import event, select
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 
 import app.db.session as session_module
-from app.db.models import ApiKeyLimit, Base
+from app.db.models import ApiKeyLimit, ApiKeyUsageReservation, Base
 from app.modules.api_keys.repository import ApiKeysRepository
 from app.modules.api_keys.service import (
     ApiKeyCreateData,
@@ -295,3 +295,47 @@ async def test_cached_admission_key_is_rejected_after_revoke_delete_or_expiry(tm
                     request_usage_budget=ApiKeyRequestUsageBudget(input_tokens=10, output_tokens=0),
                     admission_key=stale,
                 )
+
+
+async def test_settlement_survives_deleting_a_reserved_limit(tmp_path: Path) -> None:
+    async with _file_engine(tmp_path) as factory:
+        created = await _create_limited_key(
+            factory,
+            rules=[
+                LimitRuleInput(limit_type="total_tokens", limit_window="daily", max_value=10_000),
+                LimitRuleInput(limit_type="input_tokens", limit_window="weekly", max_value=10_000),
+            ],
+        )
+        async with factory() as session:
+            reservation = await ApiKeysService(ApiKeysRepository(session)).enforce_limits_for_request(
+                created.id,
+                request_model="gpt-5.4",
+                request_usage_budget=ApiKeyRequestUsageBudget(input_tokens=100, output_tokens=50),
+                admission_key=created,
+            )
+        assert reservation is not None
+
+        async with factory() as session:
+            await ApiKeysService(ApiKeysRepository(session)).update_key(
+                created.id,
+                ApiKeyUpdateData(
+                    limits=[LimitRuleInput(limit_type="total_tokens", limit_window="daily", max_value=10_000)],
+                    limits_set=True,
+                ),
+            )
+
+        async with factory() as session:
+            await ApiKeysService(ApiKeysRepository(session)).finalize_usage_reservation(
+                reservation.reservation_id,
+                model="gpt-5.4",
+                input_tokens=100,
+                output_tokens=50,
+                cached_input_tokens=0,
+            )
+            stored = (
+                await session.execute(
+                    select(ApiKeyUsageReservation).where(ApiKeyUsageReservation.id == reservation.reservation_id)
+                )
+            ).scalar_one()
+
+        assert stored.status == "finalized"

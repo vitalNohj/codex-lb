@@ -33,5 +33,23 @@ def forget_admission_items(reservation_id: str) -> None:
     _snapshots.pop(reservation_id, None)
 
 
+def forget_admission_items_for_limits(limit_ids: set[int]) -> None:
+    """Drop snapshots that name a limit which no longer exists.
+
+    Deleting a limit cascades its reservation items. A snapshot that still
+    names that limit would make settlement insert a row the foreign key
+    rejects, so the next read must come from the database instead.
+    """
+    if not limit_ids:
+        return
+    stale = [
+        reservation_id
+        for reservation_id, items in _snapshots.items()
+        if any(item.limit_id in limit_ids for item in items)
+    ]
+    for reservation_id in stale:
+        del _snapshots[reservation_id]
+
+
 def clear_admission_items() -> None:
     _snapshots.clear()
