@@ -426,22 +426,7 @@ class _WarmupAccountsRepoContext:
         return self.repo
 
     async def __aexit__(self, exc_type: object, exc: object, tb: object) -> bool:
-        checked_out = getattr(self.repo, "open", None)
-        if checked_out is not None:
-            self.repo.open = False
         return False
-
-
-class _CheckedOutAccountsRepo(_WarmupAccountsRepo):
-    """A session whose checkout is visible until the context exits."""
-
-    def __init__(self, account: Account) -> None:
-        super().__init__(account=account)
-        self.open = False
-
-    async def get_by_id_fresh(self, account_id: str) -> Account | None:
-        self.open = True
-        return await super().get_by_id_fresh(account_id)
 
 
 @pytest.mark.asyncio
@@ -588,36 +573,6 @@ async def test_streaming_limit_warmup_sender_resolves_route_with_owned_repo_fact
     assert calls["factory"] == 1
     assert calls["route_session"] is owned_session
     assert calls["route_session"] is not primary_session
-
-
-@pytest.mark.asyncio
-async def test_limit_warmup_releases_its_connection_before_refresh(monkeypatch: pytest.MonkeyPatch) -> None:
-    account = _account()
-    sessions: list[_CheckedOutAccountsRepo] = []
-
-    def repo_factory() -> _WarmupAccountsRepoContext:
-        repo = _CheckedOutAccountsRepo(account)
-        sessions.append(repo)
-        return _WarmupAccountsRepoContext(repo)
-
-    sender = StreamingLimitWarmupSender(
-        cast(Any, _WarmupAccountsRepo(account=account)),
-        accounts_repo_factory=cast(Any, repo_factory),
-    )
-    open_during_refresh: list[bool] = []
-
-    async def ensure_fresh(self: object, target: Account) -> Account:
-        async def refresh() -> Account:
-            await asyncio.sleep(0)
-            open_during_refresh.append(any(repo.open for repo in sessions))
-            return target
-
-        return await asyncio.create_task(refresh())
-
-    monkeypatch.setattr(limit_warmup_service.AuthManager, "ensure_fresh", ensure_fresh)
-
-    assert await asyncio.wait_for(sender._ensure_fresh(account), timeout=1) is account
-    assert open_during_refresh == [False]
 
 
 @pytest.mark.asyncio

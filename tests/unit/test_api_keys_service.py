@@ -341,19 +341,6 @@ class _FakeApiKeysRepository(ApiKeysRepositoryProtocol):
         limit.current_value += delta
         return ReservationResult(True, limit_id, limit.current_value, limit.max_value, limit.reset_at)
 
-    async def try_reserve_usage_many(
-        self,
-        reservations: list[tuple[int, int, datetime]],
-    ) -> dict[int, ReservationResult]:
-        results: dict[int, ReservationResult] = {}
-        for limit_id, delta, expected_reset_at in reservations:
-            results[limit_id] = await self.try_reserve_usage(
-                limit_id,
-                delta=delta,
-                expected_reset_at=expected_reset_at,
-            )
-        return results
-
     async def adjust_reserved_usage(
         self,
         limit_id: int,
@@ -369,17 +356,6 @@ class _FakeApiKeysRepository(ApiKeysRepositoryProtocol):
             return False
         limit.current_value = next_value
         return True
-
-    async def adjust_reserved_usage_many(
-        self,
-        adjustments: list[tuple[int, int, datetime]],
-    ) -> None:
-        for limit_id, delta, expected_reset_at in adjustments:
-            await self.adjust_reserved_usage(
-                limit_id,
-                delta=delta,
-                expected_reset_at=expected_reset_at,
-            )
 
     async def create_usage_reservation(
         self,
@@ -489,18 +465,6 @@ class _FakeApiKeysRepository(ApiKeysRepositoryProtocol):
             status=reservation.status,
             items=updated_items,
         )
-
-    async def set_reservation_item_actuals(
-        self,
-        reservation_id: str,
-        actuals: list[tuple[UsageReservationItemData, int]],
-    ) -> None:
-        for item, actual_delta in actuals:
-            await self.upsert_reservation_item_actual(
-                reservation_id,
-                item=item,
-                actual_delta=actual_delta,
-            )
 
     async def settle_usage_reservation(
         self,
