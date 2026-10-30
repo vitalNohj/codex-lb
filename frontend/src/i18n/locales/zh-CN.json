@@ -309,6 +309,8 @@
   "apiKeys.limitRule.window": "窗口",
   "apiKeys.limitRules.addRule": "添加限制规则",
   "apiKeys.limitRules.advanced": "高级",
+  "apiKeys.limitRules.overallLimit": "总限额（全部模型）",
+  "apiKeys.limitRules.removeRule": "移除限额",
   "apiKeys.limitRules.andHint": "所有 rule 会一起应用（AND）。任何 limit 超出都会阻止请求。",
   "apiKeys.limitRules.noLimit": "无限制",
   "apiKeys.limitRules.weeklyCostLimit": "每周费用限制 ($)",

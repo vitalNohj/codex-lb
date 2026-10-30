@@ -309,6 +309,8 @@
   "apiKeys.limitRule.window": "Window",
   "apiKeys.limitRules.addRule": "Add limit rule",
   "apiKeys.limitRules.advanced": "Advanced",
+  "apiKeys.limitRules.overallLimit": "Overall limit (all models)",
+  "apiKeys.limitRules.removeRule": "Remove limit",
   "apiKeys.limitRules.andHint": "All rules are applied together (AND). A request is blocked if any limit is exceeded.",
   "apiKeys.limitRules.noLimit": "No limit",
   "apiKeys.limitRules.weeklyCostLimit": "Weekly cost limit ($)",

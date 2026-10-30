@@ -37,6 +37,16 @@ export function formatRuleModels(rule: ModelFilterRule, allLabel: string): strin
   return models.length > 0 ? models.join(", ") : allLabel;
 }
 
+/** A spending cap with no model filter. It applies to every model. */
+export function isOverallBudgetRule(rule: LimitRuleCreate): boolean {
+  return (
+    ruleModelFilters(rule).length === 0
+    && (rule.maxValue ?? 0) > 0
+    && rule.limitType != null
+    && rule.limitWindow != null
+  );
+}
+
 export function limitRuleWithModels(rule: LimitRuleCreate, models: readonly string[]): LimitRuleCreate {
   const modelFilters = ruleModelFilters({ modelFilters: models });
   return {

@@ -63,9 +63,11 @@ export type LimitRuleCardProps = {
   rule: LimitRuleCreate;
   onChange: (rule: LimitRuleCreate) => void;
   onRemove: () => void;
+  /** All-models budget. The model picker stays off so this cannot become a group rule. */
+  overall?: boolean;
 };
 
-export function LimitRuleCard({ rule, onChange, onRemove }: LimitRuleCardProps) {
+export function LimitRuleCard({ rule, onChange, onRemove, overall = false }: LimitRuleCardProps) {
   const { t } = useTranslation();
   const fieldId = useId();
   const isCost = rule.limitType === "cost_usd";
@@ -120,8 +122,12 @@ export function LimitRuleCard({ rule, onChange, onRemove }: LimitRuleCardProps) 
   return (
     <div className="flex flex-col gap-2 rounded-lg border p-3">
       <div className="flex items-center justify-between">
-        <span className="text-xs font-medium text-muted-foreground">{t("apiKeys.limitRule.title")}</span>
-        <Button type="button" variant="ghost" size="sm" onClick={onRemove}>
+        {overall ? (
+          <span className="text-xs font-medium text-muted-foreground">{t("apiKeys.limitRules.overallLimit")}</span>
+        ) : (
+          <span className="text-xs font-medium text-muted-foreground">{t("apiKeys.limitRule.title")}</span>
+        )}
+        <Button type="button" variant="ghost" size="sm" onClick={onRemove} aria-label={t("apiKeys.limitRules.removeRule")}>
           <Trash2 className="size-3.5" />
         </Button>
       </div>
@@ -209,17 +215,19 @@ export function LimitRuleCard({ rule, onChange, onRemove }: LimitRuleCardProps) 
         ) : null}
       </div>
 
-      <div>
-        <p className="text-xs text-muted-foreground">{t("apiKeys.limitRule.modelFilter")}</p>
-        <ModelMultiSelect
-          value={modelFilterArray}
-          onChange={(models) => {
-            if (isCredits) return;
-            onChange(limitRuleWithModels(rule, models));
-          }}
-          placeholder={isCredits ? t("apiKeys.limitRule.creditsGlobal") : t("apiKeys.modelSelect.all")}
-        />
-      </div>
+      {overall ? null : (
+        <div>
+          <p className="text-xs text-muted-foreground">{t("apiKeys.limitRule.modelFilter")}</p>
+          <ModelMultiSelect
+            value={modelFilterArray}
+            onChange={(models) => {
+              if (isCredits) return;
+              onChange(limitRuleWithModels(rule, models));
+            }}
+            placeholder={isCredits ? t("apiKeys.limitRule.creditsGlobal") : t("apiKeys.modelSelect.all")}
+          />
+        </div>
+      )}
     </div>
   );
 }
