@@ -31,11 +31,16 @@ from app.core.types import JsonValue
 from app.core.usage.logs import CANCELLED_STATUS, CLIENT_DISCONNECT_ERROR_CODE
 from app.core.usage.pricing import UsageTokens
 from app.core.usage.runtime_pricing import calculate_reference_cost
-from app.core.utils.cancellation import await_deferring_cancellation, complete_despite_cancellation
+from app.core.utils.cancellation import await_deferring_cancellation
 from app.core.utils.json_guards import is_json_mapping
 from app.core.utils.request_id import get_request_id
 from app.core.utils.sse import SHUTDOWN_SERVICE_UNAVAILABLE_FRAME, SSE_DONE, SseJsonDataDecoder, inject_sse_keepalives
-from app.core.utils.stream_close import ClosingStreamingResponse, SettlingStream
+from app.core.utils.stream_close import (
+    ClosingStreamingResponse,
+    DeferredBodySettlement,
+    SettlingStream,
+    apply_stream_settlement,
+)
 from app.db.models import DashboardSettings
 from app.db.session import get_background_session
 from app.modules.api_keys.repository import ApiKeysRepository
@@ -1429,6 +1434,9 @@ async def proxy_chat_to_sidecar(
                 requested_reasoning_effort=sidecar_payload.requested_reasoning_effort,
             )
         ensure_stream_usage_requested(sidecar_payload.body)
+        # Settlement waits until the response has sent its terminating frame.
+        # Awaiting it in the generator holds that frame back for the writes.
+        deferred_settlement = DeferredBodySettlement()
         settling = SettlingStream(
             _sidecar_stream_iterator(
                 sidecar_payload.body,
@@ -1445,6 +1453,7 @@ async def proxy_chat_to_sidecar(
                 reasoning_effort=sidecar_payload.effective_reasoning_effort,
                 requested_reasoning_effort=sidecar_payload.requested_reasoning_effort,
                 retry_route=retry_route,
+                deferred_settlement=deferred_settlement,
             ),
             abandon=partial(
                 _abandon_unstarted_sidecar_stream,
@@ -1472,6 +1481,7 @@ async def proxy_chat_to_sidecar(
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", **dict(rate_limit_headers)},
             settling=settling,
+            after_body_closed=deferred_settlement.run,
         )
 
     try:
@@ -1636,6 +1646,7 @@ async def _sidecar_stream_iterator(
     reasoning_effort: str | None = None,
     requested_reasoning_effort: str | None = None,
     retry_route: Callable[[], Awaitable[None]] | None = None,
+    deferred_settlement: DeferredBodySettlement | None = None,
 ) -> AsyncIterator[bytes]:
     usage: SidecarUsage | None = None
     completed = False
@@ -1840,8 +1851,14 @@ async def _sidecar_stream_iterator(
         if deepseek_recorder is not None:
             deepseek_recorder.commit()
         if not settled:
-            await complete_despite_cancellation(
-                _settle_and_log_sidecar_stream(
+            # Bind the observed usage now. The response runs this after the
+            # client has the terminating frame; a direct consumer awaits it
+            # here so a close still writes the row.
+            settled = True
+            await apply_stream_settlement(
+                deferred_settlement,
+                partial(
+                    _settle_and_log_sidecar_stream,
                     reservation,
                     api_key=api_key,
                     model=model,
@@ -1850,7 +1867,7 @@ async def _sidecar_stream_iterator(
                     completed=completed,
                     reasoning_effort=reasoning_effort,
                     requested_reasoning_effort=requested_reasoning_effort,
-                )
+                ),
             )
 
 
