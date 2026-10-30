@@ -185,7 +185,7 @@ describe("LimitRuleCard", () => {
 
     await user.click(await screen.findByRole("button", { name: "All models" }));
     await user.click(await screen.findByRole("menuitemcheckbox", { name: /GPT 4o Mini/ }));
-    await user.click(screen.getByRole("menuitemcheckbox", { name: /Claude/ }));
+    await user.click(screen.getByRole("menuitemcheckbox", { name: /claude-sonnet/i }));
     await user.keyboard("{Escape}");
 
     expect(screen.getByRole("button", { name: "2 models selected" })).toBeInTheDocument();

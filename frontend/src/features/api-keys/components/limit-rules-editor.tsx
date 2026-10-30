@@ -6,12 +6,20 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { LimitRuleCard } from "@/features/api-keys/components/limit-rule-card";
+import { isOverallBudgetRule, ruleModelFilters } from "@/features/api-keys/components/limit-rules-utils";
 import type { LimitRuleCreate } from "@/features/api-keys/schemas";
-import { ruleModelFilters } from "@/features/api-keys/components/limit-rules-utils";
 
 export type LimitRulesEditorProps = {
   rules: LimitRuleCreate[];
   onChange: (rules: LimitRuleCreate[]) => void;
+};
+
+const EMPTY_OVERALL_LIMIT: LimitRuleCreate = {
+  limitType: "cost_usd",
+  limitWindow: "weekly",
+  maxValue: 0,
+  modelFilter: null,
+  modelFilters: [],
 };
 
 function makeDefaultRule(): LimitRuleCreate {
@@ -23,12 +31,26 @@ function makeDefaultRule(): LimitRuleCreate {
   };
 }
 
+function isWeeklyOverall(rule: LimitRuleCreate, limitType: LimitRuleCreate["limitType"]): boolean {
+  return rule.limitType === limitType && rule.limitWindow === "weekly" && ruleModelFilters(rule).length === 0;
+}
+
+function overallRuleShouldPersist(rule: LimitRuleCreate): boolean {
+  if (ruleModelFilters(rule).length > 0) return false;
+  return isOverallBudgetRule(rule) || rule.reasoningEffort != null;
+}
+
 export function LimitRulesEditor({ rules, onChange }: LimitRulesEditorProps) {
   const { t } = useTranslation();
   const [ruleKeys, setRuleKeys] = useState(() =>
     rules.map((_, index) => `limit-rule-${index}`),
   );
   const [nextRuleKey, setNextRuleKey] = useState(() => rules.length);
+  const [overallKeys, setOverallKeys] = useState(() => new Set(
+    rules.flatMap((rule, index) => (isOverallBudgetRule(rule) ? [`limit-rule-${index}`] : [])),
+  ));
+  const [draft, setDraft] = useState<LimitRuleCreate>(EMPTY_OVERALL_LIMIT);
+  const [draftRuleKey, setDraftRuleKey] = useState<string | null>(null);
   const [advanced, setAdvanced] = useState(() => {
     if (rules.length === 0) return false;
     // If any non-standard rule exists, start in advanced mode
@@ -41,63 +63,19 @@ export function LimitRulesEditor({ rules, onChange }: LimitRulesEditorProps) {
     );
   });
 
+  const keyedRules = rules.map((rule, index) => ({
+    rule,
+    index,
+    key: ruleKeys[index] ?? `limit-rule-${index}`,
+  }));
+  const overallEntries = keyedRules.filter((entry) => overallKeys.has(entry.key));
+  const groupEntries = keyedRules.filter((entry) => !overallKeys.has(entry.key));
+
   // Derive basic mode values from rules
-  const weeklyTokenRule = rules.find(
-    (r) => r.limitType === "total_tokens" && r.limitWindow === "weekly" && ruleModelFilters(r).length === 0,
-  );
-  const weeklyCostRule = rules.find(
-    (r) => r.limitType === "cost_usd" && r.limitWindow === "weekly" && ruleModelFilters(r).length === 0,
-  );
+  const weeklyTokenRule = rules.find((rule) => isWeeklyOverall(rule, "total_tokens"));
+  const weeklyCostRule = rules.find((rule) => isWeeklyOverall(rule, "cost_usd"));
   const weeklyCostMax = weeklyCostRule?.maxValue ?? 0;
   const weeklyTokenMax = weeklyTokenRule?.maxValue ?? 0;
-
-  const handleBasicTokenChange = (raw: string) => {
-    const val = raw ? parseInt(raw, 10) : 0;
-    const otherRules = rules.filter(
-      (r) => !(r.limitType === "total_tokens" && r.limitWindow === "weekly" && ruleModelFilters(r).length === 0),
-    );
-    if (val > 0) {
-      onChange([
-        ...otherRules,
-        {
-          limitType: "total_tokens",
-          limitWindow: "weekly",
-          maxValue: val,
-          modelFilter: null,
-          reasoningEffort: weeklyTokenRule?.reasoningEffort ?? null,
-        },
-      ]);
-    } else {
-      onChange(otherRules);
-    }
-  };
-
-  const handleBasicCostChange = (raw: string) => {
-    const usd = raw ? parseFloat(raw) : 0;
-    const otherRules = rules.filter(
-      (r) => !(r.limitType === "cost_usd" && r.limitWindow === "weekly" && ruleModelFilters(r).length === 0),
-    );
-    if (usd > 0) {
-      onChange([
-        ...otherRules,
-        {
-          limitType: "cost_usd",
-          limitWindow: "weekly",
-          maxValue: Math.round(usd * 1_000_000),
-          modelFilter: null,
-          reasoningEffort: weeklyCostRule?.reasoningEffort ?? null,
-        },
-      ]);
-    } else {
-      onChange(otherRules);
-    }
-  };
-
-  const addRule = () => {
-    setRuleKeys([...ruleKeys, `limit-rule-${nextRuleKey}`]);
-    setNextRuleKey(nextRuleKey + 1);
-    onChange([...rules, makeDefaultRule()]);
-  };
 
   const updateRule = (index: number, updated: LimitRuleCreate) => {
     const next = [...rules];
@@ -105,10 +83,90 @@ export function LimitRulesEditor({ rules, onChange }: LimitRulesEditorProps) {
     onChange(next);
   };
 
-  const removeRule = (index: number) => {
-    setRuleKeys(ruleKeys.filter((_, i) => i !== index));
-    onChange(rules.filter((_, i) => i !== index));
+  const appendRule = (rule: LimitRuleCreate, bucket: "overall" | "group"): string => {
+    const key = `limit-rule-${nextRuleKey}`;
+    setRuleKeys((current) => [...current, key]);
+    setNextRuleKey((current) => current + 1);
+    if (bucket === "overall") {
+      setOverallKeys((current) => new Set(current).add(key));
+    }
+    onChange([...rules, rule]);
+    return key;
   };
+
+  const removeRule = (index: number) => {
+    const key = ruleKeys[index];
+    setRuleKeys((current) => current.filter((_, ruleIndex) => ruleIndex !== index));
+    if (key !== undefined) {
+      setOverallKeys((current) => {
+        const next = new Set(current);
+        next.delete(key);
+        return next;
+      });
+    }
+    onChange(rules.filter((_, ruleIndex) => ruleIndex !== index));
+  };
+
+  const handleBasicTokenChange = (raw: string) => {
+    const val = raw ? parseInt(raw, 10) : 0;
+    const index = rules.findIndex((rule) => isWeeklyOverall(rule, "total_tokens"));
+    if (val > 0) {
+      const next = {
+        limitType: "total_tokens" as const,
+        limitWindow: "weekly" as const,
+        maxValue: val,
+        modelFilter: null,
+        modelFilters: [] as string[],
+        reasoningEffort: weeklyTokenRule?.reasoningEffort ?? null,
+      };
+      if (index >= 0) updateRule(index, next);
+      else appendRule(next, "overall");
+    } else if (index >= 0) {
+      removeRule(index);
+    }
+  };
+
+  const handleBasicCostChange = (raw: string) => {
+    const usd = raw ? parseFloat(raw) : 0;
+    const index = rules.findIndex((rule) => isWeeklyOverall(rule, "cost_usd"));
+    if (usd > 0) {
+      const next = {
+        limitType: "cost_usd" as const,
+        limitWindow: "weekly" as const,
+        maxValue: Math.round(usd * 1_000_000),
+        modelFilter: null,
+        modelFilters: [] as string[],
+        reasoningEffort: weeklyCostRule?.reasoningEffort ?? null,
+      };
+      if (index >= 0) updateRule(index, next);
+      else appendRule(next, "overall");
+    } else if (index >= 0) {
+      removeRule(index);
+    }
+  };
+
+  const addRule = () => {
+    appendRule(makeDefaultRule(), "group");
+  };
+
+  const handleOverallChange = (slotIndex: number, updated: LimitRuleCreate) => {
+    if (slotIndex < 0) {
+      setDraft(updated);
+      if (!overallRuleShouldPersist(updated)) return;
+      const key = appendRule(updated, "overall");
+      setDraftRuleKey(key);
+      return;
+    }
+    updateRule(slotIndex, updated);
+  };
+
+  const overallSlots = overallEntries.length === 0
+    ? [{ key: "overall-draft", rule: draft, index: -1 }]
+    : overallEntries.map((entry) => ({
+      key: entry.key === draftRuleKey ? "overall-draft" : entry.key,
+      rule: entry.rule,
+      index: entry.index,
+    }));
 
   return (
     <div className="space-y-3">
@@ -119,6 +177,7 @@ export function LimitRulesEditor({ rules, onChange }: LimitRulesEditorProps) {
           <Switch
             checked={advanced}
             onCheckedChange={setAdvanced}
+            aria-label={t("apiKeys.limitRules.advanced")}
           />
         </div>
       </div>
@@ -150,25 +209,45 @@ export function LimitRulesEditor({ rules, onChange }: LimitRulesEditorProps) {
           </div>
         </div>
       ) : (
-        <div className="space-y-2">
-          {rules.map((rule, index) => (
-            <LimitRuleCard
-              key={ruleKeys[index] ?? `limit-rule-${index}`}
-              rule={rule}
-              onChange={(updated) => updateRule(index, updated)}
-              onRemove={() => removeRule(index)}
-            />
-          ))}
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            className="w-full"
-            onClick={addRule}
-          >
-            <Plus className="mr-1 size-3.5" />
-            {t("apiKeys.limitRules.addRule")}
-          </Button>
+        <div className="space-y-3">
+          <div className="space-y-2" role="group" aria-label={t("apiKeys.limitRules.overallLimit")}>
+            {overallSlots.map((slot) => (
+              <LimitRuleCard
+                key={slot.key}
+                overall
+                rule={slot.rule}
+                onChange={(updated) => handleOverallChange(slot.index, updated)}
+                onRemove={() => {
+                  if (slot.index < 0) {
+                    setDraft(EMPTY_OVERALL_LIMIT);
+                    return;
+                  }
+                  if (draftRuleKey === ruleKeys[slot.index]) setDraftRuleKey(null);
+                  removeRule(slot.index);
+                }}
+              />
+            ))}
+          </div>
+          <div className="space-y-2">
+            {groupEntries.map((entry) => (
+              <LimitRuleCard
+                key={entry.key}
+                rule={entry.rule}
+                onChange={(updated) => updateRule(entry.index, updated)}
+                onRemove={() => removeRule(entry.index)}
+              />
+            ))}
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="w-full"
+              onClick={addRule}
+            >
+              <Plus className="mr-1 size-3.5" />
+              {t("apiKeys.limitRules.addRule")}
+            </Button>
+          </div>
           {rules.length > 1 ? (
             <p className="text-xs text-muted-foreground">
               {t("apiKeys.limitRules.andHint")}

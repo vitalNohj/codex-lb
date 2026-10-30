@@ -276,6 +276,114 @@ describe("ApiKeyEditDialog", () => {
     ]);
   });
 
+  it("keeps an overall limit and a group rule together on save", async () => {
+    const user = userEvent.setup();
+    const onSubmit = vi.fn().mockResolvedValue(undefined);
+    const apiKey = createApiKey({
+      limits: [
+        {
+          id: 1,
+          limitType: "cost_usd",
+          limitWindow: "lifetime",
+          maxValue: 500_000_000,
+          currentValue: 0,
+          modelFilter: null,
+          modelFilters: [],
+          resetAt: null,
+        },
+        {
+          id: 2,
+          limitType: "total_tokens",
+          limitWindow: "weekly",
+          maxValue: 1000,
+          currentValue: 0,
+          modelFilter: "gpt-5.4",
+          modelFilters: ["gpt-5.4"],
+          reasoningEffort: "high",
+          resetAt: "2026-01-08T00:00:00Z",
+        },
+      ],
+    });
+
+    renderWithProviders(
+      <ApiKeyEditDialog
+        open
+        busy={false}
+        apiKey={apiKey}
+        onOpenChange={vi.fn()}
+        onSubmit={onSubmit}
+      />,
+    );
+
+    const overall = screen.getByRole("group", { name: "Overall limit (all models)" });
+    expect(within(overall).getByText("Overall limit (all models)")).toBeInTheDocument();
+    expect(within(overall).getByDisplayValue("500")).toBeInTheDocument();
+    expect(within(overall).getByRole("combobox", { name: "Window" })).toHaveTextContent("One-time (never resets)");
+    expect(within(overall).getByRole("combobox", { name: "Reasoning effort" })).toHaveTextContent("Client choice");
+    const groupCard = screen.getByText("Limit rule").closest(".rounded-lg");
+    expect(groupCard).not.toBeNull();
+    expect(within(groupCard as HTMLElement).getByRole("combobox", { name: "Reasoning effort" })).toHaveTextContent("High");
+
+    const costInput = within(overall).getByLabelText("Max value (USD)");
+    await user.clear(costInput);
+    await user.type(costInput, "600");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => {
+      expect(onSubmit).toHaveBeenCalledTimes(1);
+    });
+
+    expect(onSubmit.mock.calls[0][0].limits).toEqual([
+      {
+        limitType: "cost_usd",
+        limitWindow: "lifetime",
+        maxValue: 600_000_000,
+        modelFilter: null,
+        modelFilters: [],
+        reasoningEffort: null,
+      },
+      {
+        limitType: "total_tokens",
+        limitWindow: "weekly",
+        maxValue: 1000,
+        modelFilter: "gpt-5.4",
+        modelFilters: ["gpt-5.4"],
+        reasoningEffort: "high",
+      },
+    ]);
+  });
+
+  it("does not drop the overall limit when advanced mode is toggled before save", async () => {
+    const user = userEvent.setup();
+    const onSubmit = vi.fn().mockResolvedValue(undefined);
+
+    renderWithProviders(
+      <ApiKeyEditDialog
+        open
+        busy={false}
+        apiKey={createApiKey()}
+        onOpenChange={vi.fn()}
+        onSubmit={onSubmit}
+      />,
+    );
+
+    await user.click(screen.getByRole("switch", { name: "Advanced" }));
+    expect(screen.getByRole("group", { name: "Overall limit (all models)" })).toBeInTheDocument();
+    expect(screen.getByDisplayValue("1000000")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("switch", { name: "Advanced" }));
+    const nameInput = screen.getByLabelText("Name");
+    await user.clear(nameInput);
+    await user.type(nameInput, "Renamed key");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => {
+      expect(onSubmit).toHaveBeenCalledTimes(1);
+    });
+    expect(onSubmit.mock.calls[0][0].name).toBe("Renamed key");
+    expect("limits" in onSubmit.mock.calls[0][0]).toBe(false);
+  });
+
   it("keeps the dialog open when submit fails", async () => {
     const user = userEvent.setup();
     const onSubmit = vi.fn().mockRejectedValue(new Error("boom update"));

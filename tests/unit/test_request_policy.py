@@ -1280,6 +1280,26 @@ def test_all_models_limit_rule_beats_the_key_when_no_explicit_rule_matches() -> 
     assert request.reasoning.effort == "medium"
 
 
+def test_overall_budget_without_effort_does_not_change_group_or_key_effort() -> None:
+    api_key = _reasoning_key(
+        enforced="high",
+        limits=[
+            _reasoning_limit(None, []),
+            _reasoning_limit("max", ["gpt-5.3-codex"], rule_id=2),
+        ],
+    )
+
+    grouped = _codex_request("gpt-5.3-codex", "low")
+    apply_api_key_enforcement(grouped, api_key)
+    assert grouped.reasoning is not None
+    assert grouped.reasoning.effort == "max"
+
+    other = _codex_request("gpt-5.4", "low")
+    apply_api_key_enforcement(other, api_key)
+    assert other.reasoning is not None
+    assert other.reasoning.effort == "high"
+
+
 def test_key_effort_stands_when_matching_rules_set_no_effort() -> None:
     request = _codex_request("gpt-5.3-codex")
     api_key = _reasoning_key(

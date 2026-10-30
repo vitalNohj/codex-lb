@@ -2207,6 +2207,69 @@ async def test_multi_model_filter_shares_one_budget() -> None:
 
 
 @pytest.mark.asyncio
+async def test_overall_limit_and_group_rule_are_both_enforced() -> None:
+    repo = _FakeApiKeysRepository()
+    service = ApiKeysService(repo)
+    created = await service.create_key(
+        ApiKeyCreateData(
+            name="overall-and-group",
+            allowed_models=None,
+            expires_at=None,
+            limits=[
+                LimitRuleInput(
+                    limit_type="cost_usd",
+                    limit_window="lifetime",
+                    max_value=500_000_000,
+                ),
+                LimitRuleInput(
+                    limit_type="total_tokens",
+                    limit_window="weekly",
+                    max_value=1_000,
+                    model_filters=["gpt-5.1", "gpt-5.4"],
+                    reasoning_effort="high",
+                ),
+            ],
+        )
+    )
+
+    await service.record_usage(
+        created.id,
+        model="gpt-5.4",
+        input_tokens=1_000_000,
+        output_tokens=1_000_000,
+        service_tier="priority",
+    )
+    limits = await repo.get_limits_by_key(created.id)
+    overall = next(limit for limit in limits if stored_model_identity(limit.model_filter) is None)
+    group = next(limit for limit in limits if stored_model_identity(limit.model_filter) is not None)
+    assert overall.limit_type == LimitType.COST_USD
+    assert overall.limit_window.value == "lifetime"
+    assert group.current_value == 2_000_000
+    assert overall.current_value == 35_000_000
+
+    await service.record_usage(
+        created.id,
+        model="gpt-4o-mini",
+        input_tokens=1_000_000,
+        output_tokens=1_000_000,
+    )
+    assert group.current_value == 2_000_000
+    assert overall.current_value > 35_000_000
+
+    group.current_value = group.max_value
+    with pytest.raises(ApiKeyRateLimitExceededError, match="for models gpt-5.1, gpt-5.4"):
+        await service.enforce_limits_for_request(created.id, request_model="gpt-5.4")
+    allowed = await service.enforce_limits_for_request(created.id, request_model="gpt-4o-mini")
+    assert allowed is not None
+
+    overall.current_value = overall.max_value
+    with pytest.raises(ApiKeyRateLimitExceededError, match="lifetime budget exhausted"):
+        await service.enforce_limits_for_request(created.id, request_model="gpt-4o-mini")
+    with pytest.raises(ApiKeyRateLimitExceededError, match="lifetime budget exhausted"):
+        await service.enforce_limits_for_request(created.id, request_model="gpt-5.4")
+
+
+@pytest.mark.asyncio
 async def test_new_multi_model_limit_backfills_usage_from_either_model() -> None:
     repo = _FakeApiKeysRepository()
     service = ApiKeysService(repo)
