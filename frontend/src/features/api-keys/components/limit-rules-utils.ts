@@ -47,6 +47,17 @@ export function isOverallBudgetRule(rule: LimitRuleCreate): boolean {
   );
 }
 
+/** Overall caps first, then each model rule, keeping the original order inside each group. */
+export function withOverallLimitsFirst<T extends LimitRuleCreate>(limits: readonly T[]): T[] {
+  return limits
+    .map((limit, index) => ({ limit, index, overall: isOverallBudgetRule(limit) }))
+    .sort((left, right) => {
+      if (left.overall !== right.overall) return left.overall ? -1 : 1;
+      return left.index - right.index;
+    })
+    .map(({ limit }) => limit);
+}
+
 export function limitRuleWithModels(rule: LimitRuleCreate, models: readonly string[]): LimitRuleCreate {
   const modelFilters = ruleModelFilters({ modelFilters: models });
   return {
