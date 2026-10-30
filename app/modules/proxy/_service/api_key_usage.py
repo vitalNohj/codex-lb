@@ -173,6 +173,7 @@ class _ApiKeyUsageMixin:
                         request_service_tier=request_service_tier,
                         request_usage_budget=request_usage_budget,
                         model_is_priced=model_is_priced,
+                        admission_key=api_key,
                     )
                 except ApiKeyRateLimitExceededError as exc:
                     raise proxy_error_for_exceeded_limit(exc) from exc
