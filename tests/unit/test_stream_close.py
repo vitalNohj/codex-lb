@@ -7,7 +7,12 @@ import pytest
 from starlette.types import Message, Scope
 
 from app.core.utils.sse import inject_sse_keepalives
-from app.core.utils.stream_close import ClosingStreamingResponse, SettlingStream
+from app.core.utils.stream_close import (
+    ClosingStreamingResponse,
+    DeferredBodySettlement,
+    SettlingStream,
+    apply_stream_settlement,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -163,6 +168,75 @@ async def test_abandon_finishes_under_repeated_cancellation_and_the_request_stay
     with pytest.raises(asyncio.CancelledError):
         await task
     assert abandon_finished.is_set()
+
+
+def _scope(spec_version: str) -> Scope:
+    return {"type": "http", "asgi": {"spec_version": spec_version}}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("spec_version", ["2.3", "2.4"])
+async def test_deferred_settlement_runs_after_the_terminating_frame(spec_version: str) -> None:
+    deferred = DeferredBodySettlement()
+    order: list[str] = []
+
+    async def body() -> AsyncIterator[bytes]:
+        try:
+            yield b"hi"
+        finally:
+
+            async def work() -> None:
+                order.append("settled")
+
+            await apply_stream_settlement(deferred, work)
+
+    async def abandon() -> None:
+        return None
+
+    stream = SettlingStream(body(), abandon=abandon)
+    response = ClosingStreamingResponse(stream, settling=stream, after_body_closed=deferred.run)
+
+    async def send(message: Message) -> None:
+        if message.get("type") == "http.response.body" and not message.get("more_body", True):
+            order.append("closed")
+
+    await response(_scope(spec_version), _never_disconnects, send)
+
+    assert order == ["closed", "settled"]
+
+
+@pytest.mark.asyncio
+async def test_deferred_settlement_finishes_when_the_request_is_cancelled() -> None:
+    deferred = DeferredBodySettlement()
+    started = asyncio.Event()
+    release = asyncio.Event()
+    finished = asyncio.Event()
+
+    async def body() -> AsyncIterator[bytes]:
+        try:
+            yield b"hi"
+        finally:
+
+            async def work() -> None:
+                started.set()
+                await release.wait()
+                finished.set()
+
+            await apply_stream_settlement(deferred, work)
+
+    async def abandon() -> None:
+        return None
+
+    stream = SettlingStream(body(), abandon=abandon)
+    response = ClosingStreamingResponse(stream, settling=stream, after_body_closed=deferred.run)
+    task = asyncio.create_task(response(_SCOPE, _never_disconnects, _send_ok))
+    await started.wait()
+    task.cancel()
+    release.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert finished.is_set()
 
 
 def test_a_stream_that_is_not_a_generator_is_refused() -> None:
