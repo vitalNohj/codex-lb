@@ -35,16 +35,20 @@ describe("LimitRulesEditor", () => {
     expect(screen.getByText("Add limit rule")).toBeInTheDocument();
   });
 
-  it("starts in advanced mode when rules have non-weekly windows", () => {
+  it("loads an all-models limit into the top boxes for its window", () => {
     const rules: LimitRuleCreate[] = [
       { limitType: "total_tokens", limitWindow: "daily", maxValue: 100, modelFilter: null },
     ];
     renderWithProviders(<LimitRulesEditor rules={rules} onChange={vi.fn()} />);
 
-    expect(screen.getByText("Add limit rule")).toBeInTheDocument();
+    expect(screen.getByText("Daily token limit")).toBeInTheDocument();
+    expect(screen.getByDisplayValue("100")).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "Window" })).toHaveTextContent("Daily");
+    expect(screen.queryByText("Add limit rule")).not.toBeInTheDocument();
   });
 
-  it("starts in advanced mode when a rule forces a reasoning effort", () => {
+  it("keeps a reasoning effort on an overall limit without an effort control", () => {
+    const onChange = vi.fn();
     const rules: LimitRuleCreate[] = [
       {
         limitType: "total_tokens",
@@ -54,10 +58,23 @@ describe("LimitRulesEditor", () => {
         reasoningEffort: "high",
       },
     ];
-    renderWithProviders(<LimitRulesEditor rules={rules} onChange={vi.fn()} />);
+    renderWithProviders(<LimitRulesEditor rules={rules} onChange={onChange} />);
 
-    expect(screen.getByText("Add limit rule")).toBeInTheDocument();
-    expect(screen.getByRole("combobox", { name: "Reasoning effort" })).toHaveTextContent("High");
+    expect(screen.queryByText("Add limit rule")).not.toBeInTheDocument();
+    expect(screen.queryByRole("combobox", { name: "Reasoning effort" })).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Weekly token limit")).toHaveDisplayValue("100");
+
+    fireEvent.change(screen.getByLabelText("Weekly token limit"), { target: { value: "250" } });
+
+    expect(onChange).toHaveBeenCalledWith([
+      expect.objectContaining({
+        limitType: "total_tokens",
+        limitWindow: "weekly",
+        maxValue: 250,
+        modelFilter: null,
+        reasoningEffort: "high",
+      }),
+    ]);
   });
 
   it("starts in advanced mode when rules have model filters", () => {
@@ -156,16 +173,18 @@ describe("LimitRulesEditor", () => {
     expect(screen.getByDisplayValue("3.5")).toBeInTheDocument();
   });
 
-  it("can switch to advanced mode", async () => {
+  it("can switch to advanced mode without hiding the overall limits", async () => {
     const user = userEvent.setup();
     renderWithProviders(<LimitRulesEditor rules={[]} onChange={vi.fn()} />);
 
     expect(screen.getByText("Weekly token limit")).toBeInTheDocument();
+    expect(screen.getByText("Weekly cost limit ($)")).toBeInTheDocument();
 
-    const advancedSwitch = screen.getByRole("switch");
-    await user.click(advancedSwitch);
+    await user.click(screen.getByRole("switch"));
 
     expect(screen.getByText("Add limit rule")).toBeInTheDocument();
+    expect(screen.getByText("Weekly token limit")).toBeInTheDocument();
+    expect(screen.getByText("Weekly cost limit ($)")).toBeInTheDocument();
   });
 
   it("keeps advanced rule inputs focused while max value edits rerender", async () => {
@@ -187,7 +206,7 @@ describe("LimitRulesEditor", () => {
     expect(maxValueInput).toHaveValue(1234);
   });
 
-  it("keeps weekly token and cost caps in the overall section beside a group rule", () => {
+  it("keeps weekly token and cost caps beside a group rule while advanced is on", () => {
     const rules: LimitRuleCreate[] = [
       { limitType: "total_tokens", limitWindow: "weekly", maxValue: 1000, modelFilter: null },
       { limitType: "cost_usd", limitWindow: "weekly", maxValue: 500_000_000, modelFilter: null },
@@ -201,18 +220,19 @@ describe("LimitRulesEditor", () => {
     ];
     renderWithProviders(<LimitRulesEditor rules={rules} onChange={vi.fn()} />);
 
-    const overall = screen.getByRole("group", { name: "Overall limit (all models)" });
-    expect(within(overall).getByDisplayValue("1000")).toBeInTheDocument();
-    expect(within(overall).getByDisplayValue("500")).toBeInTheDocument();
-    expect(within(overall).queryByText("Model Filter")).not.toBeInTheDocument();
+    expect(screen.queryByText("Overall limit (all models)")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Weekly token limit")).toHaveDisplayValue("1000");
+    expect(screen.getByLabelText("Weekly cost limit ($)")).toHaveDisplayValue("500");
 
     const groupCard = screen.getByText("Limit rule").closest(".rounded-lg");
     expect(groupCard).not.toBeNull();
     expect(within(groupCard as HTMLElement).getByDisplayValue("50")).toBeInTheDocument();
     expect(within(groupCard as HTMLElement).getByText("Model Filter")).toBeInTheDocument();
+    expect(screen.getAllByRole("combobox", { name: "Reasoning effort" })).toHaveLength(1);
+    expect(within(groupCard as HTMLElement).getByRole("combobox", { name: "Reasoning effort" })).toBeInTheDocument();
   });
 
-  it("keeps the overall limit visible when advanced mode is toggled", async () => {
+  it("keeps the overall limit editable when advanced mode is toggled", async () => {
     const user = userEvent.setup();
     const onChange = vi.fn();
     const rules: LimitRuleCreate[] = [
@@ -220,20 +240,92 @@ describe("LimitRulesEditor", () => {
     ];
     renderWithProviders(<LimitRulesEditor rules={rules} onChange={onChange} />);
 
-    expect(screen.getByDisplayValue("500")).toBeInTheDocument();
-
-    await user.click(screen.getByRole("switch", { name: "Advanced" }));
-
-    expect(onChange).not.toHaveBeenCalled();
-    const overall = screen.getByRole("group", { name: "Overall limit (all models)" });
-    expect(within(overall).getByDisplayValue("500")).toBeInTheDocument();
-    expect(within(overall).queryByText("Model Filter")).not.toBeInTheDocument();
-
-    await user.click(screen.getByRole("switch", { name: "Advanced" }));
-
-    expect(onChange).not.toHaveBeenCalled();
     expect(screen.getByLabelText("Weekly cost limit ($)")).toHaveDisplayValue("500");
-    expect(screen.queryByRole("group", { name: "Overall limit (all models)" })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("switch", { name: "Advanced" }));
+
+    expect(onChange).not.toHaveBeenCalled();
+    expect(screen.getByText("Add limit rule")).toBeInTheDocument();
+    expect(screen.getByLabelText("Weekly cost limit ($)")).toHaveDisplayValue("500");
+    expect(screen.queryByText("Overall limit (all models)")).not.toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText("Weekly cost limit ($)"), { target: { value: "600" } });
+    expect(onChange).toHaveBeenCalledWith([
+      expect.objectContaining({
+        limitType: "cost_usd",
+        limitWindow: "weekly",
+        maxValue: 600_000_000,
+        modelFilter: null,
+      }),
+    ]);
+
+    await user.click(screen.getByRole("switch", { name: "Advanced" }));
+
+    expect(screen.queryByText("Add limit rule")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Weekly cost limit ($)")).toHaveDisplayValue("500");
+  });
+
+  it("round-trips the overall window for token and cost limits", async () => {
+    const user = userEvent.setup();
+    const seen: LimitRuleCreate[][] = [];
+
+    function StatefulLimitRulesEditor() {
+      const [rules, setRules] = useState<LimitRuleCreate[]>([
+        { limitType: "total_tokens", limitWindow: "weekly", maxValue: 1000, modelFilter: null },
+        { limitType: "cost_usd", limitWindow: "weekly", maxValue: 5_000_000, modelFilter: null },
+      ]);
+      return (
+        <LimitRulesEditor
+          rules={rules}
+          onChange={(next) => {
+            seen.push(next);
+            setRules(next);
+          }}
+        />
+      );
+    }
+
+    renderWithProviders(<StatefulLimitRulesEditor />);
+
+    expect(screen.getByLabelText("Weekly token limit")).toHaveDisplayValue("1000");
+    expect(screen.getByLabelText("Weekly cost limit ($)")).toHaveDisplayValue("5");
+
+    await user.click(screen.getByRole("combobox", { name: "Window" }));
+    await user.click(await screen.findByRole("option", { name: "Monthly" }));
+
+    expect(screen.getByLabelText("Monthly token limit")).toHaveDisplayValue("1000");
+    expect(screen.getByLabelText("Monthly cost limit ($)")).toHaveDisplayValue("5");
+    expect(seen.at(-1)).toEqual([
+      expect.objectContaining({ limitType: "total_tokens", limitWindow: "monthly", maxValue: 1000 }),
+      expect.objectContaining({ limitType: "cost_usd", limitWindow: "monthly", maxValue: 5_000_000 }),
+    ]);
+
+    await user.click(screen.getByRole("combobox", { name: "Window" }));
+    await user.click(await screen.findByRole("option", { name: "Weekly" }));
+
+    expect(screen.getByLabelText("Weekly token limit")).toHaveDisplayValue("1000");
+    expect(screen.getByLabelText("Weekly cost limit ($)")).toHaveDisplayValue("5");
+    expect(seen.at(-1)).toEqual([
+      expect.objectContaining({ limitType: "total_tokens", limitWindow: "weekly", maxValue: 1000 }),
+      expect.objectContaining({ limitType: "cost_usd", limitWindow: "weekly", maxValue: 5_000_000 }),
+    ]);
+  });
+
+  it("defaults a new rule to the overall window", async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    const rules: LimitRuleCreate[] = [
+      { limitType: "cost_usd", limitWindow: "monthly", maxValue: 5_000_000, modelFilter: null },
+    ];
+    renderWithProviders(<LimitRulesEditor rules={rules} onChange={onChange} />);
+
+    await user.click(screen.getByRole("switch", { name: "Advanced" }));
+    await user.click(screen.getByText("Add limit rule"));
+
+    expect(onChange).toHaveBeenCalledWith([
+      rules[0],
+      { limitType: "total_tokens", limitWindow: "monthly", maxValue: 0, modelFilter: null },
+    ]);
   });
 
   it("saves an overall limit together with a group rule", () => {
@@ -253,22 +345,21 @@ describe("LimitRulesEditor", () => {
 
     renderWithProviders(<StatefulLimitRulesEditor />);
 
-    const overall = screen.getByRole("group", { name: "Overall limit (all models)" });
-    expect(within(overall).getByText("Overall limit (all models)")).toBeInTheDocument();
-    expect(within(overall).getByRole("combobox", { name: "Reasoning effort" })).toHaveTextContent("Client choice");
+    expect(screen.queryByText("Overall limit (all models)")).not.toBeInTheDocument();
+    expect(screen.getAllByRole("combobox", { name: "Reasoning effort" })).toHaveLength(1);
     const groupCard = screen.getByText("Limit rule").closest(".rounded-lg");
     expect(groupCard).not.toBeNull();
     expect(within(groupCard as HTMLElement).getByRole("combobox", { name: "Reasoning effort" })).toHaveTextContent("High");
 
-    fireEvent.change(within(overall).getByLabelText("Max value (USD)"), { target: { value: "500" } });
+    fireEvent.change(screen.getByLabelText("Weekly cost limit ($)"), { target: { value: "500" } });
 
-    expect(within(overall).getByDisplayValue("500")).toBeInTheDocument();
+    expect(screen.getByLabelText("Weekly cost limit ($)")).toHaveDisplayValue("500");
     expect(screen.getByDisplayValue("1000")).toBeInTheDocument();
     expect(within(groupCard as HTMLElement).getByRole("combobox", { name: "Reasoning effort" })).toHaveTextContent("High");
     expect(screen.getByText(/All rules are applied together/)).toBeInTheDocument();
   });
 
-  it("clears the overall placeholder after its saved cap is removed", async () => {
+  it("clears an overall cap without restoring it when the window changes", async () => {
     const user = userEvent.setup();
     const seen: LimitRuleCreate[][] = [];
 
@@ -295,23 +386,23 @@ describe("LimitRulesEditor", () => {
 
     renderWithProviders(<StatefulLimitRulesEditor />);
 
-    const overall = () => screen.getByRole("group", { name: "Overall limit (all models)" });
-    fireEvent.change(within(overall()).getByLabelText("Max value (USD)"), { target: { value: "500" } });
-    expect(within(overall()).getByDisplayValue("500")).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Weekly cost limit ($)"), { target: { value: "500" } });
+    expect(screen.getByLabelText("Weekly cost limit ($)")).toHaveDisplayValue("500");
 
-    await user.click(within(overall()).getByRole("button", { name: "Remove limit" }));
+    fireEvent.change(screen.getByLabelText("Weekly cost limit ($)"), { target: { value: "" } });
 
-    expect(within(overall()).getByLabelText("Max value (USD)")).toHaveValue(null);
+    expect(screen.getByLabelText("Weekly cost limit ($)")).toHaveValue(null);
     expect(seen.at(-1)?.some((rule) => rule.limitType === "cost_usd" && (rule.maxValue ?? 0) > 0)).toBe(false);
 
-    await user.click(within(overall()).getByRole("combobox", { name: "Window" }));
+    const [overallWindow] = screen.getAllByRole("combobox", { name: "Window" });
+    await user.click(overallWindow);
     await user.click(await screen.findByRole("option", { name: "Daily" }));
 
-    expect(within(overall()).getByLabelText("Max value (USD)")).toHaveValue(null);
+    expect(screen.getByLabelText("Daily cost limit ($)")).toHaveValue(null);
     expect(seen.at(-1)?.some((rule) => rule.limitType === "cost_usd" && (rule.maxValue ?? 0) > 0)).toBe(false);
   });
 
-  it("does not restore a removed overall cap when it is cleared from basic mode", async () => {
+  it("does not restore a removed overall cap when advanced mode is toggled", async () => {
     const user = userEvent.setup();
 
     function StatefulLimitRulesEditor() {
@@ -329,13 +420,13 @@ describe("LimitRulesEditor", () => {
 
     renderWithProviders(<StatefulLimitRulesEditor />);
 
-    const overall = () => screen.getByRole("group", { name: "Overall limit (all models)" });
-    fireEvent.change(within(overall()).getByLabelText("Max value (USD)"), { target: { value: "500" } });
-
-    await user.click(screen.getByRole("switch", { name: "Advanced" }));
+    fireEvent.change(screen.getByLabelText("Weekly cost limit ($)"), { target: { value: "500" } });
     fireEvent.change(screen.getByLabelText("Weekly cost limit ($)"), { target: { value: "" } });
+
+    await user.click(screen.getByRole("switch", { name: "Advanced" }));
     await user.click(screen.getByRole("switch", { name: "Advanced" }));
 
-    expect(within(overall()).getByLabelText("Max value (USD)")).toHaveValue(null);
+    expect(screen.getByLabelText("Weekly cost limit ($)")).toHaveValue(null);
+    expect(screen.getByDisplayValue("1000")).toBeInTheDocument();
   });
 });
