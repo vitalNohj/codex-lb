@@ -151,10 +151,15 @@ export function LimitRulesEditor({ rules, onChange }: LimitRulesEditorProps) {
 
   const handleOverallChange = (slotIndex: number, updated: LimitRuleCreate) => {
     if (slotIndex < 0) {
-      setDraft(updated);
-      if (!overallRuleShouldPersist(updated)) return;
+      if (!overallRuleShouldPersist(updated)) {
+        setDraft(updated);
+        return;
+      }
       const key = appendRule(updated, "overall");
       setDraftRuleKey(key);
+      // The saved rule is the source of truth. Leaving the typed amount in
+      // draft makes a later delete show a cap that save would omit.
+      setDraft(EMPTY_OVERALL_LIMIT);
       return;
     }
     updateRule(slotIndex, updated);
@@ -222,6 +227,7 @@ export function LimitRulesEditor({ rules, onChange }: LimitRulesEditorProps) {
                     setDraft(EMPTY_OVERALL_LIMIT);
                     return;
                   }
+                  setDraft(EMPTY_OVERALL_LIMIT);
                   if (draftRuleKey === ruleKeys[slot.index]) setDraftRuleKey(null);
                   removeRule(slot.index);
                 }}
