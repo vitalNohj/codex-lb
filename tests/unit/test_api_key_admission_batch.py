@@ -13,6 +13,7 @@ from sqlalchemy import event, select
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 
 import app.db.session as session_module
+import app.modules.api_keys.service as api_keys_service_module
 from app.db.models import ApiKeyLimit, ApiKeyUsageReservation, Base
 from app.modules.api_keys.repository import ApiKeysRepository
 from app.modules.api_keys.service import (
@@ -29,12 +30,9 @@ from app.modules.api_keys.service import (
 pytestmark = pytest.mark.unit
 
 
-class _Unlocked:
-    async def acquire(self) -> None:
-        return None
-
-    def release(self) -> None:
-        return None
+@asynccontextmanager
+async def _no_writer_section() -> AsyncIterator[None]:
+    yield
 
 
 @asynccontextmanager
@@ -195,7 +193,9 @@ async def test_sequential_requests_clip_to_the_remaining_budget(tmp_path: Path) 
 @pytest.mark.asyncio
 async def test_overlapped_reserves_do_not_overspend_the_limit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Both requests price an 80 delta off current=0. The counter must stay <= max."""
-    monkeypatch.setattr(session_module, "_file_sqlite_writer_lock", lambda: _Unlocked())
+    # Let both admissions reach the reserve statement together; the counter
+    # guard in SQL, not the process lock, must stop the overspend.
+    monkeypatch.setattr(api_keys_service_module, "sqlite_writer_section", _no_writer_section)
     async with _file_engine(tmp_path) as factory:
         created = await _create_limited_key(
             factory,
