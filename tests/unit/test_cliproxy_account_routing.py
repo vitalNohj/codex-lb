@@ -58,6 +58,7 @@ def _clear_cliproxy_route_memory() -> None:
     routing._LAST_SELECTED.clear()
     routing._PREFIX_OVERLAY.clear()
     routing._LAST_GOOD_SNAPSHOT = None
+    routing._LAST_GOOD_FORGOTTEN = False
     routing._LAST_GOOD_API_KEYS = ()
     routing._API_KEY_CACHE = None
     routing._MANAGEMENT_OUTAGE = None
@@ -727,6 +728,43 @@ async def test_management_403_keeps_routing_the_remembered_claude_credential(
     )
 
 
+async def test_healthy_empty_listing_forgets_the_removed_credential(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    account = _claude_account("acct")
+    settings = _settings()
+    _install_settings(monkeypatch, settings)
+    snapshots = iter(
+        [
+            _claude_snapshot(account),
+            _claude_snapshot(),
+            _claude_snapshot(status="unauthorized", message="IP banned"),
+        ]
+    )
+    last = _claude_snapshot(status="unauthorized", message="IP banned")
+
+    def _read(_raw: object) -> SidecarQuotaSnapshot:
+        nonlocal last
+        last = next(snapshots, last)
+        return last
+
+    monkeypatch.setattr(routing._SNAPSHOTS, "read", _read)
+    client = _ApiKeyClient()
+    body: dict[str, JsonValue] = {"model": "claude-opus-5-5"}
+
+    remembered = await apply_cliproxy_account_route(body, client=client)
+    body["model"] = "claude-opus-5-5"
+    with pytest.raises(routing.CliproxyClaudeRouteRefused):
+        await apply_cliproxy_account_route(body, client=client)
+    body["model"] = "claude-opus-5-5"
+    with pytest.raises(routing.CliproxyClaudeRouteRefused):
+        await apply_cliproxy_account_route(body, client=client)
+
+    assert remembered is not None
+    assert remembered.wire_model == "opus/claude-opus-5-5"
+    assert body["model"] == "claude-opus-5-5"
+
+
 async def test_cold_management_outage_lets_cliproxy_choose_the_claude_credential(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -756,9 +794,12 @@ async def test_management_timeout_keeps_routing_and_warns_once(
     state = {"failed": False}
 
     def _read(_raw: object) -> SidecarQuotaSnapshot:
-        if state["failed"]:
-            return _claude_snapshot(account, status="unreachable", message="timed out")
-        return _claude_snapshot(account)
+        result = (
+            _claude_snapshot(account, status="unreachable", message="timed out")
+            if state["failed"]
+            else _claude_snapshot(account)
+        )
+        return result
 
     class _TimingOut(_ApiKeyClient):
         def __init__(self) -> None:

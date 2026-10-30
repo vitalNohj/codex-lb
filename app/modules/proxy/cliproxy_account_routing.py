@@ -181,8 +181,11 @@ _VENDOR_SESSION_HEADER = re.compile(r"^x-[a-z0-9]+(?:-[a-z0-9]+)*-session-id$")
 _SNAPSHOTS = StoredSnapshotReader()
 # The last snapshot that named accounts. A management outage replaces the stored
 # snapshot with an empty unauthorized/unreachable/error payload; routing keeps
-# using this one until a healthy poll names accounts again.
+# using this one until a healthy poll names accounts again. A healthy empty poll
+# clears it and sets the forgotten flag, so a later failure cannot resurrect a
+# credential the operator removed.
 _LAST_GOOD_SNAPSHOT: SidecarQuotaSnapshot | None = None
+_LAST_GOOD_FORGOTTEN = False
 _API_KEY_CACHE: tuple[float, tuple[ApiKeyRouteRow, ...]] | None = None
 # Rows from the last successful API-key listing. Kept without a TTL so a
 # management outage does not drop API-key credentials after the short cache expires.
@@ -741,6 +744,7 @@ async def _load_candidates(
         except Exception as exc:
             rows = _LAST_GOOD_API_KEYS
             management_failures.append(exc)
+            _note_management_outage(snapshot, management_failures)
             logger.info("cliproxy api-key list unavailable; routing the last known api keys", exc_info=True)
         candidates.extend(candidates_from_api_keys(rows))
         candidates = await _attach_discovered_models(candidates, client)
@@ -757,17 +761,23 @@ async def _load_candidates(
 def _routing_snapshot(settings: DashboardSettings) -> SidecarQuotaSnapshot | None:
     """The snapshot routing should score, keeping accounts across a failed poll.
 
-    A healthy poll replaces the remembered list. A failed poll that still carries
-    the previous accounts (the poller keeps them) is used as-is. A failed poll
-    that stored no accounts falls back to the last snapshot this process saw
-    with accounts, so a worker that has not yet observed the retaining poller
-    does not refuse traffic.
+    A healthy poll replaces the remembered list, including a healthy empty list:
+    credentials that were removed must not come back on the next failed poll.
+    A failed poll that still carries the previous accounts (the poller keeps them)
+    is used as-is. A failed poll that stored no accounts falls back to the last
+    snapshot this process saw with accounts, so a worker that has not yet observed
+    the retaining poller does not refuse traffic.
     """
 
-    global _LAST_GOOD_SNAPSHOT
+    global _LAST_GOOD_SNAPSHOT, _LAST_GOOD_FORGOTTEN
     snapshot = _SNAPSHOTS.read(settings.claude_sidecar_quota_state_json)
+    if _snapshot_read_failed(snapshot):
+        _note_management_outage(snapshot, ())
+    if snapshot is not None and snapshot.status == "healthy":
+        _LAST_GOOD_FORGOTTEN = not snapshot.accounts
+        _LAST_GOOD_SNAPSHOT = snapshot if snapshot.accounts else None
+        return snapshot
     if snapshot is not None and snapshot.accounts:
-        _LAST_GOOD_SNAPSHOT = snapshot
         return snapshot
     if _snapshot_read_failed(snapshot) and _LAST_GOOD_SNAPSHOT is not None:
         return _LAST_GOOD_SNAPSHOT
@@ -1285,7 +1295,7 @@ def _warn_management_outage(
     status = _management_status(snapshot, failures)
     now = time.monotonic()
     current = _MANAGEMENT_OUTAGE
-    if current is not None and current[0] == status and now - current[1] < _MANAGEMENT_OUTAGE_WARN_SECONDS:
+    if current is not None and current[1] > 0 and now - current[1] < _MANAGEMENT_OUTAGE_WARN_SECONDS:
         return
     _MANAGEMENT_OUTAGE = (status, now)
     logger.warning(
@@ -1324,6 +1334,18 @@ def _failure_status_code(failures: Sequence[BaseException]) -> int | None:
     return None
 
 
+def _note_management_outage(snapshot: SidecarQuotaSnapshot | None, failures: Sequence[BaseException]) -> None:
+    """Remember that management is down before any candidate decision.
+
+    The warning is still once per episode. Recording the episode here lets the
+    same request refuse a captain-set restriction instead of fail-opening first.
+    """
+
+    global _MANAGEMENT_OUTAGE
+    if _MANAGEMENT_OUTAGE is None:
+        _MANAGEMENT_OUTAGE = (_management_status(snapshot, failures), 0.0)
+
+
 def _note_management_recovered() -> None:
     global _MANAGEMENT_OUTAGE
     _MANAGEMENT_OUTAGE = None
@@ -1341,20 +1363,25 @@ def _management_outage_fail_open(settings: DashboardSettings, model: str) -> boo
 
     A captain-set per-account restriction still wins. When the last known
     credentials exclude this model, or every one of them is cooling down, the
-    refusal stands so the outage cannot route around that restriction.
+    refusal stands so the outage cannot route around that restriction. A healthy
+    empty listing also forgets the credentials, so a later failure cannot
+    resurrect one the operator removed.
     """
 
-    if _MANAGEMENT_OUTAGE is None:
-        return False
+    if _MANAGEMENT_OUTAGE is None or _LAST_GOOD_FORGOTTEN:
+        return _MANAGEMENT_OUTAGE is not None and not _LAST_GOOD_FORGOTTEN
     snapshot = _routing_snapshot(settings)
-    if snapshot is None or not snapshot.accounts:
-        return True
     now = datetime.now(timezone.utc)
     known = candidates_from_snapshot(snapshot, now=now)
     if not known:
         return True
-    usable = _without_cooling(known, model)
-    return not usable and not _cooling_ids()
+    known_prefixes = _known_credential_prefixes(known)
+    return not any(
+        item.excluded_models
+        or item.blocked_models
+        or not candidate_serves_model(item, model, known_prefixes=known_prefixes)
+        for item in known
+    )
 
 
 def _warn_no_candidate(candidates: Sequence[CliproxyCandidate], model: str) -> None:
