@@ -23,7 +23,13 @@ from starlette.types import Receive, Scope, Send
 
 from app.core.utils.cancellation import complete_despite_cancellation
 
-__all__ = ["ClosingStreamingResponse", "SettlingStream", "aclose_stream"]
+__all__ = [
+    "ClosingStreamingResponse",
+    "DeferredBodySettlement",
+    "SettlingStream",
+    "aclose_stream",
+    "apply_stream_settlement",
+]
 
 
 class SettlingStream[T](AsyncIterator[T]):
@@ -110,6 +116,52 @@ async def aclose_stream(stream: AsyncIterable[object]) -> None:
     await complete_despite_cancellation(aclose())
 
 
+class DeferredBodySettlement:
+    """Durable stream accounting to run after the client has the last byte.
+
+    Awaiting settlement in the body generator's ``finally`` holds the
+    generator open, so Starlette cannot send the terminating
+    ``more_body=False`` frame until the writes finish. The generator stashes
+    the work here and returns. ``ClosingStreamingResponse`` runs it after that
+    frame, still inside the request, so shutdown waits for it and a
+    cancellation during the write is deferred until the write finishes.
+    """
+
+    __slots__ = ("_work",)
+
+    def __init__(self) -> None:
+        self._work: Callable[[], Awaitable[None]] | None = None
+
+    def defer(self, work: Callable[[], Awaitable[None]]) -> None:
+        if self._work is not None:
+            raise RuntimeError("stream settlement was already deferred")
+        self._work = work
+
+    async def run(self) -> None:
+        work = self._work
+        self._work = None
+        if work is not None:
+            await work()
+
+
+async def apply_stream_settlement(
+    deferred: DeferredBodySettlement | None,
+    work: Callable[[], Awaitable[None]],
+) -> None:
+    """Run ``work`` after the client stream closes, or now when nothing will.
+
+    ``deferred`` is the response's after-close hook. Stashing returns at once
+    so the generator can end and the terminating frame can be sent. With no
+    hook (a caller driving the generator itself), the write is awaited here,
+    shielded, so closing the generator cannot drop it.
+    """
+
+    if deferred is not None:
+        deferred.defer(work)
+        return
+    await complete_despite_cancellation(work())
+
+
 class ClosingStreamingResponse(StreamingResponse):
     """A ``StreamingResponse`` that finishes its body's cleanup before returning.
 
@@ -129,6 +181,10 @@ class ClosingStreamingResponse(StreamingResponse):
 
     ``settling`` is required so every streamed response states which stream
     settles it. Pass ``None`` only for a body that owns nothing.
+
+    ``after_body_closed`` runs after the terminating body frame has been sent
+    and after the body iterator has been closed. Sidecar streams use it for
+    usage settlement so the client is not held open for those writes.
     """
 
     def __init__(
@@ -140,15 +196,27 @@ class ClosingStreamingResponse(StreamingResponse):
         background: BackgroundTask | None = None,
         *,
         settling: SettlingStream[object] | None,
+        after_body_closed: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
         super().__init__(content, status_code, headers, media_type, background)
         self._settling = settling
+        self._after_body_closed = after_body_closed
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         try:
             await super().__call__(scope, receive, send)
         finally:
-            await self._finish_body()
+            try:
+                await self._finish_body()
+            finally:
+                await self._run_after_body_closed()
+
+    async def _run_after_body_closed(self) -> None:
+        if self._after_body_closed is None:
+            return
+        # The body frame is already on the wire. A disconnect or shutdown
+        # cancel that arrives while the writes run must not drop them.
+        await complete_despite_cancellation(self._after_body_closed())
 
     async def _finish_body(self) -> None:
         try:

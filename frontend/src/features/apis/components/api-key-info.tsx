@@ -1,6 +1,6 @@
 import { useTranslation } from "react-i18next";
 
-import { formatRuleModels } from "@/features/api-keys/components/limit-rules-utils";
+import { formatRuleModels, withOverallLimitsFirst } from "@/features/api-keys/components/limit-rules-utils";
 import type { ApiKey, LimitType } from "@/features/api-keys/schemas";
 import { limitWindowLabel } from "@/features/api-keys/limit-windows";
 import { useDateDisplayFormatStore, type DateDisplayFormat } from "@/hooks/use-date-format";
@@ -160,7 +160,7 @@ export function ApiKeyInfo({
 							)}
 						</dd>
 					</div>
-					{apiKey.limits.map((limit) => {
+					{withOverallLimitsFirst(apiKey.limits).map((limit) => {
 						const modelFilter = formatRuleModels(limit, t("common.options.allLower"));
 						const effortLabel = limit.reasoningEffort
 							? t(`common.reasoning.${limit.reasoningEffort}`, { defaultValue: limit.reasoningEffort })

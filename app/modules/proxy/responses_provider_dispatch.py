@@ -190,12 +190,18 @@ def translate_chat_response_to_responses(
 
     if isinstance(response, StreamingResponse):
         settling = response._settling if isinstance(response, ClosingStreamingResponse) else None
+        # The replacement body is a new generator. Copying only the settling
+        # stream drops the chat dispatcher's after-close usage write, so a
+        # bridged stream that ends without [DONE] would hold the reservation
+        # and never log the request.
+        after_body_closed = response._after_body_closed if isinstance(response, ClosingStreamingResponse) else None
         return ClosingStreamingResponse(
             _translate_chat_sse(response.body_iterator, model=model, translation=translation),
             status_code=response.status_code,
             headers=_passthrough_headers(response),
             media_type="text/event-stream",
             settling=settling,
+            after_body_closed=after_body_closed,
         )
     parsed = _json_body(response)
     if response.status_code == 200 and _is_chat_completion(parsed):

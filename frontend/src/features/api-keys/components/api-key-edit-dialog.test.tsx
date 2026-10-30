@@ -315,16 +315,16 @@ describe("ApiKeyEditDialog", () => {
       />,
     );
 
-    const overall = screen.getByRole("group", { name: "Overall limit (all models)" });
-    expect(within(overall).getByText("Overall limit (all models)")).toBeInTheDocument();
-    expect(within(overall).getByDisplayValue("500")).toBeInTheDocument();
-    expect(within(overall).getByRole("combobox", { name: "Window" })).toHaveTextContent("One-time (never resets)");
-    expect(within(overall).getByRole("combobox", { name: "Reasoning effort" })).toHaveTextContent("Client choice");
+    expect(screen.queryByText("Overall limit (all models)")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("One-time (never resets) cost limit ($)")).toHaveDisplayValue("500");
+    const [overallWindow] = screen.getAllByRole("combobox", { name: "Window" });
+    expect(overallWindow).toHaveTextContent("One-time (never resets)");
+    expect(screen.getAllByRole("combobox", { name: "Reasoning effort" })).toHaveLength(1);
     const groupCard = screen.getByText("Limit rule").closest(".rounded-lg");
     expect(groupCard).not.toBeNull();
     expect(within(groupCard as HTMLElement).getByRole("combobox", { name: "Reasoning effort" })).toHaveTextContent("High");
 
-    const costInput = within(overall).getByLabelText("Max value (USD)");
+    const costInput = screen.getByLabelText("One-time (never resets) cost limit ($)");
     await user.clear(costInput);
     await user.type(costInput, "600");
     await user.click(screen.getByRole("button", { name: "Save" }));
@@ -368,8 +368,9 @@ describe("ApiKeyEditDialog", () => {
     );
 
     await user.click(screen.getByRole("switch", { name: "Advanced" }));
-    expect(screen.getByRole("group", { name: "Overall limit (all models)" })).toBeInTheDocument();
-    expect(screen.getByDisplayValue("1000000")).toBeInTheDocument();
+    expect(screen.queryByText("Overall limit (all models)")).not.toBeInTheDocument();
+    expect(screen.getByText("Add limit rule")).toBeInTheDocument();
+    expect(screen.getByLabelText("Weekly token limit")).toHaveDisplayValue("1000000");
 
     await user.click(screen.getByRole("switch", { name: "Advanced" }));
     const nameInput = screen.getByLabelText("Name");
@@ -382,6 +383,49 @@ describe("ApiKeyEditDialog", () => {
     });
     expect(onSubmit.mock.calls[0][0].name).toBe("Renamed key");
     expect("limits" in onSubmit.mock.calls[0][0]).toBe(false);
+  });
+
+  it("shows the overall usage bar before a model rule", () => {
+    renderWithProviders(
+      <ApiKeyEditDialog
+        open
+        busy={false}
+        apiKey={createApiKey({
+          limits: [
+            {
+              id: 2,
+              limitType: "total_tokens",
+              limitWindow: "weekly",
+              maxValue: 50,
+              currentValue: 10,
+              modelFilter: "gpt-5.4",
+              modelFilters: ["gpt-5.4"],
+              resetAt: "2026-01-08T00:00:00Z",
+            },
+            {
+              id: 1,
+              limitType: "cost_usd",
+              limitWindow: "weekly",
+              maxValue: 5_000_000,
+              currentValue: 0,
+              modelFilter: null,
+              modelFilters: [],
+              resetAt: "2026-01-08T00:00:00Z",
+            },
+          ],
+        })}
+        onOpenChange={vi.fn()}
+        onSubmit={vi.fn()}
+      />,
+    );
+
+    const usage = screen.getByText("Current usage").parentElement;
+    expect(usage).not.toBeNull();
+    const text = usage?.textContent ?? "";
+    const overallAt = text.indexOf("Cost (Weekly, all)");
+    const ruleAt = text.indexOf("Tokens (Weekly, gpt-5.4)");
+    expect(overallAt).toBeGreaterThanOrEqual(0);
+    expect(ruleAt).toBeGreaterThan(overallAt);
   });
 
   it("keeps the dialog open when submit fails", async () => {

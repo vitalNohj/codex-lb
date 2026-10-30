@@ -157,6 +157,9 @@ describe("ApiKeyInfo", () => {
 		expect(screen.getByText(/Total Tokens \(Weekly, gpt-5.1\)/)).toBeInTheDocument();
 		expect(screen.getByText(/750K \/ 1M/)).toBeInTheDocument();
 		expect(screen.getByText(/Cost \(USD\) \(Monthly, all\)/)).toBeInTheDocument();
+		const overall = screen.getByText(/Cost \(USD\) \(Monthly, all\)/);
+		const modelRule = screen.getByText(/Total Tokens \(Weekly, gpt-5.1\)/);
+		expect(overall.compareDocumentPosition(modelRule) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 	});
 
 	it("shows every model that shares a limit", () => {

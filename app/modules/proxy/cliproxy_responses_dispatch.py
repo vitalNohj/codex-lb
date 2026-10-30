@@ -42,10 +42,15 @@ from app.core.exceptions import ProxyReasoningEffortNotAllowed
 from app.core.metrics.prometheus import cliproxy_xai_responses_route_total
 from app.core.openai.requests import ResponsesRequest
 from app.core.types import JsonValue
-from app.core.utils.cancellation import await_deferring_cancellation, complete_despite_cancellation
+from app.core.utils.cancellation import await_deferring_cancellation
 from app.core.utils.json_guards import is_json_mapping
 from app.core.utils.sse import SseJsonDataDecoder, format_sse_event, inject_sse_keepalives
-from app.core.utils.stream_close import ClosingStreamingResponse, SettlingStream
+from app.core.utils.stream_close import (
+    ClosingStreamingResponse,
+    DeferredBodySettlement,
+    SettlingStream,
+    apply_stream_settlement,
+)
 from app.modules.api_keys.service import ApiKeyData, ApiKeyUsageReservationData
 from app.modules.proxy import claude_sidecar_dispatch
 from app.modules.proxy.claude_sidecar_dispatch import (
@@ -268,8 +273,17 @@ async def proxy_responses_to_cliproxy_native(
         requested_reasoning_effort=built.requested_reasoning_effort,
     )
     if payload.stream:
+        # Same as the chat route: the usage write runs after the terminating
+        # frame, still inside this response so a cancel or shutdown cannot drop it.
+        deferred_settlement = DeferredBodySettlement()
         settling = SettlingStream(
-            _native_stream(body, client=client, reservation=reservation, log=log_fields),
+            _native_stream(
+                body,
+                client=client,
+                reservation=reservation,
+                log=log_fields,
+                deferred_settlement=deferred_settlement,
+            ),
             abandon=partial(
                 _abandon_unstarted_sidecar_stream,
                 reservation,
@@ -289,6 +303,7 @@ async def proxy_responses_to_cliproxy_native(
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", **dict(rate_limit_headers)},
             settling=settling,
+            after_body_closed=deferred_settlement.run,
         )
 
     try:
@@ -458,6 +473,7 @@ async def _native_stream(
     client: ClaudeSidecarClient,
     reservation: ApiKeyUsageReservationData | None,
     log: _LogFields,
+    deferred_settlement: DeferredBodySettlement | None = None,
 ) -> AsyncIterator[str]:
     observer = _StreamObserver()
     settled = False
@@ -586,13 +602,19 @@ async def _native_stream(
         raise
     finally:
         if not settled:
-            await complete_despite_cancellation(
-                _settle_and_log(
+            # Usage is bound here, before the synthetic failure frame below.
+            # The HTTP response stashes the write and sends every frame first;
+            # a caller driving this generator itself still awaits the write now.
+            settled = True
+            await apply_stream_settlement(
+                deferred_settlement,
+                partial(
+                    _settle_and_log,
                     reservation,
                     log=log,
                     response=observer.response,
                     failure=_stream_failure(observer),
-                )
+                ),
             )
 
     if observer.terminal is None:

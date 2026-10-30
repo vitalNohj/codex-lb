@@ -50,6 +50,7 @@ import {
   limitRuleWithModels,
   normalizeLimitRules,
   ruleModelFilters,
+  withOverallLimitsFirst,
 } from "./limit-rules-utils";
 
 const TRANSPORT_POLICY_FOLLOW_GLOBAL = "follow_global";
@@ -444,7 +445,7 @@ function ApiKeyEditForm({ apiKey, busy, onSubmit, onClose }: ApiKeyEditFormProps
               <div className="space-y-1">
                 <div className="text-xs font-medium text-muted-foreground">{t("apiKeys.form.currentUsage")}</div>
                 <div className="space-y-1">
-                  {apiKey.limits.map((limit) => (
+                  {withOverallLimitsFirst(apiKey.limits).map((limit) => (
                     <LimitUsageBar key={limit.id} limit={limit} />
                   ))}
                 </div>
