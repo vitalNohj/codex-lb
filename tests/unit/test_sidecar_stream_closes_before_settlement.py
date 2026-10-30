@@ -21,7 +21,7 @@ from starlette.types import Message, Scope
 from app.core.clients.claude_sidecar import ClaudeSidecarClient, ClaudeSidecarConfig, SidecarPrefix
 from app.core.openai.chat_requests import ChatCompletionsRequest
 from app.core.openai.requests import ResponsesRequest
-from app.modules.proxy import claude_sidecar_dispatch, cliproxy_responses_dispatch
+from app.modules.proxy import claude_sidecar_dispatch, cliproxy_responses_dispatch, responses_provider_dispatch
 from app.modules.proxy.cliproxy_account_routing import CliproxyStickyHints
 
 pytestmark = pytest.mark.unit
@@ -353,3 +353,81 @@ async def test_chat_settlement_finishes_when_cancelled_after_the_body_closes(
     assert finished[0]["completed"] is True
     assert finished[0]["usage"].input_tokens == 11
     assert finished[0]["usage"].output_tokens == 4
+
+
+@pytest.mark.asyncio
+async def test_bridged_responses_stream_without_done_settles_once(
+    _no_cooldown: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A Responses translation replaces the chat response.
+
+    The replacement must keep the after-close write. A chat stream that ends
+    without ``[DONE]`` still settles and logs exactly once, and the client
+    frame still precedes that write.
+    """
+
+    order: list[str] = []
+    seen: list[dict[str, Any]] = []
+
+    async def settle(reservation: object, **kwargs: Any) -> None:
+        del reservation
+        order.append("settled")
+        seen.append(kwargs)
+
+    async def no_snapshot() -> None:
+        return None
+
+    monkeypatch.setattr(claude_sidecar_dispatch, "_settle_and_log_sidecar_stream", settle)
+    monkeypatch.setattr(claude_sidecar_dispatch, "_stored_claude_quota_snapshot", no_snapshot)
+    translated = await responses_provider_dispatch.dispatch_responses_via_chat_provider(
+        Request(_SCOPE),
+        ChatCompletionsRequest(
+            model="claude-haiku-4-5",
+            messages=[{"role": "user", "content": "hi"}],
+            stream=True,
+        ),
+        provider="claude",
+        effective_model="claude-haiku-4-5",
+        wire_model=None,
+        api_key=None,
+        reservation=None,
+        rate_limit_headers={},
+        sse_keepalive_interval_seconds=0.0,
+        cursor_compat=False,
+        client=cast(
+            ClaudeSidecarClient,
+            _ChatUpstream(
+                [
+                    b'data: {"choices":[{"delta":{"content":"hi"}}]}\n\n',
+                    (
+                        b'data: {"choices":[],"usage":{"prompt_tokens":11,"completion_tokens":4,'
+                        b'"prompt_tokens_details":{"cached_tokens":2}}}\n\n'
+                    ),
+                ]
+            ),
+        ),
+    )
+
+    bodies: list[bytes] = []
+
+    async def send(message: Message) -> None:
+        if message.get("type") != "http.response.body":
+            return
+        body = message.get("body", b"")
+        if body:
+            bodies.append(body if isinstance(body, bytes) else bytes(body))
+            order.append("chunk")
+        if not message.get("more_body", True):
+            order.append("closed")
+
+    await _drive(translated, send)
+
+    relayed = b"".join(bodies).decode()
+    assert "response.incomplete" in relayed or "response.completed" in relayed
+    assert relayed.count("data: [DONE]") == 1
+    assert order[-2:] == ["closed", "settled"]
+    assert order.count("settled") == 1
+    # No [DONE], so the chat dispatcher logs the stream as incomplete and
+    # does not keep the usage it saw. The row still has to be written once.
+    assert seen[0]["completed"] is False
+    assert seen[0]["usage"] is None
