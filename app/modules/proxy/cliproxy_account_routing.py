@@ -179,10 +179,20 @@ _CACHE_MISS_WARNED: OrderedDict[str, float] = OrderedDict()
 _CLIENT_SESSION_HEADERS = ("x-claude-code-session-id", "x-session-id", "x-session-affinity")
 _VENDOR_SESSION_HEADER = re.compile(r"^x-[a-z0-9]+(?:-[a-z0-9]+)*-session-id$")
 _SNAPSHOTS = StoredSnapshotReader()
+# The last snapshot that named accounts. A management outage replaces the stored
+# snapshot with an empty unauthorized/unreachable/error payload; routing keeps
+# using this one until a healthy poll names accounts again.
+_LAST_GOOD_SNAPSHOT: SidecarQuotaSnapshot | None = None
 _API_KEY_CACHE: tuple[float, tuple[ApiKeyRouteRow, ...]] | None = None
+# Rows from the last successful API-key listing. Kept without a TTL so a
+# management outage does not drop API-key credentials after the short cache expires.
+_LAST_GOOD_API_KEYS: tuple[ApiKeyRouteRow, ...] = ()
 _API_KEY_CACHE_SECONDS = 15.0
 _MODEL_CACHE: tuple[float, dict[str, tuple[str, ...] | None]] | None = None
 _MODEL_CACHE_SECONDS = 15.0
+# One warning for a stretch of failed management reads, not one per request.
+_MANAGEMENT_OUTAGE: tuple[str, float] | None = None
+_MANAGEMENT_OUTAGE_WARN_SECONDS = 60.0
 _LAST_SELECTED: OrderedDict[str, float] = OrderedDict()
 _LAST_SELECTED_LIMIT = 1024
 _PREFIX_OVERLAY: OrderedDict[str, tuple[float, str]] = OrderedDict()
@@ -522,7 +532,7 @@ async def apply_cliproxy_account_route(
         _record_route_outcome("fail_open", source, model=model)
         return None
     if choice is None:
-        if prefix_required:
+        if prefix_required and not _management_outage_fail_open(settings, model):
             _record_route_outcome("refused", source, model=model)
             raise CliproxyClaudeRouteRefused(model, "no prefixed CLIProxyAPI credential serves this model")
         _record_route_outcome("no_candidate", source, model=model)
@@ -722,17 +732,50 @@ async def _load_candidates(
     exclude_account_ids: frozenset[str] = frozenset(),
 ) -> list[CliproxyCandidate]:
     now = datetime.now(timezone.utc)
-    snapshot = _SNAPSHOTS.read(settings.claude_sidecar_quota_state_json)
+    snapshot = _routing_snapshot(settings)
     candidates = candidates_from_snapshot(snapshot, now=now)
+    management_failures: list[BaseException] = []
     if client is not None:
         try:
-            candidates.extend(candidates_from_api_keys(await _cached_api_keys(client)))
-        except Exception:
-            logger.info("cliproxy api-key list unavailable; routing oauth credentials only", exc_info=True)
+            rows = await _cached_api_keys(client)
+        except Exception as exc:
+            rows = _LAST_GOOD_API_KEYS
+            management_failures.append(exc)
+            logger.info("cliproxy api-key list unavailable; routing the last known api keys", exc_info=True)
+        candidates.extend(candidates_from_api_keys(rows))
         candidates = await _attach_discovered_models(candidates, client)
     if exclude_account_ids:
         candidates = [item for item in candidates if item.account_id not in exclude_account_ids]
-    return await _fill_empty_prefixes(candidates, model, client)
+    filled = await _fill_empty_prefixes(candidates, model, client, failed_snapshot=snapshot)
+    if management_failures or _snapshot_read_failed(snapshot):
+        _warn_management_outage(snapshot, management_failures, using=filled)
+    elif snapshot is None or snapshot.status == "healthy":
+        _note_management_recovered()
+    return filled
+
+
+def _routing_snapshot(settings: DashboardSettings) -> SidecarQuotaSnapshot | None:
+    """The snapshot routing should score, keeping accounts across a failed poll.
+
+    A healthy poll replaces the remembered list. A failed poll that still carries
+    the previous accounts (the poller keeps them) is used as-is. A failed poll
+    that stored no accounts falls back to the last snapshot this process saw
+    with accounts, so a worker that has not yet observed the retaining poller
+    does not refuse traffic.
+    """
+
+    global _LAST_GOOD_SNAPSHOT
+    snapshot = _SNAPSHOTS.read(settings.claude_sidecar_quota_state_json)
+    if snapshot is not None and snapshot.accounts:
+        _LAST_GOOD_SNAPSHOT = snapshot
+        return snapshot
+    if _snapshot_read_failed(snapshot) and _LAST_GOOD_SNAPSHOT is not None:
+        return _LAST_GOOD_SNAPSHOT
+    return snapshot
+
+
+def _snapshot_read_failed(snapshot: SidecarQuotaSnapshot | None) -> bool:
+    return snapshot is not None and snapshot.status in {"unauthorized", "unreachable", "error"}
 
 
 def _route_params(settings: DashboardSettings) -> _RouteParams:
@@ -1225,6 +1268,95 @@ def _warn_sticky_cache_miss(choice: CliproxyDispatchChoice, *, input_tokens: int
     )
 
 
+def _warn_management_outage(
+    snapshot: SidecarQuotaSnapshot | None,
+    failures: Sequence[BaseException],
+    *,
+    using: Sequence[CliproxyCandidate],
+) -> None:
+    """Warn once per outage stretch that routing is on the last known credentials.
+
+    A management 401, 403, timeout, or 5xx must not become a per-request refusal.
+    The status in the message is the poll snapshot status, or the live read's
+    HTTP status when the API-key listing is what failed.
+    """
+
+    global _MANAGEMENT_OUTAGE
+    status = _management_status(snapshot, failures)
+    now = time.monotonic()
+    current = _MANAGEMENT_OUTAGE
+    if current is not None and current[0] == status and now - current[1] < _MANAGEMENT_OUTAGE_WARN_SECONDS:
+        return
+    _MANAGEMENT_OUTAGE = (status, now)
+    logger.warning(
+        "CLIProxyAPI management unreachable: %s; routing on last known credentials (%s)",
+        status,
+        len(using),
+    )
+
+
+def _management_status(snapshot: SidecarQuotaSnapshot | None, failures: Sequence[BaseException]) -> str:
+    if snapshot is not None and snapshot.status in {"unauthorized", "unreachable", "error"}:
+        detail = (snapshot.message or "").strip()
+        if snapshot.status == "unauthorized" and "ban" in detail.casefold():
+            return "403 IP banned"
+        if detail:
+            return f"{snapshot.status}: {detail}"
+        code = _failure_status_code(failures)
+        if code is not None:
+            return f"{code} {snapshot.status}"
+        return snapshot.status
+    code = _failure_status_code(failures)
+    if code is not None:
+        if code == 403 and any("ban" in str(item).casefold() for item in failures):
+            return "403 IP banned"
+        return str(code)
+    if failures:
+        return type(failures[0]).__name__
+    return "unreachable"
+
+
+def _failure_status_code(failures: Sequence[BaseException]) -> int | None:
+    for exc in failures:
+        status_code = getattr(exc, "status_code", None)
+        if isinstance(status_code, int):
+            return status_code
+    return None
+
+
+def _note_management_recovered() -> None:
+    global _MANAGEMENT_OUTAGE
+    _MANAGEMENT_OUTAGE = None
+
+
+def _management_outage_fail_open(settings: DashboardSettings, model: str) -> bool:
+    """Let CLIProxyAPI choose when management is down and no credential is known.
+
+    Sending a Claude model without a prefix rotates credentials and rewrites the
+    prompt cache, which is why a missing prefix is normally a hard refusal. That
+    refusal is worse while the management API is unreachable: CLIProxyAPI can
+    still serve the model, and refusing drops every Claude request. The request
+    is left unprefixed so CLIProxyAPI selects the credential, the same fail-open
+    the other families already use.
+
+    A captain-set per-account restriction still wins. When the last known
+    credentials exclude this model, or every one of them is cooling down, the
+    refusal stands so the outage cannot route around that restriction.
+    """
+
+    if _MANAGEMENT_OUTAGE is None:
+        return False
+    snapshot = _routing_snapshot(settings)
+    if snapshot is None or not snapshot.accounts:
+        return True
+    now = datetime.now(timezone.utc)
+    known = candidates_from_snapshot(snapshot, now=now)
+    if not known:
+        return True
+    usable = _without_cooling(known, model)
+    return not usable and not _cooling_ids()
+
+
 def _warn_no_candidate(candidates: Sequence[CliproxyCandidate], model: str) -> None:
     """Warn, at most once a minute per model, that no prefixed credential serves it."""
 
@@ -1384,13 +1516,14 @@ def _wildcard_match(pattern: str, value: str) -> bool:
 
 
 async def _cached_api_keys(client: ClaudeSidecarClient) -> tuple[ApiKeyRouteRow, ...]:
-    global _API_KEY_CACHE
+    global _API_KEY_CACHE, _LAST_GOOD_API_KEYS
     now = datetime.now(timezone.utc).timestamp()
     cached = _API_KEY_CACHE
     if cached is not None and now - cached[0] < _API_KEY_CACHE_SECONDS:
         return cached[1]
     rows = tuple(await list_routing_api_keys(client))
     _API_KEY_CACHE = (now, rows)
+    _LAST_GOOD_API_KEYS = rows
     return rows
 
 
@@ -1592,6 +1725,8 @@ async def _fill_empty_prefixes(
     candidates: list[CliproxyCandidate],
     model: str,
     client: ClaudeSidecarClient | None,
+    *,
+    failed_snapshot: SidecarQuotaSnapshot | None = None,
 ) -> list[CliproxyCandidate]:
     if client is None:
         return candidates
@@ -1626,8 +1761,8 @@ async def _fill_empty_prefixes(
                         assigned[item.account_id] = stored
                         taken.add(stored.casefold())
                         _remember_prefix(item.account_id, stored)
-    except Exception:
-        logger.warning("cliproxy prefix assignment failed; unprefixed credentials stay unpinned", exc_info=True)
+    except Exception as exc:
+        _warn_management_outage(failed_snapshot, (exc,), using=candidates)
         return candidates
     if assigned:
         _drop_api_key_cache()

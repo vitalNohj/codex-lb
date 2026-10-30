@@ -3,16 +3,29 @@
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import pytest
 
 from app.core.balancer.logic import AccountState, RoutingStrategy, select_account
-from app.core.clients.claude_sidecar import ClaudeSidecarConfig, ClaudeSidecarError, SidecarPrefix
+from app.core.clients.claude_sidecar import (
+    ClaudeSidecarClient,
+    ClaudeSidecarConfig,
+    ClaudeSidecarError,
+    ClaudeSidecarUnavailableError,
+    SidecarPrefix,
+)
 from app.core.openai.chat_requests import ChatCompletionsRequest
+from app.core.types import JsonValue
 from app.db.models import AccountStatus, StickySessionKind
-from app.modules.claude_sidecar.quota import SidecarAuthQuota, SidecarModelQuota, SidecarQuotaSnapshot
+from app.modules.claude_sidecar.quota import (
+    SidecarAuthQuota,
+    SidecarModelQuota,
+    SidecarQuotaSnapshot,
+    SidecarQuotaStatus,
+)
 from app.modules.cliproxy_accounts.api_keys import (
     API_KEY_KINDS,
     ApiKeyRouteRow,
@@ -44,6 +57,10 @@ pytestmark = pytest.mark.unit
 def _clear_cliproxy_route_memory() -> None:
     routing._LAST_SELECTED.clear()
     routing._PREFIX_OVERLAY.clear()
+    routing._LAST_GOOD_SNAPSHOT = None
+    routing._LAST_GOOD_API_KEYS = ()
+    routing._API_KEY_CACHE = None
+    routing._MANAGEMENT_OUTAGE = None
 
 
 def test_sidecar_chat_payload_forwards_the_resolved_model_id() -> None:
@@ -593,3 +610,228 @@ def test_operator_prefix_edit_drops_remembered_prefixes() -> None:
     routing.forget_remembered_prefixes()
 
     assert routing._PREFIX_OVERLAY == {}
+
+
+def _claude_snapshot(
+    *accounts: SidecarAuthQuota,
+    status: SidecarQuotaStatus = "healthy",
+    message: str | None = None,
+) -> SidecarQuotaSnapshot:
+    return SidecarQuotaSnapshot(
+        checked_at=datetime(2026, 10, 30, 7, 16, tzinfo=timezone.utc),
+        status=status,
+        message=message,
+        accounts=accounts,
+    )
+
+
+def _claude_account(
+    auth_index: str,
+    *,
+    prefix: str | None = "opus",
+    excluded: tuple[str, ...] = (),
+) -> SidecarAuthQuota:
+    return SidecarAuthQuota(
+        name=f"claude-{auth_index}.json",
+        auth_index=auth_index,
+        email=f"{auth_index}@example.com",
+        status="active",
+        status_message=None,
+        disabled=False,
+        unavailable=False,
+        quota_exceeded=False,
+        next_recover_at=None,
+        model_states=(),
+        success=0,
+        failed=0,
+        last_refresh=None,
+        provider="claude",
+        excluded_models=excluded,
+        prefix=prefix,
+        priority=0,
+        weight=1,
+    )
+
+
+class _ApiKeyClient(ClaudeSidecarClient):
+    def __init__(self, rows: list[dict[str, JsonValue]] | None = None, *, error: Exception | None = None) -> None:
+        super().__init__(
+            ClaudeSidecarConfig(
+                enabled=True,
+                base_url="http://127.0.0.1:8317",
+                api_key="key",
+                prefixes=(),
+                connect_timeout_seconds=8.0,
+                request_timeout_seconds=600.0,
+                models_cache_ttl_seconds=60.0,
+            )
+        )
+        self.rows = rows if rows is not None else []
+        self.error = error
+        self.calls = 0
+
+    async def list_api_keys(self) -> list[dict[str, JsonValue]]:
+        self.calls += 1
+        if self.error is not None:
+            raise self.error
+        return self.rows
+
+    async def list_auth_files(self) -> list[Mapping[str, JsonValue]]:
+        if self.error is not None:
+            raise self.error
+        return []
+
+    async def config_v8_request(
+        self,
+        _method: str,
+        _path: str,
+        _body: JsonValue | None,
+        _if_match: str | None,
+    ) -> ManagementResponse:
+        if self.error is not None:
+            raise self.error
+        return ManagementResponse(status=200, etag=None, body={})
+
+
+async def test_management_403_keeps_routing_the_remembered_claude_credential(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    account = _claude_account("acct")
+    settings = _settings()
+    settings.claude_sidecar_quota_state_json = "stale"
+    _install_settings(monkeypatch, settings)
+    snapshots = iter(
+        [
+            _claude_snapshot(account),
+            _claude_snapshot(status="unauthorized", message="IP banned due to too many failed attempts"),
+        ]
+    )
+    monkeypatch.setattr(routing._SNAPSHOTS, "read", lambda _raw: next(snapshots))
+    client = _ApiKeyClient(error=ClaudeSidecarError(403, "IP banned due to too many failed attempts"))
+    body: dict[str, JsonValue] = {"model": "claude-opus-5-5"}
+
+    first = await apply_cliproxy_account_route(body, client=client)
+    routing._PREFIX_OVERLAY.clear()
+    body["model"] = "claude-opus-5-5"
+    with caplog.at_level("WARNING", logger=routing.logger.name):
+        second = await apply_cliproxy_account_route(body, client=client)
+
+    assert first is not None and second is not None
+    assert first.wire_model == "opus/claude-opus-5-5"
+    assert second.wire_model == "opus/claude-opus-5-5"
+    assert second.account_id == first.account_id
+    assert any(
+        record.message == "CLIProxyAPI management unreachable: 403 IP banned; routing on last known credentials (1)"
+        for record in caplog.records
+    )
+
+
+async def test_cold_management_outage_lets_cliproxy_choose_the_claude_credential(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _settings()
+    _install_settings(monkeypatch, settings)
+    monkeypatch.setattr(
+        routing._SNAPSHOTS,
+        "read",
+        lambda _raw: _claude_snapshot(status="unreachable", message="connection refused"),
+    )
+    client = _ApiKeyClient(error=ClaudeSidecarError(403, "IP banned"))
+    body: dict[str, JsonValue] = {"model": "claude-opus-5-5"}
+
+    choice = await apply_cliproxy_account_route(body, client=client)
+
+    assert choice is None
+    assert body["model"] == "claude-opus-5-5"
+
+
+async def test_management_timeout_keeps_routing_and_warns_once(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    account = _claude_account("acct")
+    settings = _settings()
+    _install_settings(monkeypatch, settings)
+    state = {"failed": False}
+
+    def _read(_raw: object) -> SidecarQuotaSnapshot:
+        if state["failed"]:
+            return _claude_snapshot(account, status="unreachable", message="timed out")
+        return _claude_snapshot(account)
+
+    class _TimingOut(_ApiKeyClient):
+        def __init__(self) -> None:
+            super().__init__()
+
+        async def list_api_keys(self) -> list[dict[str, JsonValue]]:
+            if state["failed"]:
+                raise ClaudeSidecarUnavailableError("timed out talking to CLIProxyAPI management")
+            return []
+
+        async def list_auth_files(self) -> list[Mapping[str, JsonValue]]:
+            if state["failed"]:
+                raise ClaudeSidecarUnavailableError("timed out talking to CLIProxyAPI management")
+            return []
+
+        async def config_v8_request(
+            self,
+            _method: str,
+            _path: str,
+            _body: JsonValue | None,
+            _if_match: str | None,
+        ) -> ManagementResponse:
+            if state["failed"]:
+                raise ClaudeSidecarUnavailableError("timed out talking to CLIProxyAPI management")
+            return ManagementResponse(status=200, etag=None, body={})
+
+    monkeypatch.setattr(routing._SNAPSHOTS, "read", _read)
+    client = _TimingOut()
+    body: dict[str, JsonValue] = {"model": "claude-opus-5-5"}
+    await apply_cliproxy_account_route(body, client=client)
+    state["failed"] = True
+    routing._PREFIX_OVERLAY.clear()
+    body["model"] = "claude-opus-5-5"
+
+    with caplog.at_level("WARNING", logger=routing.logger.name):
+        routed = await apply_cliproxy_account_route(body, client=client)
+        body["model"] = "claude-opus-5-5"
+        again = await apply_cliproxy_account_route(body, client=client)
+
+    assert routed is not None and again is not None
+    assert routed.wire_model == "opus/claude-opus-5-5"
+    warnings = [record.message for record in caplog.records if "management unreachable" in record.message]
+    assert warnings == [
+        "CLIProxyAPI management unreachable: unreachable: timed out; routing on last known credentials (1)"
+    ]
+
+
+async def test_management_outage_still_refuses_a_captain_excluded_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    account = _claude_account("acct", excluded=("claude-opus-*",))
+    settings = _settings()
+    _install_settings(monkeypatch, settings)
+    state = {"failed": False}
+
+    def _read(_raw: object) -> SidecarQuotaSnapshot:
+        if state["failed"]:
+            return _claude_snapshot(account, status="unauthorized", message="IP banned")
+        return _claude_snapshot(account)
+
+    class _SwitchingClient(_ApiKeyClient):
+        async def list_api_keys(self) -> list[dict[str, JsonValue]]:
+            if state["failed"]:
+                raise ClaudeSidecarError(403, "IP banned")
+            return []
+
+    monkeypatch.setattr(routing._SNAPSHOTS, "read", _read)
+    client = _SwitchingClient()
+    body: dict[str, JsonValue] = {"model": "claude-opus-5-5"}
+
+    with pytest.raises(routing.CliproxyClaudeRouteRefused):
+        await apply_cliproxy_account_route(body, client=client)
+    state["failed"] = True
+    body["model"] = "claude-opus-5-5"
+    with pytest.raises(routing.CliproxyClaudeRouteRefused):
+        await apply_cliproxy_account_route(body, client=client)
