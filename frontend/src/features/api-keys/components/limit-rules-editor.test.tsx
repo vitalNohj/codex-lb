@@ -429,4 +429,114 @@ describe("LimitRulesEditor", () => {
     expect(screen.getByLabelText("Weekly cost limit ($)")).toHaveValue(null);
     expect(screen.getByDisplayValue("1000")).toBeInTheDocument();
   });
+
+  it("keeps a new advanced rule in its card when the first amount is entered", async () => {
+    const user = userEvent.setup();
+
+    function StatefulLimitRulesEditor() {
+      const [rules, setRules] = useState<LimitRuleCreate[]>([]);
+      return <LimitRulesEditor rules={rules} onChange={setRules} />;
+    }
+
+    renderWithProviders(<StatefulLimitRulesEditor />);
+
+    await user.click(screen.getByRole("switch", { name: "Advanced" }));
+    await user.click(screen.getByText("Add limit rule"));
+
+    const maxValueInput = screen.getByLabelText("Max value (tokens)");
+    await user.type(maxValueInput, "500");
+
+    expect(maxValueInput).toHaveFocus();
+    expect(maxValueInput).toHaveValue(500);
+    expect(screen.getByText("Model Filter")).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "Reasoning effort" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Weekly token limit")).toHaveValue(null);
+  });
+
+  it("keeps a new cost rule in its card when the first amount is entered", async () => {
+    const user = userEvent.setup();
+
+    function StatefulLimitRulesEditor() {
+      const [rules, setRules] = useState<LimitRuleCreate[]>([]);
+      return <LimitRulesEditor rules={rules} onChange={setRules} />;
+    }
+
+    renderWithProviders(<StatefulLimitRulesEditor />);
+
+    await user.click(screen.getByRole("switch", { name: "Advanced" }));
+    await user.click(screen.getByText("Add limit rule"));
+    await user.click(screen.getByRole("combobox", { name: "Type" }));
+    await user.click(await screen.findByRole("option", { name: "Cost" }));
+
+    const maxValueInput = screen.getByLabelText("Max value (USD)");
+    await user.type(maxValueInput, "12");
+
+    expect(maxValueInput).toHaveFocus();
+    expect(maxValueInput).toHaveValue(12);
+    expect(screen.getByText("Model Filter")).toBeInTheDocument();
+    expect(screen.getByLabelText("Weekly cost limit ($)")).toHaveValue(null);
+    expect(screen.getByLabelText("Weekly token limit")).toHaveValue(null);
+  });
+
+  it("leaves a mismatched overall cap in its card and keeps its window on amount edits", async () => {
+    const user = userEvent.setup();
+    const seen: LimitRuleCreate[][] = [];
+
+    function StatefulLimitRulesEditor() {
+      const [rules, setRules] = useState<LimitRuleCreate[]>([
+        { limitType: "total_tokens", limitWindow: "weekly", maxValue: 1000, modelFilter: null },
+        { limitType: "cost_usd", limitWindow: "lifetime", maxValue: 5_000_000, modelFilter: null },
+      ]);
+      return (
+        <LimitRulesEditor
+          rules={rules}
+          onChange={(next) => {
+            seen.push(next);
+            setRules(next);
+          }}
+        />
+      );
+    }
+
+    renderWithProviders(<StatefulLimitRulesEditor />);
+
+    expect(screen.getByLabelText("Weekly token limit")).toHaveDisplayValue("1000");
+    expect(screen.getByLabelText("Weekly cost limit ($)")).toHaveValue(null);
+
+    const mismatchedCard = () => screen.getByText("Limit rule").closest(".rounded-lg") as HTMLElement;
+    expect(within(mismatchedCard()).getByLabelText("Max value (USD)")).toHaveDisplayValue("5");
+    expect(within(mismatchedCard()).getByRole("combobox", { name: "Window" })).toHaveTextContent(
+      "One-time (never resets)",
+    );
+
+    fireEvent.change(within(mismatchedCard()).getByLabelText("Max value (USD)"), { target: { value: "8" } });
+
+    expect(seen.at(-1)).toEqual([
+      expect.objectContaining({ limitType: "total_tokens", limitWindow: "weekly", maxValue: 1000 }),
+      expect.objectContaining({ limitType: "cost_usd", limitWindow: "lifetime", maxValue: 8_000_000 }),
+    ]);
+    expect(within(mismatchedCard()).getByRole("combobox", { name: "Window" })).toHaveTextContent(
+      "One-time (never resets)",
+    );
+
+    fireEvent.change(screen.getByLabelText("Weekly token limit"), { target: { value: "2000" } });
+
+    expect(seen.at(-1)).toEqual([
+      expect.objectContaining({ limitType: "total_tokens", limitWindow: "weekly", maxValue: 2000 }),
+      expect.objectContaining({ limitType: "cost_usd", limitWindow: "lifetime", maxValue: 8_000_000 }),
+    ]);
+
+    const [overallWindow] = screen.getAllByRole("combobox", { name: "Window" });
+    await user.click(overallWindow);
+    await user.click(await screen.findByRole("option", { name: "Monthly" }));
+
+    expect(screen.getByLabelText("Monthly token limit")).toHaveDisplayValue("2000");
+    expect(seen.at(-1)).toEqual([
+      expect.objectContaining({ limitType: "total_tokens", limitWindow: "monthly", maxValue: 2000 }),
+      expect.objectContaining({ limitType: "cost_usd", limitWindow: "lifetime", maxValue: 8_000_000 }),
+    ]);
+    expect(within(mismatchedCard()).getByRole("combobox", { name: "Window" })).toHaveTextContent(
+      "One-time (never resets)",
+    );
+  });
 });
