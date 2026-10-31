@@ -58,9 +58,9 @@ def _clear_cliproxy_route_memory() -> None:
     routing._LAST_SELECTED.clear()
     routing._PREFIX_OVERLAY.clear()
     routing._LAST_GOOD_SNAPSHOT = None
-    routing._LAST_GOOD_FORGOTTEN = False
     routing._LAST_GOOD_API_KEYS = ()
     routing._API_KEY_CACHE = None
+    routing._MODEL_CACHE = None
     routing._MANAGEMENT_OUTAGE = None
 
 
@@ -802,6 +802,65 @@ async def test_prefix_assignment_failure_keeps_the_management_outage(
     assert choice is None
     assert routing._MANAGEMENT_OUTAGE is not None
     assert body["model"] == "claude-opus-5-5"
+
+
+async def test_a_healthy_load_ends_a_recorded_management_outage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    account = _claude_account("acct")
+    settings = _settings()
+    _install_settings(monkeypatch, settings)
+    state = {"failed": True}
+
+    def _read(_raw: object) -> SidecarQuotaSnapshot:
+        if state["failed"]:
+            return _claude_snapshot(account, status="unauthorized", message="IP banned")
+        return _claude_snapshot(account)
+
+    monkeypatch.setattr(routing._SNAPSHOTS, "read", _read)
+    client = _ApiKeyClient()
+    body: dict[str, JsonValue] = {"model": "claude-opus-5-5"}
+    await apply_cliproxy_account_route(body, client=client)
+    assert routing._MANAGEMENT_OUTAGE is not None
+
+    state["failed"] = False
+    body["model"] = "claude-opus-5-5"
+    routed = await apply_cliproxy_account_route(body, client=client)
+
+    assert routed is not None
+    assert routing._MANAGEMENT_OUTAGE is None
+
+
+async def test_after_recovery_a_catalog_that_drops_the_model_still_refuses(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    account = _claude_account("acct")
+    settings = _settings()
+    _install_settings(monkeypatch, settings)
+    state = {"failed": True}
+
+    def _read(_raw: object) -> SidecarQuotaSnapshot:
+        if state["failed"]:
+            return _claude_snapshot(account, status="unreachable", message="timed out")
+        return _claude_snapshot(account)
+
+    class _SonnetOnly(_ApiKeyClient):
+        async def list_auth_file_models(self, _name: str) -> list[str]:
+            return ["claude-sonnet-4-5"]
+
+    monkeypatch.setattr(routing._SNAPSHOTS, "read", _read)
+    client = _SonnetOnly()
+    body: dict[str, JsonValue] = {"model": "claude-sonnet-4-5"}
+    await apply_cliproxy_account_route(body, client=client)
+    assert routing._MANAGEMENT_OUTAGE is not None
+
+    state["failed"] = False
+    body = {"model": "claude-opus-5-5"}
+    with pytest.raises(routing.CliproxyClaudeRouteRefused):
+        await apply_cliproxy_account_route(body, client=client)
+
+    assert body["model"] == "claude-opus-5-5"
+    assert routing._MANAGEMENT_OUTAGE is None
 
 
 async def test_management_timeout_keeps_routing_and_warns_once(

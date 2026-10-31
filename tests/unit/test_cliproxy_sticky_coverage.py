@@ -509,7 +509,9 @@ async def test_s4_no_prefixed_candidate_warns_once(
     bare = routing.replace(_candidate("bare", used=None), prefix=None)
     _install(monkeypatch, [bare])
 
-    async def _no_fill(candidates: list[CliproxyCandidate], *_args: object) -> list[CliproxyCandidate]:
+    async def _no_fill(
+        candidates: list[CliproxyCandidate], *_args: object, **_kwargs: object
+    ) -> list[CliproxyCandidate]:
         return candidates
 
     monkeypatch.setattr(routing, "_fill_empty_prefixes", _no_fill)
