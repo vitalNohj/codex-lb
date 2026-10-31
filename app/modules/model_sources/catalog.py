@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 
 from app.core.openai.model_registry import (
     MODEL_SOURCE_KIND_OPENAI_COMPATIBLE,
@@ -277,13 +278,14 @@ def source_model_cost_usd(
 
 
 def source_model_has_price(source: ModelSource, model: str, *, accepts_audio_rate: bool) -> bool:
-    """Whether the source declares a rate that settlement can charge ``model`` at.
+    """Whether the source declares a real, nonzero rate settlement can charge ``model`` at.
 
     Token rates price every endpoint (``source_model_cost_usd``). The
     per-minute audio rate prices only a transcription that reports its
     duration (``source_model_audio_cost_usd``), so it counts only when
     ``accepts_audio_rate`` says the caller settles that way; a token-metered
-    endpoint with just an audio rate would otherwise settle at $0.
+    endpoint with just an audio rate would otherwise settle at $0. A rate of
+    ``0`` settles at exactly nothing too, so it is no price either.
     """
     entry = next(
         (candidate for candidate in source.models if candidate.model == model and candidate.is_enabled),
@@ -291,9 +293,13 @@ def source_model_has_price(source: ModelSource, model: str, *, accepts_audio_rat
     )
     if entry is None:
         return False
-    if any(rate is not None for rate in (entry.input_per_1m, entry.cached_input_per_1m, entry.output_per_1m)):
+    if any(_is_billable_rate(rate) for rate in (entry.input_per_1m, entry.cached_input_per_1m, entry.output_per_1m)):
         return True
-    return accepts_audio_rate and entry.audio_per_minute is not None
+    return accepts_audio_rate and _is_billable_rate(entry.audio_per_minute)
+
+
+def _is_billable_rate(rate: float | None) -> bool:
+    return rate is not None and math.isfinite(rate) and rate > 0
 
 
 def source_model_audio_cost_usd(source: ModelSource, model: str, audio_seconds: float) -> float | None:
