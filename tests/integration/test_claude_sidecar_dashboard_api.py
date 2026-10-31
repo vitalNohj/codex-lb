@@ -1445,7 +1445,7 @@ async def test_poll_of_a_mixed_listing_shows_an_xai_card_beside_the_claude_card(
         assert xai_auth["email"] == "grok@example.com"
         assert xai_auth["paused"] is False
         assert xai_auth["prepaidCredits"] == 42
-        assert [window["id"] for window in xai_auth["quotaWindows"]] == ["credits", "product:grok_build"]
+        assert [window["id"] for window in xai_auth["quotaWindows"]] == ["credits"]
         assert xai_auth["quotaWindows"][0]["percentRemaining"] == pytest.approx(62.5)
         claude = by_id["claude-sidecar"]
         assert sorted(auth["email"] for auth in claude["sidecarAuths"]) == ["a@example.com", "b@example.com"]

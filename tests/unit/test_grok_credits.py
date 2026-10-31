@@ -16,6 +16,7 @@ from app.modules.claude_sidecar.grok_credits import (
     GrokCreditsError,
     GrokCreditsRateLimit,
     GrokCreditsUnavailable,
+    _PRODUCT_NAMES,
     classify_xai_429,
     decode_grpc_web_body,
     fetch_grok_credits,
@@ -123,7 +124,7 @@ def test_parser_reads_quota_axi_weekly_windows_and_prepaid() -> None:
 
     assert parsed.prepaid_credits == 42
     assert parsed.refreshed_at == _NOW
-    credits, product = parsed.windows
+    [credits] = parsed.windows
     assert credits == GrokCreditWindow(
         id="credits",
         label="week",
@@ -133,11 +134,26 @@ def test_parser_reads_quota_axi_weekly_windows_and_prepaid() -> None:
         starts_at=_START,
         resets_at=_RESET,
     )
-    assert product.id == "product:grok_build"
-    assert product.label == "Grok Build"
-    assert product.percent_used == pytest.approx(12.5)
-    assert product.percent_remaining == pytest.approx(87.5)
-    assert product.kind == "weekly"
+    assert all(window.id != "product:grok_build" for window in parsed.windows)
+
+
+def test_parser_drops_grok_build_and_keeps_the_other_products() -> None:
+    """Product 2 is Grok Build and is not a dashboard window; every other product stays."""
+
+    products = b"".join(
+        _message(7, _field_varint(1, number) + _float(2, float(number))) for number in (1, 2, 4, 9)
+    )
+    config = _float(1, 1.0) + products + _message(8, _period(2, _START, _RESET))
+    parsed = normalize_grok_consumer_payload(_message(1, config), now=_NOW)
+
+    assert [window.id for window in parsed.windows] == [
+        "credits",
+        "product:api",
+        "product:chat",
+        "product:grok_bot",
+    ]
+    assert "product:grok_build" not in {window.id for window in parsed.windows}
+    assert _PRODUCT_NAMES[2] == ("grok_build", "Grok Build")
 
 
 def test_parser_names_grok_bot_and_falls_back_for_an_unmapped_product() -> None:

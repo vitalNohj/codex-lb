@@ -44,6 +44,9 @@ _MAX_SAFE_INTEGER = 9007199254740991
 _EMPTY_GRPC_WEB_TEXT_BODY = base64.b64encode(bytes(5)).decode("ascii")
 
 # xAI billing_product enum (github.com/xai-org/xai/go/gen/billing_product).
+# Grok Build (2) stays named so a label lookup stays correct, but its window
+# is not a dashboard quota bar.
+_HIDDEN_PRODUCT_NUMBERS = frozenset({2})
 _PRODUCT_NAMES = {
     0: ("unspecified", "Other"),
     1: ("api", "API"),
@@ -222,7 +225,7 @@ def normalize_grok_consumer_payload(payload: bytes, *, now: datetime | None = No
         if explicit is None and not valid_current_period:
             continue
         product_number = _safe_number(_varint_at(product, 1) if _varint_at(product, 1) is not None else 0)
-        if product_number is None:
+        if product_number is None or product_number in _HIDDEN_PRODUCT_NUMBERS:
             continue
         product_id, product_label = _PRODUCT_NAMES.get(
             product_number,
