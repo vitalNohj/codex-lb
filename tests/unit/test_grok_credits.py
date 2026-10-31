@@ -156,6 +156,18 @@ def test_parser_drops_grok_build_and_keeps_the_other_products() -> None:
     assert _PRODUCT_NAMES[2] == ("grok_build", "Grok Build")
 
 
+def test_parser_keeps_prepaid_credits_when_grok_build_is_the_only_window() -> None:
+    """Hiding product 2 must not fail the payload before prepaid credits are read."""
+
+    product = _field_varint(1, 2) + _float(2, 12.5)
+    config = _message(7, product) + _message(12, _field_varint(1, 42))
+    parsed = normalize_grok_consumer_payload(_message(1, config), now=_NOW)
+
+    assert parsed.windows == ()
+    assert parsed.prepaid_credits == 42
+    assert parsed.refreshed_at == _NOW
+
+
 def test_parser_names_grok_bot_and_falls_back_for_an_unmapped_product() -> None:
     products = b"".join(_message(7, _field_varint(1, number) + _float(2, 10.0)) for number in (7, 8, 9, 10, 11, 12))
     config = _float(1, 1.0) + products + _message(8, _period(2, _START, _RESET))
