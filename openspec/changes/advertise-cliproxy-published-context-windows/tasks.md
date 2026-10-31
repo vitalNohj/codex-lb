@@ -2,7 +2,7 @@
 
 - [x] 1.1 Verify the Codex-client catalog shape against CLIProxyAPI v8.0.36 (`{"models":[{slug, context_window, max_context_window, max_tokens, visibility, ...}]}`; `slug` equals the plain listing id) and record fixtures from it.
 - [x] 1.2 `ClaudeSidecarClient.list_published_model_limits()`: fetch `GET /v1/models?client_version=<CODEX_VERSION>`, keep rows with positive `context_window` and `max_tokens`, bounded timeout.
-- [x] 1.3 Cache the limits per endpoint for the models cache TTL; keep last good on failure; empty on first failure.
+- [x] 1.3 Cache the limits per endpoint for the models cache TTL; keep last good on failure; empty on first failure; a failed attempt is cached for the TTL too.
 - [x] 1.4 `list_models_cached()` fetches listing and limits concurrently and attaches limits by exact id; any catalog failure leaves the listing unchanged.
 
 ## 2. Advertise them

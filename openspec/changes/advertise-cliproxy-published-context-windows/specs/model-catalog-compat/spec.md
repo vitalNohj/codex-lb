@@ -40,10 +40,11 @@ The system SHALL resolve a Claude-sidecar entry's advertised window in this orde
 
 ### Requirement: The CLIProxyAPI catalog never degrades the listing
 
-The system SHALL cache the catalog limits per sidecar endpoint for the models cache TTL. On a failed, timed-out or unusable catalog response it MUST keep the last good limits, or with none serve the listing with the windows it would have had without the catalog. The catalog MUST NOT change which models are listed.
+The system SHALL cache the catalog limits per sidecar endpoint for the models cache TTL. On a failed, timed-out or unusable catalog response it MUST keep the last good limits, or with none serve the listing with the windows it would have had without the catalog. A failed attempt MUST NOT be retried before the TTL elapses. The catalog MUST NOT change which models are listed.
 
 #### Scenario: Catalog failure keeps the listing
 
 - **GIVEN** the catalog request times out and no limits were fetched before
 - **WHEN** a client calls `GET /v1/models`
 - **THEN** every listed CLIProxyAPI model is still listed with the window it would have had without the catalog
+- **AND** further `GET /v1/models` calls within the TTL do not request the catalog again

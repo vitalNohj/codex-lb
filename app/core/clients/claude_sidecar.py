@@ -250,7 +250,9 @@ class ClaudeSidecarClient:
 
         The cache is module level because a client is built per request. A
         failed refresh keeps the last good limits; with none it returns an empty
-        mapping, so the listing keeps today's windows.
+        mapping, so the listing keeps today's windows. A failed attempt is
+        cached for the same TTL as a good one, so a catalog that stays down or
+        times out is retried once per TTL rather than on every listing.
         """
 
         global _published_limits_cache
@@ -268,9 +270,10 @@ class ClaudeSidecarClient:
         except ClaudeSidecarError:
             if cached is not None:
                 logger.warning("using cached CLIProxyAPI model limits after refresh failure", exc_info=True)
-                return cached.limits
-            logger.warning("CLIProxyAPI model limits unavailable", exc_info=True)
-            return {}
+                limits = cached.limits
+            else:
+                logger.warning("CLIProxyAPI model limits unavailable", exc_info=True)
+                limits = {}
         with _published_limits_cache_lock:
             _published_limits_cache = _PublishedLimitsCache(key=key, fetched_at=now, limits=limits)
         return limits

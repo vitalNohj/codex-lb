@@ -256,6 +256,38 @@ async def test_catalog_refresh_failure_serves_last_good_limits(monkeypatch) -> N
 
 
 @pytest.mark.asyncio
+async def test_failed_catalog_is_not_retried_within_the_ttl(monkeypatch) -> None:
+    """A catalog that stays down costs one attempt per TTL, not one per listing."""
+
+    session = _RoutedSession(plain=_FakeResponse(200, _PLAIN), catalog=asyncio.TimeoutError())
+    _install(monkeypatch, session)
+
+    for _ in range(3):
+        models = await ClaudeSidecarClient(_config()).list_models_cached()
+        assert all(model.context_window is None for model in models)
+
+    assert _catalog_calls(session) == 1
+
+
+@pytest.mark.asyncio
+async def test_failed_refresh_keeps_last_good_limits_for_the_ttl(monkeypatch) -> None:
+    session = _RoutedSession(plain=_FakeResponse(200, _PLAIN), catalog=_FakeResponse(200, _CATALOG))
+    _install(monkeypatch, session)
+    clock = [1_000.0]
+    monkeypatch.setattr("app.core.clients.claude_sidecar.time.monotonic", lambda: clock[0])
+
+    await ClaudeSidecarClient(_config()).list_models_cached()
+    session.catalog = OSError("down")
+    clock[0] += 61
+    await ClaudeSidecarClient(_config()).list_models_cached()
+    clock[0] += 30
+    models = {model.id: model for model in await ClaudeSidecarClient(_config()).list_models_cached()}
+
+    assert _catalog_calls(session) == 2
+    assert models["grok-4.7"].context_window == 500_000
+
+
+@pytest.mark.asyncio
 async def test_catalog_timeout_is_bounded(monkeypatch) -> None:
     """The enrichment call never holds ``/v1/models`` for the 600 s request timeout."""
 
