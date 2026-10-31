@@ -24,7 +24,7 @@ import asyncio
 import logging
 import math
 import time
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
@@ -480,6 +480,32 @@ async def model_has_billable_price(*, provider: str, model: str) -> bool:
     """
 
     return model_price_is_billable(await _known_price(provider=provider, model=model))
+
+
+async def billable_price_snapshot(keys: Collection[tuple[str, str]]) -> Callable[[str, str], bool] | None:
+    """Answer ``model_has_billable_price`` for many ``(provider, model)`` pairs from one read.
+
+    For a caller that judges a whole list at once (a shared key's model
+    listing). Only externally priced providers are read. It schedules no
+    lookups: a listing is not a request for the model. ``None`` when the store
+    cannot be read, which the caller treats as no model priced.
+    """
+
+    wanted = [(provider, model) for provider, model in keys if is_external_priced_provider(provider)]
+    try:
+        async with get_background_session() as session:
+            records = await ExternalModelPriceStore(session).get_many(wanted)
+    except Exception:
+        logger.warning("external price store batch read failed count=%d", len(wanted), exc_info=True)
+        return None
+
+    def is_billable(provider: str, model: str) -> bool:
+        if not is_external_priced_provider(provider):
+            return False
+        record = records.get(normalize_lookup_key(provider, model))
+        return record is not None and record.is_priced and model_price_is_billable(record.price)
+
+    return is_billable
 
 
 async def _known_price(*, provider: str, model: str) -> ModelPrice | None:

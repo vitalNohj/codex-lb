@@ -315,3 +315,29 @@ async def test_a_shared_key_lists_only_priced_models(async_client, monkeypatch):
     assert "codex-auto-review" not in shared_codex
     assert shared_codex <= private_codex
     assert all(not model.endswith(":free") for model in shared_v1 | shared_codex)
+
+
+@pytest.mark.asyncio
+async def test_a_shared_key_listing_hides_sidecar_models_when_the_price_store_is_unreadable(async_client, monkeypatch):
+    async def no_remote_models(self):
+        del self
+        return []
+
+    async def unreadable(self, keys):
+        del self, keys
+        raise RuntimeError("price store unreachable")
+
+    from app.core.clients.openrouter_sidecar import OpenRouterSidecarClient
+
+    monkeypatch.setattr(OpenRouterSidecarClient, "list_models_cached", no_remote_models)
+    await _configure_openrouter(async_client)
+    await _seed_openrouter_prices()
+    await _enable_api_key_auth(async_client)
+    _, shared_key = await _create_key(async_client, name="shared-listing-store-down", shared=True)
+    monkeypatch.setattr(ExternalModelPriceStore, "get_many", unreadable)
+
+    shared_v1, _ = await _listed_ids(async_client, shared_key)
+
+    assert {_FREE_MODEL, _UNPRICED_SIDECAR_MODEL, _PAID_SIDECAR_MODEL}.isdisjoint(shared_v1)
+    # Models priced from the static table are unaffected by the external store.
+    assert _PRICED_MODEL in shared_v1

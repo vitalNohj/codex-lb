@@ -32,6 +32,7 @@ from app.core.usage.external_pricing.catalogs import (
 from app.core.usage.external_pricing.service import (
     CalculatedCost,
     ServingContext,
+    billable_price_snapshot,
     calculated_cost_for_request,
     drain_pending_lookups,
     model_has_billable_price,
@@ -46,6 +47,7 @@ __all__ = [
     "PROVIDER_ORCAROUTER",
     "CalculatedCost",
     "ServingContext",
+    "billable_price_snapshot",
     "calculated_cost_for_request",
     "model_has_billable_price",
     "drain_pending_lookups",
