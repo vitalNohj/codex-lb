@@ -485,6 +485,31 @@ async def test_poll_once_classifies_unauthorized(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("client_factory", "status"),
+    [(_UnauthorizedClient, "unauthorized"), (_UnreachableClient, "unreachable"), (_ErrorClient, "error")],
+)
+async def test_failed_poll_keeps_the_previous_accounts(monkeypatch, client_factory, status: str) -> None:
+    settings = _FakeSettings(claude_sidecar_quota_state_json=_snapshot_json_with_usage(36.0, 93.0))
+    repo_holder: list[_FakeRepo] = []
+    _patch_environment(
+        monkeypatch,
+        settings=settings,
+        client_factory=client_factory,
+        repo_holder=repo_holder,
+    )
+    poller = ClaudeSidecarQuotaPoller(interval_seconds=60.0, enabled=True, _client_factory=client_factory)
+
+    await poller._poll_once()
+
+    snapshot = _read_snapshot(repo_holder)
+    assert snapshot is not None
+    assert snapshot.status == status
+    assert len(snapshot.accounts) == 1
+    assert snapshot.accounts[0].email == "ok@example.com"
+
+
+@pytest.mark.asyncio
 async def test_poll_once_classifies_unreachable(monkeypatch) -> None:
     repo_holder: list[_FakeRepo] = []
     _patch_environment(
@@ -795,7 +820,7 @@ async def test_poll_preserves_holds_when_listing_fails(monkeypatch) -> None:
     snapshot = _read_snapshot(repo_holder)
     assert snapshot is not None
     assert snapshot.status == "unauthorized"
-    assert snapshot.accounts == ()
+    assert snapshot.accounts[0].email == "a@example.com"
     assert snapshot.rate_limit_holds == (hold,)
 
 
