@@ -341,3 +341,29 @@ async def test_a_shared_key_listing_hides_sidecar_models_when_the_price_store_is
     assert {_FREE_MODEL, _UNPRICED_SIDECAR_MODEL, _PAID_SIDECAR_MODEL}.isdisjoint(shared_v1)
     # Models priced from the static table are unaffected by the external store.
     assert _PRICED_MODEL in shared_v1
+
+
+@pytest.mark.asyncio
+async def test_a_source_listing_a_subscription_model_does_not_hide_it_from_a_shared_key(async_client):
+    # With no source assignment, a subscription-registry model is served by the
+    # subscription, never by a same-named source, so an unrated source entry
+    # must not hide the (priced) subscription model from the listing.
+    async with SessionLocal() as session:
+        source = ModelSource(
+            id="src-shadow",
+            name="shadow",
+            kind="openai_compatible",
+            base_url="http://127.0.0.1:9/v1",
+            is_enabled=True,
+            supports_responses=True,
+        )
+        source.models = [ModelSourceModel(model=_PRICED_MODEL, is_enabled=True)]
+        session.add(source)
+        await session.commit()
+    await _enable_api_key_auth(async_client)
+    _, shared_key = await _create_key(async_client, name="shared-shadow-source", shared=True)
+
+    shared_v1, shared_codex = await _listed_ids(async_client, shared_key)
+
+    assert _PRICED_MODEL in shared_v1
+    assert _PRICED_MODEL in shared_codex

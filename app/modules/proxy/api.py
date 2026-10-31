@@ -4568,11 +4568,15 @@ async def _keep_priced_models(api_key: ApiKeyData | None, items: list[_T], model
         sources = await ModelSourcesRepository(session).list_enabled_sources()
         detach_session_objects(session)
     assigned_source_ids = _allowed_source_ids_for_api_key(api_key)
+    # Source selection's precedence: a key with no source assignment is served
+    # a subscription-registry model by its subscription, never by a source that
+    # lists the same name, so that model is priced from the static table.
+    registry_models = get_model_registry().get_models_with_fallback() if assigned_source_ids is None else {}
     for source in sources:
         if assigned_source_ids is not None and source.id not in assigned_source_ids:
             continue
         for source_model in source.models:
-            if source_model.is_enabled:
+            if source_model.is_enabled and source_model.model not in registry_models:
                 sources_by_model.setdefault(source_model.model, source)
     priced = await priced_listed_models(
         [model_id(item) for item in items],
