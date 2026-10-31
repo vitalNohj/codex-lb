@@ -294,12 +294,15 @@ class StreamingLimitWarmupSender:
             return await self._accounts_repo.get_by_id_fresh(account.id)
         async with self._accounts_repo_factory() as accounts_repo:
             current = await accounts_repo.get_by_id_fresh(account.id)
-            if current is None or not _account_is_safe_candidate(current) or not current.limit_warmup_enabled:
-                return current
-            await AuthManager(
-                accounts_repo,
-                refresh_repo_factory=self._accounts_repo_factory,
-            ).ensure_fresh(current)
+        if current is None or not _account_is_safe_candidate(current) or not current.limit_warmup_enabled:
+            return current
+        # The read above checked the connection back in. ensure_fresh runs in
+        # a separate task that needs the same file-SQLite writer lock, so this
+        # task must not still be holding a connection while it waits.
+        await AuthManager(
+            self._accounts_repo,
+            refresh_repo_factory=self._accounts_repo_factory,
+        ).ensure_fresh(current)
         async with self._accounts_repo_factory() as accounts_repo:
             return await accounts_repo.get_by_id_fresh(account.id)
 
