@@ -306,6 +306,7 @@ from app.modules.proxy.alias_pool_dispatch import (
     dispatch_chat_with_failover,
 )
 from app.modules.proxy.api_key_pricing import (
+    listed_model_is_priced,
     never_charged,
     pool_price_check,
     route_price_check,
@@ -4552,6 +4553,62 @@ async def _build_codex_models_response(api_key: ApiKeyData | None) -> Response:
             await _release_reservation_deferring_cancellation(reservation)
 
 
+async def _shared_key_listed_model_price_check(api_key: ApiKeyData) -> Callable[[str], Awaitable[bool]]:
+    """The check a shared key's model listing keeps an id by.
+
+    A shared key is refused every model that is not priced yet, so its listing
+    shows only the ids it would be served. The routing, source, and alias
+    state is loaded once for the whole listing.
+    """
+
+    routing_entries = await _enabled_sidecar_routing_entries()
+    sources_by_model: dict[str, ModelSource] = {}
+    async with get_background_session() as session:
+        sources = await ModelSourcesRepository(session).list_enabled_sources()
+        detach_session_objects(session)
+    assigned_source_ids = _allowed_source_ids_for_api_key(api_key)
+    for source in sources:
+        if assigned_source_ids is not None and source.id not in assigned_source_ids:
+            continue
+        for source_model in source.models:
+            if source_model.is_enabled:
+                sources_by_model.setdefault(source_model.model, source)
+    aliases = await load_model_aliases()
+    verdicts: dict[str, bool] = {}
+
+    async def is_priced(model: str) -> bool:
+        if model not in verdicts:
+            verdicts[model] = await listed_model_is_priced(
+                model,
+                routing_entries=routing_entries,
+                sources_by_model=sources_by_model,
+                aliases=aliases,
+            )
+        return verdicts[model]
+
+    return is_priced
+
+
+async def _keep_priced_models(
+    is_priced: Callable[[str], Awaitable[bool]] | None,
+    items: list[_T],
+    model_id: Callable[[_T], str],
+) -> list[_T]:
+    """``items`` without the models ``is_priced`` rejects; all of them when there is no check."""
+
+    if is_priced is None:
+        return items
+    return [item for item in items if await is_priced(model_id(item))]
+
+
+async def _listing_price_check_for_api_key(api_key: ApiKeyData | None) -> Callable[[str], Awaitable[bool]] | None:
+    """The price check a model listing filters by: only a shared key is shown priced models alone."""
+
+    if api_key is None or not api_key_is_shared(api_key):
+        return None
+    return await _shared_key_listed_model_price_check(api_key)
+
+
 async def _build_codex_models_response_body(
     api_key: ApiKeyData | None,
 ) -> Response:
@@ -4686,6 +4743,9 @@ async def _build_codex_models_response_body(
                     context_window_overrides=context_window_overrides,
                 )
             )
+    is_priced = await _listing_price_check_for_api_key(api_key)
+    entries = await _keep_priced_models(is_priced, entries, lambda entry: entry.slug)
+    data = await _keep_priced_models(is_priced, data, lambda item: item.id)
     return JSONResponse(content=CodexModelsResponse(models=entries, data=data).model_dump(mode="json"))
 
 
@@ -5217,6 +5277,7 @@ async def _build_models_response_body(
         if catalog:
             serialized_items = apply_custom_alias_catalog_overrides(serialized_items, catalog)
         items = [ModelListItem.model_validate(entry) for entry in serialized_items]
+    items = await _keep_priced_models(await _listing_price_check_for_api_key(api_key), items, lambda item: item.id)
     return JSONResponse(content=_dump_v1_models_response(ModelListResponse(data=items)))
 
 

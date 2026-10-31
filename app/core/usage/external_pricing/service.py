@@ -52,7 +52,12 @@ from app.core.usage.external_pricing.store import (
     PriceRecord,
     normalize_lookup_key,
 )
-from app.core.usage.pricing import UsageTokens, calculate_cost_breakdown_from_usage
+from app.core.usage.pricing import (
+    ModelPrice,
+    UsageTokens,
+    calculate_cost_breakdown_from_usage,
+    model_price_is_billable,
+)
 from app.db.models import ExternalPriceStatus
 from app.db.session import get_background_session
 
@@ -462,30 +467,40 @@ async def calculated_cost_for_request(
     )
 
 
-async def model_has_known_price(*, provider: str, model: str) -> bool:
-    """Whether a request for ``model`` on ``provider`` would be priced right now.
+async def model_has_billable_price(*, provider: str, model: str) -> bool:
+    """Whether a request for ``model`` on ``provider`` would be charged a real rate right now.
 
     Answers from persisted state, exactly as ``calculated_cost_for_request``
     would price it, so an admission check and the settlement that follows agree.
     A model never seen before is not priced yet; its lookup is scheduled in the
     background, so a later request can find the answer. An unreadable store is
-    treated as unpriced: it cannot prove the request would be metered.
+    treated as unpriced: it cannot prove the request would be metered. A
+    resolved ``0`` price (an OpenRouter ``:free`` model) settles a request at
+    exactly nothing, so it does not count either.
     """
 
+    return model_price_is_billable(await _known_price(provider=provider, model=model))
+
+
+async def _known_price(*, provider: str, model: str) -> ModelPrice | None:
+    """The persisted price for ``model`` on ``provider``, scheduling a lookup when none is known yet."""
+
     if not is_external_priced_provider(provider):
-        return False
+        return None
     provider_key, model_key = normalize_lookup_key(provider, model)
     if not model_key:
-        return False
+        return None
     record = await _read_record(provider_key, model_key)
     if isinstance(record, _StorageResult):
-        return False
+        return None
     if record is None or (record.retry_due() and not record.is_priced):
         await _coordinator.submit(
             (provider_key, model_key),
             lambda: _run_lookup(provider_key, model_key, raw_incoming_model=model),
         )
-    return record is not None and record.is_priced
+    if record is None or not record.is_priced:
+        return None
+    return record.price
 
 
 async def _read_record(provider_key: str, model_key: str) -> PriceRecord | None | _StorageResult:
