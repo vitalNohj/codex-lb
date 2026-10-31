@@ -3194,10 +3194,10 @@ export const handlers = [
       { id: "grok-4", name: "CLIProxyAPI: grok-4" },
       { id: "gpt-oss:120b-cloud", name: "Ollama: gpt-oss:120b-cloud" },
     ];
-    // The limit-rules picker asks for subscription models only. Codex registry
-    // models stay; a Codex login's CLIProxyAPI model and free providers do not.
+    // The limit-rules picker filters CLIProxyAPI only. A Codex login's model
+    // drops out; Codex registry models and other integrations stay.
     const visible = scope === "subscriptions"
-      ? models.filter((model) => model.id !== "gpt-5.1-codex-mini" && !model.name.startsWith("Ollama:"))
+      ? models.filter((model) => model.id !== "gpt-5.1-codex-mini")
       : models;
     return HttpResponse.json({ models: visible });
   }),

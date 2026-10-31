@@ -94,9 +94,9 @@ async def list_models(
 ) -> dict:
     """Dashboard model catalog.
 
-    ``scope=subscriptions`` is the API-key limit-rules picker: Codex registry
-    models plus CLIProxyAPI models from Claude and xAI subscription logins.
-    The default list also offers the other configured providers.
+    ``scope=subscriptions`` is the API-key limit-rules picker. It keeps the
+    Codex registry and every non-CLIProxyAPI integration, and limits the
+    CLIProxyAPI entries to Claude and xAI subscription logins.
     """
     registry = get_model_registry()
     models_by_slug = registry.get_models_with_fallback()
@@ -153,8 +153,6 @@ async def list_models(
                 continue
             seen_model_ids.add(model_id)
             models.append({"id": model_id, "name": f"CLIProxyAPI: {model_id}", "sourceOnly": False})
-    if scope == "subscriptions":
-        return {"models": models}
     openrouter_config = await load_openrouter_sidecar_config()
     # Usable credential required, as for OpenCode Go: the picker must not poll
     # an upstream the deployment has no key for, nor offer models it would refuse.
