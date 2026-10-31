@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Mapping
+from dataclasses import replace
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
@@ -801,6 +802,25 @@ async def test_prefix_assignment_failure_keeps_the_management_outage(
 
     assert choice is None
     assert routing._MANAGEMENT_OUTAGE is not None
+    assert body["model"] == "claude-opus-5-5"
+
+
+async def test_management_outage_refuses_when_the_serving_credential_has_zero_weight(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    account = replace(_claude_account("acct", prefix=None), weight=0)
+    settings = _settings()
+    _install_settings(monkeypatch, settings)
+    monkeypatch.setattr(
+        routing._SNAPSHOTS,
+        "read",
+        lambda _raw: _claude_snapshot(account, status="unreachable", message="timed out"),
+    )
+    body: dict[str, JsonValue] = {"model": "claude-opus-5-5"}
+
+    with pytest.raises(routing.CliproxyClaudeRouteRefused):
+        await apply_cliproxy_account_route(body, client=_ApiKeyClient())
+
     assert body["model"] == "claude-opus-5-5"
 
 

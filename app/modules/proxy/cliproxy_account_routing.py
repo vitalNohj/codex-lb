@@ -1368,15 +1368,17 @@ def _management_outage_fail_open(
     ``candidates`` are the ones selection just scored, with the discovered model
     catalog attached, so a model the catalog does not serve is refused here too.
     Nothing known that serves the model (cold start, or a healthy empty listing
-    that removed the credentials) is refused, and so is any request a known
-    credential's captain-set exclusion or quota block covers, because an
-    unprefixed request could land on that credential.
+    that removed the credentials) is refused. So is any request that an
+    unprefixed send could land on a credential the operator kept out of
+    routing: a known credential that serves the model with a weight of zero or
+    less, or one whose captain-set exclusion or quota block covers the model.
     """
 
     if not outage:
         return False
     known_prefixes = _known_credential_prefixes(candidates)
-    if not any(candidate_serves_model(item, model, known_prefixes=known_prefixes) for item in candidates):
+    serving = [item for item in candidates if candidate_serves_model(item, model, known_prefixes=known_prefixes)]
+    if not serving or any(item.weight <= 0 for item in serving):
         return False
     return not any(_restricts_model(item, model, known_prefixes=known_prefixes) for item in candidates)
 
