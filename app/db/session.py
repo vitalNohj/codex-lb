@@ -18,7 +18,8 @@ from sqlalchemy import event, text
 from sqlalchemy import util as sqlalchemy_util
 from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
-from sqlalchemy.pool import NullPool
+from sqlalchemy.pool import AsyncAdaptedQueuePool, NullPool
+from sqlalchemy.util.concurrency import await_only
 
 from app.core.config.settings import get_settings
 from app.core.utils.shared_future import _await_cleanup_deferring_cancellation
@@ -231,18 +232,106 @@ class _CursorClosingSQLiteConnection(sqlite3.Connection):
     def executescript(self, sql_script: str, /) -> sqlite3.Cursor:
         return self.cursor().executescript(sql_script)
 
-    def close(self) -> None:
+    def finalize_open_cursors(self) -> None:
+        """Release unfinished statements without closing the connection.
+
+        A pooled connection is reset and checked in instead of closed. An
+        unfinished ``UPDATE ... RETURNING`` keeps SQLite's writer slot until
+        its cursor is finalized, so checkin has to do the same work ``close``
+        does.
+        """
         for cursor in list(self._open_cursors):
             try:
                 cursor.close()
             except sqlite3.Error:
                 pass
+            self._open_cursors.discard(cursor)
+
+    def close(self) -> None:
+        self.finalize_open_cursors()
         super().close()
+
+
+# Idle file-SQLite connections each engine keeps for reuse. Opening a
+# connection costs a file open plus the PRAGMA round trips, so the hot path
+# reuses one of these. Checkout never waits: when all of them are in use the
+# pool opens another connection and closes it on return (unbounded
+# overflow), exactly as the earlier NullPool did for every checkout. No lock
+# is taken at checkout; ``sqlite_writer_section`` alone serializes writes,
+# and only around the write itself. WAL lets readers run beside the writer.
+_SQLITE_FILE_POOL_SIZE = 4
+# SQLAlchemy's QueuePool reads -1 as "no overflow limit": a checkout past
+# the retained connections opens a new one instead of waiting for a return.
+_SQLITE_FILE_POOL_UNBOUNDED_OVERFLOW = -1
+
+
+def _raw_sqlite_connection(dbapi_connection: object) -> sqlite3.Connection | None:
+    if isinstance(dbapi_connection, sqlite3.Connection):
+        return dbapi_connection
+    adapted = getattr(dbapi_connection, "_connection", None)
+    if isinstance(adapted, sqlite3.Connection):
+        return adapted
+    raw = getattr(adapted, "_connection", None)
+    if isinstance(raw, sqlite3.Connection):
+        return raw
+    return None
+
+
+def _finalize_open_sqlite_cursors(dbapi_connection: object) -> None:
+    """Finalize cursors on the aiosqlite worker before the pool rolls back."""
+    raw = _raw_sqlite_connection(dbapi_connection)
+    if not isinstance(raw, _CursorClosingSQLiteConnection):
+        return
+    adapted = getattr(dbapi_connection, "_connection", None)
+    tx = getattr(adapted, "_tx", None)
+    if tx is None:
+        raw.finalize_open_cursors()
+        return
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        raw.finalize_open_cursors()
+        return
+    future: asyncio.Future[None] = loop.create_future()
+    tx.put_nowait((future, raw.finalize_open_cursors))
+    try:
+        await_only(future)
+    except Exception:
+        logger.warning("Failed to finalize pooled SQLite cursors before reset", exc_info=True)
+
+
+class _FileSQLiteQueuePool(AsyncAdaptedQueuePool):
+    """Reusable file-SQLite connections whose checkout never waits.
+
+    The pool holds no lock and never blocks a checkout, so a task that keeps
+    a session open while it waits on another task cannot starve that task of
+    a connection. Overflow is unbounded (see ``_SQLITE_FILE_POOL_SIZE``).
+    """
+
+    def __init__(self, *args: Any, **kw: Any) -> None:
+        super().__init__(*args, **kw)
+        if self._max_overflow != _SQLITE_FILE_POOL_UNBOUNDED_OVERFLOW:
+            # A bounded overflow makes checkout wait for a return, and a
+            # holder waiting on the waiter would stall it for pool_timeout.
+            raise ValueError("file-SQLite pool overflow must be unbounded")
+        event.listen(self, "reset", self._finalize_cursors_on_reset)
+
+    @staticmethod
+    def _finalize_cursors_on_reset(
+        dbapi_connection: object,
+        _connection_record: object,
+        reset_state: object,
+    ) -> None:
+        if getattr(reset_state, "terminate_only", False):
+            return
+        _finalize_open_sqlite_cursors(dbapi_connection)
 
 
 def _sqlite_file_async_engine_kwargs() -> dict[str, object]:
     return {
-        "poolclass": NullPool,
+        "poolclass": _FileSQLiteQueuePool,
+        "pool_size": _SQLITE_FILE_POOL_SIZE,
+        "max_overflow": _SQLITE_FILE_POOL_UNBOUNDED_OVERFLOW,
         "connect_args": {
             "timeout": _SQLITE_BUSY_TIMEOUT_SECONDS,
             "factory": _CursorClosingSQLiteConnection,
@@ -1182,7 +1271,13 @@ async def relax_commit_durability(session: AsyncSession) -> None:
 
 @asynccontextmanager
 async def sqlite_writer_section() -> AsyncIterator[None]:
-    """Serialize local SQLite write transactions without throttling upstream work."""
+    """Serialize local SQLite write transactions without throttling upstream work.
+
+    The lock covers the write transaction inside the section and nothing
+    else. Connection checkout never takes it, so a session held open while
+    its task waits on another task does not hold it. A section body must not
+    wait on another task that enters a section itself.
+    """
     global _sqlite_writer_lock
     database_url = normalize_sqlite_url(_settings.database_url)
     if not _is_sqlite_url(database_url) or _is_sqlite_memory_url(database_url):

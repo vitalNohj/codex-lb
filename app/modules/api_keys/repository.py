@@ -6,10 +6,25 @@ from datetime import datetime
 from enum import Enum
 from typing import Any
 
-from sqlalchemy import BigInteger, Integer, cast, delete, func, insert, literal, or_, select, text, true, update
+from sqlalchemy import (
+    BigInteger,
+    Integer,
+    and_,
+    case,
+    cast,
+    delete,
+    func,
+    insert,
+    literal,
+    or_,
+    select,
+    text,
+    true,
+    update,
+)
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import load_only, raiseload, selectinload
+from sqlalchemy.orm import load_only, noload, raiseload, selectinload
 
 from app.core.utils.time import utcnow
 from app.db.models import (
@@ -35,6 +50,12 @@ from app.db.session import sqlite_writer_section
 from app.modules.accounts.usage_rollup import api_key_usage_aggregate_stmt, read_api_key_rollup_state
 from app.modules.accounts.usage_time_rollup import HOURLY_BUCKET_SECONDS, WARMUP_REQUEST_KINDS, to_dimension
 from app.modules.accounts.usage_time_rollup_read import RawWindow, raw_windows_clause, read_hourly_window
+from app.modules.api_keys.admission_snapshot import (
+    forget_admission_items,
+    forget_admission_items_for_limits,
+    recall_admission_items,
+    remember_admission_items,
+)
 from app.modules.api_keys.limit_windows import advance_limit_reset
 from app.modules.api_keys.model_filters import limit_matches_request_model, stored_model_identity
 
@@ -500,6 +521,7 @@ class ApiKeysRepository:
 
     async def replace_limits(self, key_id: str, limits: list[ApiKeyLimit]) -> list[ApiKeyLimit]:
         existing = await self.get_limits_by_key(key_id)
+        forget_admission_items_for_limits({limit.id for limit in existing})
         for limit in existing:
             await self._session.delete(limit)
         for limit in limits:
@@ -537,8 +559,12 @@ class ApiKeysRepository:
                 matched.current_value = incoming.current_value
                 matched.reset_at = incoming.reset_at
 
+        removed_limit_ids = {
+            old_limit.id for old_limit in existing if _limit_key(old_limit) not in incoming_keys
+        }
+        forget_admission_items_for_limits(removed_limit_ids)
         for old_limit in existing:
-            if _limit_key(old_limit) not in incoming_keys:
+            if old_limit.id in removed_limit_ids:
                 await self._session.delete(old_limit)
 
         if commit:
@@ -719,6 +745,70 @@ class ApiKeysRepository:
             reset_at=snapshot.reset_at if snapshot is not None else None,
         )
 
+    async def try_reserve_usage_many(
+        self,
+        reservations: Sequence[tuple[int, int, datetime]],
+    ) -> dict[int, ReservationResult]:
+        """Increment every listed limit in one statement.
+
+        A row whose window changed or whose remaining budget cannot hold its
+        delta is left unchanged and reported as a failure. Rows that do fit
+        are updated. The caller rolls the transaction back when any row fails,
+        so a partial update is not committed. One statement covers every rule:
+        extra limit rules do not add extra updates.
+        """
+        if not reservations:
+            return {}
+
+        predicates = [
+            and_(
+                ApiKeyLimit.id == limit_id,
+                ApiKeyLimit.reset_at == expected_reset_at,
+                ApiKeyLimit.current_value + delta <= ApiKeyLimit.max_value,
+            )
+            for limit_id, delta, expected_reset_at in reservations
+        ]
+        result = await self._session.execute(
+            update(ApiKeyLimit)
+            .where(ApiKeyLimit.id.in_([limit_id for limit_id, _delta, _reset_at in reservations]))
+            .where(or_(*predicates))
+            .values(
+                current_value=ApiKeyLimit.current_value
+                + case(
+                    *[(ApiKeyLimit.id == limit_id, delta) for limit_id, delta, _reset_at in reservations],
+                    else_=0,
+                )
+            )
+            .returning(
+                ApiKeyLimit.id,
+                ApiKeyLimit.current_value,
+                ApiKeyLimit.max_value,
+                ApiKeyLimit.reset_at,
+            )
+            .execution_options(synchronize_session=False)
+        )
+        updated = {int(row.id): row for row in result.all()}
+        results: dict[int, ReservationResult] = {}
+        for limit_id, _delta, _expected_reset_at in reservations:
+            row = updated.get(limit_id)
+            if row is None:
+                results[limit_id] = ReservationResult(
+                    success=False,
+                    limit_id=limit_id,
+                    current_value=None,
+                    max_value=None,
+                    reset_at=None,
+                )
+                continue
+            results[limit_id] = ReservationResult(
+                success=True,
+                limit_id=limit_id,
+                current_value=int(row.current_value),
+                max_value=int(row.max_value) if row.max_value is not None else None,
+                reset_at=row.reset_at,
+            )
+        return results
+
     async def adjust_reserved_usage(
         self,
         limit_id: int,
@@ -734,6 +824,40 @@ class ApiKeysRepository:
         )
         return result.scalar_one_or_none() is not None
 
+    async def adjust_reserved_usage_many(
+        self,
+        adjustments: Sequence[tuple[int, int, datetime]],
+    ) -> None:
+        """Apply every counter correction in one statement.
+
+        A negative delta that would drive the counter below zero, or a delta
+        whose window no longer matches, is skipped. Callers ignore that the
+        same way they ignore a false result from ``adjust_reserved_usage``.
+        """
+        applicable = [(limit_id, delta, reset_at) for limit_id, delta, reset_at in adjustments if delta != 0]
+        if not applicable:
+            return
+
+        predicates = []
+        for limit_id, delta, expected_reset_at in applicable:
+            predicate = and_(ApiKeyLimit.id == limit_id, ApiKeyLimit.reset_at == expected_reset_at)
+            if delta < 0:
+                predicate = and_(predicate, ApiKeyLimit.current_value >= -delta)
+            predicates.append(predicate)
+        await self._session.execute(
+            update(ApiKeyLimit)
+            .where(ApiKeyLimit.id.in_([limit_id for limit_id, _delta, _reset_at in applicable]))
+            .where(or_(*predicates))
+            .values(
+                current_value=ApiKeyLimit.current_value
+                + case(
+                    *[(ApiKeyLimit.id == limit_id, delta) for limit_id, delta, _reset_at in applicable],
+                    else_=0,
+                )
+            )
+            .execution_options(synchronize_session=False)
+        )
+
     async def create_usage_reservation(
         self,
         reservation_id: str,
@@ -747,39 +871,54 @@ class ApiKeysRepository:
         # requests, so an acked-but-lost commit here would desynchronize the
         # reservation ledger from requests that still complete (settlement
         # invariant).
-        reservation = ApiKeyUsageReservation(
-            id=reservation_id,
-            api_key_id=key_id,
-            model=model,
-            status="reserved",
+        now = utcnow()
+        await self._session.execute(
+            insert(ApiKeyUsageReservation).values(
+                id=reservation_id,
+                api_key_id=key_id,
+                model=model,
+                status="reserved",
+                created_at=now,
+                updated_at=now,
+            )
         )
-        self._session.add(reservation)
-        for item in items:
-            self._session.add(
-                ApiKeyUsageReservationItem(
-                    reservation_id=reservation_id,
-                    limit_id=item.limit_id,
-                    limit_type=item.limit_type.value,
-                    reserved_delta=item.reserved_delta,
-                    expected_reset_at=item.expected_reset_at,
+        if items:
+            # One multi-row INSERT however many limit rules applied.
+            await self._session.execute(
+                insert(ApiKeyUsageReservationItem).values(
+                    [
+                        {
+                            "reservation_id": reservation_id,
+                            "limit_id": item.limit_id,
+                            "limit_type": item.limit_type.value,
+                            "reserved_delta": item.reserved_delta,
+                            "expected_reset_at": item.expected_reset_at,
+                            "created_at": now,
+                            "updated_at": now,
+                        }
+                        for item in items
+                    ]
                 )
             )
+        remember_admission_items(reservation_id, items)
 
     async def get_usage_reservation(self, reservation_id: str) -> UsageReservationData | None:
-        result = await self._session.execute(
-            select(ApiKeyUsageReservation)
-            .options(selectinload(ApiKeyUsageReservation.items))
-            .where(ApiKeyUsageReservation.id == reservation_id)
-        )
+        cached_items = recall_admission_items(reservation_id)
+        statement = select(ApiKeyUsageReservation).where(ApiKeyUsageReservation.id == reservation_id)
+        if cached_items is not None:
+            # The relationship is selectin-loaded by default. Skip that second
+            # query when this process still has the rows it just wrote.
+            statement = statement.options(noload(ApiKeyUsageReservation.items))
+        else:
+            statement = statement.options(selectinload(ApiKeyUsageReservation.items))
+        result = await self._session.execute(statement)
         row = result.scalar_one_or_none()
         if row is None:
             return None
-        return UsageReservationData(
-            reservation_id=row.id,
-            api_key_id=row.api_key_id,
-            model=row.model,
-            status=row.status,
-            items=[
+        if cached_items is not None:
+            items = list(cached_items)
+        else:
+            items = [
                 UsageReservationItemData(
                     limit_id=item.limit_id,
                     limit_type=LimitType(item.limit_type),
@@ -788,7 +927,13 @@ class ApiKeysRepository:
                     actual_delta=item.actual_delta,
                 )
                 for item in row.items
-            ],
+            ]
+        return UsageReservationData(
+            reservation_id=row.id,
+            api_key_id=row.api_key_id,
+            model=row.model,
+            status=row.status,
+            items=items,
         )
 
     async def transition_usage_reservation_status(
@@ -868,6 +1013,59 @@ class ApiKeysRepository:
             .where(ApiKeyUsageReservationItem.limit_id == item.limit_id)
             .values(actual_delta=actual_delta)
         )
+
+    async def set_reservation_item_actuals(
+        self,
+        reservation_id: str,
+        actuals: Sequence[tuple[UsageReservationItemData, int]],
+    ) -> None:
+        """Record every item's actual delta in one statement."""
+        if not actuals:
+            return
+        now = utcnow()
+        rows = [
+            {
+                "reservation_id": reservation_id,
+                "limit_id": item.limit_id,
+                "limit_type": item.limit_type.value,
+                "reserved_delta": item.reserved_delta,
+                "expected_reset_at": item.expected_reset_at,
+                "actual_delta": actual_delta,
+                "created_at": now,
+                "updated_at": now,
+            }
+            for item, actual_delta in actuals
+        ]
+        bind = self._session.get_bind()
+        dialect_name = bind.dialect.name if bind is not None else "sqlite"
+        if dialect_name == "sqlite":
+            from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+
+            stmt = sqlite_insert(ApiKeyUsageReservationItem).values(rows)
+            stmt = stmt.on_conflict_do_update(
+                index_elements=[
+                    ApiKeyUsageReservationItem.reservation_id,
+                    ApiKeyUsageReservationItem.limit_id,
+                ],
+                set_={"actual_delta": stmt.excluded.actual_delta, "updated_at": now},
+            )
+            await self._session.execute(stmt)
+            return
+        if dialect_name == "postgresql":
+            from sqlalchemy.dialects.postgresql import insert as postgresql_insert
+
+            stmt = postgresql_insert(ApiKeyUsageReservationItem).values(rows)
+            stmt = stmt.on_conflict_do_update(
+                index_elements=[
+                    ApiKeyUsageReservationItem.reservation_id,
+                    ApiKeyUsageReservationItem.limit_id,
+                ],
+                set_={"actual_delta": stmt.excluded.actual_delta, "updated_at": now},
+            )
+            await self._session.execute(stmt)
+            return
+        for item, actual_delta in actuals:
+            await self.upsert_reservation_item_actual(reservation_id, item=item, actual_delta=actual_delta)
 
     async def settle_usage_reservation(
         self,
@@ -992,25 +1190,22 @@ class ApiKeysRepository:
                         if claimed.scalar_one_or_none() is None:
                             continue
 
-                        for item in items_by_reservation_id[reservation_id]:
-                            await self.adjust_reserved_usage(
-                                item.limit_id,
-                                delta=-item.reserved_delta,
-                                expected_reset_at=item.expected_reset_at,
-                            )
-                            await self.upsert_reservation_item_actual(
-                                reservation_id,
-                                item=UsageReservationItemData(
-                                    limit_id=item.limit_id,
-                                    limit_type=item.limit_type,
-                                    reserved_delta=item.reserved_delta,
-                                    expected_reset_at=item.expected_reset_at,
-                                    actual_delta=item.actual_delta,
-                                ),
-                                actual_delta=0,
-                            )
+                        released_items = items_by_reservation_id[reservation_id]
+                        await self.adjust_reserved_usage_many(
+                            [
+                                (item.limit_id, -item.reserved_delta, item.expected_reset_at)
+                                for item in released_items
+                                if item.reserved_delta
+                            ]
+                        )
+                        await self.set_reservation_item_actuals(
+                            reservation_id,
+                            [(item, 0) for item in released_items],
+                        )
                         released_count += 1
                     await self._session.commit()
+                    for reservation_id in reservation_ids:
+                        forget_admission_items(reservation_id)
         except Exception:
             await self._session.rollback()
             raise
