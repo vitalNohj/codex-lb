@@ -41,6 +41,7 @@ from app.modules.claude_sidecar.quota import (
     SidecarAuthQuota,
     SidecarOAuthUsage,
     SidecarQuotaSnapshot,
+    SidecarQuotaStatus,
     credential_provider,
     parse_auth_files,
     snapshot_from_json,
@@ -349,32 +350,12 @@ async def _classify_poll_result(
         raw_files = await client.list_auth_files()
     except ClaudeSidecarError as exc:
         if exc.status_code in (401, 403):
-            return SidecarQuotaSnapshot(
-                checked_at=now,
-                status="unauthorized",
-                message=exc.message,
-                accounts=(),
-            )
+            return _failed_poll_snapshot(now, "unauthorized", exc.message, previous_snapshot)
         if isinstance(exc, ClaudeSidecarUnavailableError):
-            return SidecarQuotaSnapshot(
-                checked_at=now,
-                status="unreachable",
-                message=exc.message,
-                accounts=(),
-            )
-        return SidecarQuotaSnapshot(
-            checked_at=now,
-            status="error",
-            message=exc.message,
-            accounts=(),
-        )
+            return _failed_poll_snapshot(now, "unreachable", exc.message, previous_snapshot)
+        return _failed_poll_snapshot(now, "error", exc.message, previous_snapshot)
     except Exception as exc:
-        return SidecarQuotaSnapshot(
-            checked_at=now,
-            status="error",
-            message=str(exc) or exc.__class__.__name__,
-            accounts=(),
-        )
+        return _failed_poll_snapshot(now, "error", str(exc) or exc.__class__.__name__, previous_snapshot)
 
     parsed = await asyncio.to_thread(_polled_accounts, raw_files)
     accounts = await _attach_oauth_usage(client, parsed, previous_snapshot)
@@ -384,6 +365,31 @@ async def _classify_poll_result(
         status="healthy",
         message=None,
         accounts=tuple(accounts),
+    )
+
+
+def _failed_poll_snapshot(
+    checked_at: datetime,
+    status: SidecarQuotaStatus,
+    message: str,
+    previous: SidecarQuotaSnapshot | None,
+) -> SidecarQuotaSnapshot:
+    """Record a failed management read without forgetting the last good accounts.
+
+    A 401, 403, timeout, or 5xx from CLIProxyAPI's management API does not mean
+    the credentials stopped serving. Dropping them makes capacity routing refuse
+    Claude traffic that CLIProxyAPI can still handle. The status and message say
+    the read failed; the accounts and holds stay until a healthy poll replaces them.
+    """
+
+    accounts = previous.accounts if previous is not None else ()
+    holds = previous.rate_limit_holds if previous is not None else ()
+    return SidecarQuotaSnapshot(
+        checked_at=checked_at,
+        status=status,
+        message=message,
+        accounts=accounts,
+        rate_limit_holds=holds,
     )
 
 
