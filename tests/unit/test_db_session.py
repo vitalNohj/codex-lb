@@ -288,7 +288,7 @@ def test_postgres_engine_kwargs_use_nullpool_under_test_db_url(monkeypatch) -> N
     assert "pool_recycle" not in kwargs
 
 
-def test_sqlite_file_engine_kwargs_pool_one_connection(monkeypatch) -> None:
+def test_sqlite_file_engine_kwargs_keep_a_small_pool_that_never_waits(monkeypatch) -> None:
     monkeypatch.setattr(
         session_module,
         "_settings",
@@ -302,9 +302,12 @@ def test_sqlite_file_engine_kwargs_pool_one_connection(monkeypatch) -> None:
     kwargs = session_module._sqlite_file_async_engine_kwargs()
 
     assert kwargs["poolclass"] is session_module._FileSQLiteQueuePool
-    assert kwargs["pool_size"] == 1
-    assert kwargs["max_overflow"] == session_module._SQLITE_FILE_POOL_MAX_OVERFLOW
-    assert kwargs["pool_timeout"] == session_module._SQLITE_BUSY_TIMEOUT_SECONDS
+    # Retained connections are a fixed constant, not the PostgreSQL knobs.
+    assert kwargs["pool_size"] == session_module._SQLITE_FILE_POOL_SIZE
+    assert kwargs["pool_size"] != 15
+    # Unbounded overflow: a checkout never waits for another session's return.
+    assert kwargs["max_overflow"] == -1
+    assert "pool_timeout" not in kwargs
     assert kwargs["connect_args"] == {
         "timeout": session_module._SQLITE_BUSY_TIMEOUT_SECONDS,
         "factory": session_module._CursorClosingSQLiteConnection,

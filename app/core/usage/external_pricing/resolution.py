@@ -48,7 +48,10 @@ catalog that lists that exact suffixed id.
 Every step that could produce more than one candidate abstains instead of
 choosing. Abstention is not conservatism here: the collisions measured in the
 live catalogs differ by up to 2.8x, so a guess is wrong most of the time it
-matters.
+matters. The one exception is a collision in which every candidate publishes
+the same ``ModelPrice``: the ids differ but the bill cannot, so keeping one of
+them loses nothing. That is how one model entered twice at one rate (OpenRouter
+lists ``grok-4.7`` under both ``grok/`` and ``x-ai/``) still gets a price.
 """
 
 from __future__ import annotations
@@ -413,6 +416,17 @@ def _unique_candidate(
     )
     if len(normalized_model_ids) > 1 or has_catalog_collision:
         canonical_model_ids = {candidate for _catalog, candidate in candidates}
+        same_price = _same_published_price(candidates)
+        if same_price is not None:
+            # The ids differ but every one of them publishes one rate, so no
+            # choice of id can change what a request is billed. OpenRouter
+            # lists grok-4.7 this way: ``grok/grok-4.7`` and ``x-ai/grok-4.7``
+            # are one model entered twice, at one price, and abstaining leaves
+            # every request for it unpriced.
+            catalog, candidate = same_price
+            entry = catalog.exact(candidate)
+            if entry is not None:
+                return _entry_resolution(entry, catalog, step=step)
         return Resolution(
             outcome=ResolutionOutcome.AMBIGUOUS,
             step=step,
@@ -423,6 +437,35 @@ def _unique_candidate(
     if entry is None:
         return None
     return _entry_resolution(entry, catalog, step=step)
+
+
+def _same_published_price(
+    candidates: Sequence[tuple[Catalog, str]],
+) -> tuple[Catalog, str] | None:
+    """The one entry to keep when every candidate publishes the same rate.
+
+    Returns ``None`` when any candidate is unpriced, unreadable, or priced
+    differently: those are the collisions the abstention exists for, since the
+    live ones differ by up to 2.8x and picking either member is a guess.
+
+    Compared with exact equality. These are published list prices, and a
+    one-cent gap is a different price rather than rounding.
+
+    The kept id is the lexicographically greatest. For the doubled xAI listing
+    that is ``x-ai/grok-4.7``, the vendor id the provider publishes and the one
+    a reader can look up, rather than the ``grok/`` alias of the same row.
+    """
+
+    priced: list[tuple[Catalog, str, ModelPrice]] = []
+    for catalog, candidate in candidates:
+        entry = catalog.exact(candidate)
+        if entry is None or entry.price is None:
+            return None
+        priced.append((catalog, candidate, entry.price))
+    if len({price for _catalog, _candidate, price in priced}) != 1:
+        return None
+    catalog, candidate, _price = max(priced, key=lambda item: item[1])
+    return catalog, candidate
 
 
 def _entry_resolution(entry: CatalogEntry, catalog: Catalog, *, step: str) -> Resolution:

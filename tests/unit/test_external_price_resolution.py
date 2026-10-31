@@ -288,6 +288,43 @@ def test_bare_name_resolves_to_a_uniquely_vendor_qualified_catalog_id() -> None:
     assert resolution.step == "vendor-qualified"
 
 
+def test_one_model_listed_twice_at_one_price_resolves() -> None:
+    """OpenRouter lists grok-4.7 under two ids at one rate.
+
+    ``grok/grok-4.7`` and ``x-ai/grok-4.7`` publish the same per-token price, so
+    neither choice can bill a request differently. Abstaining left every grok-4.7
+    request unpriced. The kept id is the ``x-ai/`` vendor id the provider
+    publishes. A CLIProxyAPI ``cc/`` routing prefix resolves the same way.
+    """
+
+    price = ModelPrice(input_per_1m=2.0, output_per_1m=6.0, cached_input_per_1m=0.5)
+    catalog = _catalog("openrouter", {"grok/grok-4.7": price, "x-ai/grok-4.7": price})
+
+    for incoming in ("grok-4.7", "cc/grok-4.7"):
+        resolution = resolve_model_price(incoming, catalogs=[catalog], prefixes=[("cc/", True)])
+
+        assert resolution.outcome is ResolutionOutcome.RESOLVED
+        assert resolution.catalog_model == "x-ai/grok-4.7"
+        assert resolution.price == price
+
+
+def test_a_same_name_collision_at_different_prices_stays_ambiguous() -> None:
+    """A one-cent gap is a different price, and the resolver must not pick one."""
+
+    catalog = _catalog(
+        "openrouter",
+        {
+            "grok/grok-4.7": _price(2.0, 6.0),
+            "x-ai/grok-4.7": _price(2.01, 6.0),
+        },
+    )
+
+    resolution = resolve_model_price("grok-4.7", catalogs=[catalog])
+
+    assert resolution.outcome is ResolutionOutcome.AMBIGUOUS
+    assert resolution.price is None
+
+
 def test_bare_name_listed_by_two_vendors_abstains() -> None:
     """Two vendors publishing the same bare name price it differently.
 
