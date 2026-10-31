@@ -528,6 +528,15 @@ describe("AccountCard", () => {
       failed: 0,
       quotaWindows: [
         { id: "credits", label: "week", kind: "weekly", percentRemaining: 62.5, resetsAt: null },
+        {
+          id: "product:grok_build",
+          label: "Grok Build",
+          kind: "weekly",
+          percentRemaining: 87.5,
+          resetsAt: null,
+        },
+        { id: "product:grok_bot", label: "Grok Bot", kind: "weekly", percentRemaining: 40, resetsAt: null },
+        { id: "product:cursor", label: "Cursor", kind: "weekly", percentRemaining: 10, resetsAt: null },
       ],
     };
 
@@ -542,6 +551,9 @@ describe("AccountCard", () => {
     const quota = screen.getByRole("group", { name: "Quota for grok@example.com" });
     expect(quota).toHaveTextContent("week");
     expect(quota).toHaveTextContent("63%");
+    expect(quota).toHaveTextContent("Grok Bot");
+    expect(quota).not.toHaveTextContent("Grok Build");
+    expect(quota).not.toHaveTextContent("Cursor");
     expect(quota.closest(".rounded-lg.border")).toBeNull();
     expect(screen.queryByText("5h")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Pause/ })).not.toBeInTheDocument();

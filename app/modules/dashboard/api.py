@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from typing import Literal
 
 from fastapi import APIRouter, Depends, Query
 
@@ -29,7 +30,7 @@ from app.modules.dashboard.schemas import (
 from app.modules.model_sources.catalog import source_models_to_upstream_models
 from app.modules.model_sources.repository import ModelSourcesRepository
 from app.modules.proxy.claude_sidecar_dispatch import load_sidecar_config
-from app.modules.proxy.cliproxy_picker_models import cliproxy_picker_model_ids
+from app.modules.proxy.cliproxy_picker_models import cliproxy_picker_model_ids, subscription_picker_model_ids
 from app.modules.proxy.omniroute_sidecar_dispatch import load_omniroute_sidecar_config
 from app.modules.proxy.openai_compat_dispatch import load_openai_compat_configs
 from app.modules.proxy.opencode_go_models import is_opencode_go_model_supported
@@ -88,7 +89,15 @@ async def get_projections(
 
 
 @router.get("/models", dependencies=[Depends(require_dashboard_permission(Permission.DASHBOARD_READ))])
-async def list_models() -> dict:
+async def list_models(
+    scope: Literal["subscriptions"] | None = Query(default=None),
+) -> dict:
+    """Dashboard model catalog.
+
+    ``scope=subscriptions`` is the API-key limit-rules picker. It keeps the
+    Codex registry and every non-CLIProxyAPI integration, and limits the
+    CLIProxyAPI entries to Claude and xAI subscription logins.
+    """
     registry = get_model_registry()
     models_by_slug = registry.get_models_with_fallback()
     allowed_efforts = {"minimal", "low", "medium", "high", "xhigh", "max", "ultra"}
@@ -121,18 +130,25 @@ async def list_models() -> dict:
     seen_model_ids = {str(model["id"]) for model in models}
     sidecar_config = await load_sidecar_config()
     if sidecar_config is not None and sidecar_config.enabled:
-        try:
-            sidecar_models = await ClaudeSidecarClient(sidecar_config).list_models_cached()
-        except Exception:
-            logger.warning("failed to append Claude sidecar models to dashboard model list", exc_info=True)
-            sidecar_models = []
+        sidecar_client = ClaudeSidecarClient(sidecar_config)
         # Raw ``/v1/models`` ids include per-account ``lb<hash>/`` aliases.
         # Pickers store the client model, which is what logs and limits compare.
-        for model_id in cliproxy_picker_model_ids(
-            tuple(sidecar_model.id for sidecar_model in sidecar_models),
-            prefixes=sidecar_config.prefixes,
-            full_models=sidecar_config.full_models,
-        ):
+        # The subscription scope reads Claude and xAI auth-file catalogs instead,
+        # so a Codex login listed by the shared endpoint cannot enter the picker.
+        if scope == "subscriptions":
+            picker_ids = await subscription_picker_model_ids(sidecar_client, sidecar_config)
+        else:
+            try:
+                sidecar_models = await sidecar_client.list_models_cached()
+            except Exception:
+                logger.warning("failed to append Claude sidecar models to dashboard model list", exc_info=True)
+                sidecar_models = []
+            picker_ids = cliproxy_picker_model_ids(
+                tuple(sidecar_model.id for sidecar_model in sidecar_models),
+                prefixes=sidecar_config.prefixes,
+                full_models=sidecar_config.full_models,
+            )
+        for model_id in picker_ids:
             if model_id in seen_model_ids:
                 continue
             seen_model_ids.add(model_id)

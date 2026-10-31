@@ -218,6 +218,7 @@ export function LimitRuleCard({ rule, onChange, onRemove }: LimitRuleCardProps) 
             onChange(limitRuleWithModels(rule, models));
           }}
           placeholder={isCredits ? t("apiKeys.limitRule.creditsGlobal") : t("apiKeys.modelSelect.all")}
+          scope="subscriptions"
         />
       </div>
     </div>
