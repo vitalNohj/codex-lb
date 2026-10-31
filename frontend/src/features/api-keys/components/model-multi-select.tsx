@@ -12,6 +12,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
+import type { ModelListScope } from "@/features/api-keys/api";
 import { useModels } from "@/features/api-keys/hooks/use-models";
 import type { ModelItem } from "@/features/api-keys/schemas";
 
@@ -19,16 +20,19 @@ export type ModelMultiSelectProps = {
   value: string[];
   onChange: (value: string[]) => void;
   placeholder?: string;
+  /** Limit rules pass ``subscriptions``; other pickers keep the full catalog. */
+  scope?: ModelListScope;
 };
 
 export function ModelMultiSelect({
   value,
   onChange,
   placeholder,
+  scope,
 }: ModelMultiSelectProps) {
   const { t } = useTranslation();
   const placeholderLabel = placeholder ?? t("apiKeys.modelSelect.all");
-  const { data: models = [], isLoading } = useModels();
+  const { data: models = [], isLoading } = useModels(scope);
   const [search, setSearch] = useState("");
 
   const options = useMemo(() => {
