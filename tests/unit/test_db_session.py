@@ -288,7 +288,7 @@ def test_postgres_engine_kwargs_use_nullpool_under_test_db_url(monkeypatch) -> N
     assert "pool_recycle" not in kwargs
 
 
-def test_sqlite_file_engine_kwargs_use_nullpool_without_pool_controls(monkeypatch) -> None:
+def test_sqlite_file_engine_kwargs_keep_a_small_pool_that_never_waits(monkeypatch) -> None:
     monkeypatch.setattr(
         session_module,
         "_settings",
@@ -301,14 +301,17 @@ def test_sqlite_file_engine_kwargs_use_nullpool_without_pool_controls(monkeypatc
 
     kwargs = session_module._sqlite_file_async_engine_kwargs()
 
-    assert kwargs["poolclass"] is NullPool
+    assert kwargs["poolclass"] is session_module._FileSQLiteQueuePool
+    # Retained connections are a fixed constant, not the PostgreSQL knobs.
+    assert kwargs["pool_size"] == session_module._SQLITE_FILE_POOL_SIZE
+    assert kwargs["pool_size"] != 15
+    # Unbounded overflow: a checkout never waits for another session's return.
+    assert kwargs["max_overflow"] == -1
+    assert "pool_timeout" not in kwargs
     assert kwargs["connect_args"] == {
-        "timeout": 30.0,
+        "timeout": session_module._SQLITE_BUSY_TIMEOUT_SECONDS,
         "factory": session_module._CursorClosingSQLiteConnection,
     }
-    assert "pool_size" not in kwargs
-    assert "max_overflow" not in kwargs
-    assert "pool_timeout" not in kwargs
 
 
 def test_postgres_engine_kwargs_keep_pool_controls(monkeypatch) -> None:
@@ -2141,6 +2144,45 @@ def test_closing_the_connection_releases_an_unfinished_returning_write(tmp_path)
 
     assert _sqlite_write_slot_is_free(db_path)
     del cursor
+
+
+@pytest.mark.asyncio
+async def test_checking_in_a_pooled_connection_releases_an_unfinished_returning_write(tmp_path) -> None:
+    """A pooled connection is reset, not closed, so checkin must finalize the cursor.
+
+    ``close()`` covers the NullPool path. File SQLite now keeps the connection,
+    and an unfetched ``UPDATE ... RETURNING`` would otherwise hold the writer
+    slot until that connection is disposed.
+    """
+    import sqlite3
+
+    db_path = tmp_path / "pooled-unfetched-returning.db"
+    setup = sqlite3.connect(db_path)
+    setup.execute("PRAGMA journal_mode=WAL")
+    setup.execute("CREATE TABLE counter (value INTEGER)")
+    setup.execute("INSERT INTO counter VALUES (0)")
+    setup.commit()
+    setup.close()
+
+    engine = create_async_engine(
+        f"sqlite+aiosqlite:///{db_path}",
+        **session_module._sqlite_file_async_engine_kwargs(),
+    )
+    session_module._configure_sqlite_engine(engine.sync_engine, enable_wal=True)
+    try:
+        async with engine.connect() as connection:
+            await connection.exec_driver_sql("UPDATE counter SET value = value + 1 RETURNING value")
+        # SQLAlchemy commits the implicit transaction before reset, so the
+        # increment is durable. What must not survive checkin is the writer
+        # slot: the next checkout has to be able to write immediately.
+        assert _sqlite_write_slot_is_free(db_path)
+        async with engine.connect() as connection:
+            value = (await connection.exec_driver_sql("SELECT value FROM counter")).scalar_one()
+            await connection.exec_driver_sql("UPDATE counter SET value = value + 1")
+        assert value == 1
+        assert _sqlite_write_slot_is_free(db_path)
+    finally:
+        await engine.dispose()
 
 
 def test_closing_the_connection_releases_an_unfinished_returning_write_made_by_execute(tmp_path) -> None:
