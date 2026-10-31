@@ -444,7 +444,11 @@ async def test_models_cache_serves_last_good_after_refresh_failure(monkeypatch) 
             return [type("Model", (), {"id": "claude-sonnet"})()]
         raise ClaudeSidecarUnavailableError("down")
 
+    async def no_limits():
+        return {}
+
     monkeypatch.setattr(client, "list_models", list_models)
+    monkeypatch.setattr(client, "_published_model_limits_cached", no_limits)
 
     first = await client.list_models_cached()
     second = await client.list_models_cached()

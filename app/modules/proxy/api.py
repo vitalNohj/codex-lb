@@ -4852,6 +4852,8 @@ async def _build_models_response_body(
         created_by_model = {model.id: model.created for model in discovered_models}
         raw_by_model = {model.id: model.raw for model in discovered_models}
         owner_by_model = {model.id: model.owned_by for model in discovered_models}
+        published_window_by_model = {model.id: model.context_window for model in discovered_models}
+        published_max_output_by_model = {model.id: model.max_output_tokens for model in discovered_models}
         pinned_full_models = {full.strip().lower() for full in sidecar_config.full_models}
         for slug in _sidecar_advertised_model_ids(
             sidecar_config.full_models,
@@ -4889,10 +4891,15 @@ async def _build_models_response_body(
                         "api_types": ["chat_completions"],
                         **_advertised_sidecar_fields(
                             _sidecar_context_window(
-                                slug, overrides=context_window_overrides, raw=raw_by_model.get(slug), claude_model=slug
+                                slug,
+                                overrides=context_window_overrides,
+                                raw=raw_by_model.get(slug),
+                                claude_model=slug,
+                                published=published_window_by_model.get(slug),
                             ),
                             raw=raw_by_model.get(slug),
                             claude_model=slug,
+                            max_output_tokens=published_max_output_by_model.get(slug),
                         ),
                     }
                 )
@@ -4926,10 +4933,15 @@ async def _build_models_response_body(
                         "api_types": ["chat_completions"],
                         **_advertised_sidecar_fields(
                             _sidecar_context_window(
-                                alias, overrides=context_window_overrides, raw=raw_by_model.get(base), claude_model=base
+                                alias,
+                                overrides=context_window_overrides,
+                                raw=raw_by_model.get(base),
+                                claude_model=base,
+                                published=published_window_by_model.get(base),
                             ),
                             raw=raw_by_model.get(base),
                             claude_model=base,
+                            max_output_tokens=published_max_output_by_model.get(base),
                         ),
                     }
                 )
@@ -5550,19 +5562,24 @@ def _sidecar_context_window(
     overrides: Mapping[str, int],
     raw: Mapping[str, JsonValue] | None = None,
     claude_model: str | None = None,
+    published: int | None = None,
 ) -> int:
     """The single context window ``/v1/models`` advertises for a sidecar model.
 
     In order: the operator's context window override for the advertised id
     (``overrides`` is ``_effective_context_window_overrides()``: the dashboard
-    row, else the ``CODEX_LB_MODEL_CONTEXT_WINDOW_OVERRIDES`` entry); for a
-    Claude sidecar model, the published window dispatch already enforces
-    (``claude_model`` is the upstream id a strip-prefix alias names); the
-    provider catalog's own entry; the 200k default.
+    row, else the ``CODEX_LB_MODEL_CONTEXT_WINDOW_OVERRIDES`` entry); the
+    window CLIProxyAPI publishes for the upstream id on its Codex-client
+    catalog (``published``); for a Claude sidecar model, the published window
+    dispatch already enforces (``claude_model`` is the upstream id a
+    strip-prefix alias names); the provider catalog's own entry; the 200k
+    default.
     """
     override = overrides.get(slug)
     if override is not None:
         return override
+    if published is not None:
+        return published
     if claude_model is not None:
         window = claude_sidecar_context_window(claude_model)
         if window is not None:
@@ -5600,13 +5617,25 @@ def _advertised_sidecar_fields(
     *,
     raw: Mapping[str, JsonValue] | None = None,
     claude_model: str | None = None,
+    max_output_tokens: int | None = None,
 ) -> dict[str, JsonValue]:
-    """Sidecar ``/v1/models`` fields, with vision taken from that row's catalog."""
+    """Sidecar ``/v1/models`` fields, with vision taken from that row's catalog.
 
-    return _sidecar_model_list_fields(
+    ``max_output_tokens`` is the provider-published output limit; it is
+    advertised the way registry rows advertise theirs, and omitted when unknown.
+    """
+
+    fields = _sidecar_model_list_fields(
         context_window,
         supports_vision=sidecar_supports_vision(raw, claude_model=claude_model),
     )
+    if max_output_tokens is not None:
+        fields["max_output_tokens"] = max_output_tokens
+        fields["maxOutputTokens"] = max_output_tokens
+        capabilities = fields["capabilities"]
+        assert isinstance(capabilities, dict)
+        capabilities["max_output_tokens"] = max_output_tokens
+    return fields
 
 
 def _sidecar_model_list_fields(
