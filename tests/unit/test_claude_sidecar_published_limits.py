@@ -18,6 +18,7 @@ import pytest
 from app.core.clients.claude_sidecar import (
     ClaudeSidecarClient,
     ClaudeSidecarConfig,
+    ClaudeSidecarUnavailableError,
     PublishedModelLimits,
     SidecarPrefix,
 )
@@ -285,6 +286,37 @@ async def test_failed_refresh_keeps_last_good_limits_for_the_ttl(monkeypatch) ->
 
     assert _catalog_calls(session) == 2
     assert models["grok-4.7"].context_window == 500_000
+
+
+@pytest.mark.asyncio
+async def test_concurrent_failure_does_not_overwrite_a_fresh_refresh(monkeypatch) -> None:
+    """A slow failed refresh must not replace limits a concurrent refresh just stored."""
+
+    client = ClaudeSidecarClient(_config())
+    success_stored = asyncio.Event()
+    calls = 0
+
+    async def fetch():
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            await success_stored.wait()
+            raise ClaudeSidecarUnavailableError("timed out")
+        return {"grok-4.7": PublishedModelLimits(500_000, 500_000)}
+
+    monkeypatch.setattr(client, "list_published_model_limits", fetch)
+
+    async def succeed():
+        limits = await client._published_model_limits_cached()
+        success_stored.set()
+        return limits
+
+    failed_view, fresh = await asyncio.gather(client._published_model_limits_cached(), succeed())
+
+    assert fresh == {"grok-4.7": PublishedModelLimits(500_000, 500_000)}
+    assert failed_view == fresh
+    assert await client._published_model_limits_cached() == fresh
+    assert calls == 2
 
 
 @pytest.mark.asyncio

@@ -260,20 +260,27 @@ class ClaudeSidecarClient:
         ttl = self._config.models_cache_ttl_seconds
         now = time.monotonic()
         with _published_limits_cache_lock:
-            cached = _published_limits_cache
-        if cached is not None and cached.key != key:
-            cached = None
+            snapshot = _published_limits_cache
+        cached = snapshot if snapshot is not None and snapshot.key == key else None
         if cached is not None and ttl > 0 and now - cached.fetched_at < ttl:
             return cached.limits
         try:
             limits = await self.list_published_model_limits()
         except ClaudeSidecarError:
-            if cached is not None:
-                logger.warning("using cached CLIProxyAPI model limits after refresh failure", exc_info=True)
-                limits = cached.limits
-            else:
-                logger.warning("CLIProxyAPI model limits unavailable", exc_info=True)
-                limits = {}
+            with _published_limits_cache_lock:
+                current = _published_limits_cache
+                if current is not snapshot and current is not None and current.key == key:
+                    # A concurrent refresh finished while this one was failing;
+                    # its result is newer than anything this attempt knows.
+                    return current.limits
+                if cached is not None:
+                    logger.warning("using cached CLIProxyAPI model limits after refresh failure", exc_info=True)
+                    limits = cached.limits
+                else:
+                    logger.warning("CLIProxyAPI model limits unavailable", exc_info=True)
+                    limits = {}
+                _published_limits_cache = _PublishedLimitsCache(key=key, fetched_at=now, limits=limits)
+            return limits
         with _published_limits_cache_lock:
             _published_limits_cache = _PublishedLimitsCache(key=key, fetched_at=now, limits=limits)
         return limits
