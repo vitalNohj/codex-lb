@@ -312,7 +312,9 @@ async def test_shared_key_refuses_an_unpriced_model_on_the_proxy(async_client):
 
 @pytest.mark.asyncio
 async def test_a_key_that_is_not_shared_still_serves_an_unpriced_model(async_client):
-    key_id, _ = await _create_key(async_client, name="unpriced-allowed-private", shared=False, limits=[_lifetime_cost()])
+    key_id, _ = await _create_key(
+        async_client, name="unpriced-allowed-private", shared=False, limits=[_lifetime_cost()]
+    )
 
     await _enforce(key_id, _UNPRICED_MODEL)
 

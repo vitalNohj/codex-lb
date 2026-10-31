@@ -157,9 +157,7 @@ async def test_a_price_check_that_fails_refuses_a_shared_key(async_client):
     async with SessionLocal() as session:
         service = ApiKeysService(ApiKeysRepository(session))
         with pytest.raises(ApiKeyUnpricedModelError):
-            await service.enforce_limits_for_request(
-                key_id, request_model=_PRICED_MODEL, model_is_priced=unavailable
-            )
+            await service.enforce_limits_for_request(key_id, request_model=_PRICED_MODEL, model_is_priced=unavailable)
 
 
 @pytest.mark.asyncio

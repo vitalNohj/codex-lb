@@ -1086,12 +1086,7 @@ class ApiKeysService:
                     max_value = limit.max_value
                     limit_type = limit.limit_type
                     reset_at = limit.reset_at
-                    if (
-                        not _limit_meters_usage(limit)
-                        or max_value is None
-                        or limit_type is None
-                        or reset_at is None
-                    ):
+                    if not _limit_meters_usage(limit) or max_value is None or limit_type is None or reset_at is None:
                         continue
                     if not _limit_applies_for_request(limit, request_model=request_model):
                         continue
@@ -2442,9 +2437,7 @@ def _validate_limit_reasoning_efforts(limits: list[LimitRuleInput]) -> None:
             else:
                 covered = "every model"
             efforts = " and ".join(sorted({left_effort, right_effort}))
-            raise ApiKeyValidationError(
-                f"Limit rules covering {covered} set different reasoning efforts: {efforts}"
-            )
+            raise ApiKeyValidationError(f"Limit rules covering {covered} set different reasoning efforts: {efforts}")
 
 
 def _limit_identity_from_input(limit: LimitRuleInput) -> tuple[str, str, str | tuple[str, ...] | None]:
