@@ -280,6 +280,14 @@ function claudeLoginSubtitle(auth: SidecarAuthAccount): string {
   return `${planLabel} | ${providerLabel}`;
 }
 
+// The dashboard xAI card leaves these product windows out. The accounts page
+// and the API still show them.
+const DASHBOARD_HIDDEN_XAI_WINDOW_IDS = new Set(["product:grok_build", "product:cursor"]);
+
+function dashboardXaiWindows(windows: SidecarAuthAccount["quotaWindows"]) {
+  return windows.filter((window) => !DASHBOARD_HIDDEN_XAI_WINDOW_IDS.has(window.id));
+}
+
 function xaiLoginSubtitle(planType: string | null | undefined): string {
   const plan = planType?.trim() ?? "";
   if (plan.length === 0 || plan.toLowerCase() === "xai") {
@@ -377,7 +385,7 @@ export function ClaudeAuthCard({
       {/* Quota bars */}
       {variant === "xai" ? (
         <div className="mt-3.5">
-          <CliproxyAuthQuotaBars title={title} windows={auth.quotaWindows ?? []} />
+          <CliproxyAuthQuotaBars title={title} windows={dashboardXaiWindows(auth.quotaWindows ?? [])} />
         </div>
       ) : (
         <div className="mt-3.5 grid grid-cols-2 gap-3">
