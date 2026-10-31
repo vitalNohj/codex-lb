@@ -486,6 +486,15 @@ describe("AccountDetail", () => {
               status: "active",
               quotaWindows: [
                 { id: "credits", label: "week", kind: "weekly", percentRemaining: 62.5, resetsAt: null },
+                {
+                  id: "product:grok_build",
+                  label: "Grok Build",
+                  kind: "weekly",
+                  percentRemaining: 87.5,
+                  resetsAt: null,
+                },
+                { id: "product:grok_bot", label: "Grok Bot", kind: "weekly", percentRemaining: 40, resetsAt: null },
+                { id: "product:cursor", label: "Cursor", kind: "weekly", percentRemaining: 10, resetsAt: null },
               ],
               prepaidCredits: 42,
             },
@@ -505,7 +514,9 @@ describe("AccountDetail", () => {
     );
 
     expect(screen.getByText("Read-only CLIProxyAPI account")).toBeInTheDocument();
-    expect(screen.getByText("week 63% | Prepaid credits 42")).toBeInTheDocument();
+    expect(
+      screen.getByText("week 63% | Grok Build 88% | Grok Bot 40% | Cursor 10% | Prepaid credits 42"),
+    ).toBeInTheDocument();
     expect(screen.getByText("Quota not reported")).toBeInTheDocument();
     expect(screen.queryByText(/Plan required/)).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Pause grok/ })).not.toBeInTheDocument();

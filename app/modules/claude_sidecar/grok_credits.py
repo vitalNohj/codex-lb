@@ -44,9 +44,6 @@ _MAX_SAFE_INTEGER = 9007199254740991
 _EMPTY_GRPC_WEB_TEXT_BODY = base64.b64encode(bytes(5)).decode("ascii")
 
 # xAI billing_product enum (github.com/xai-org/xai/go/gen/billing_product).
-# Grok Build (2) stays named so a label lookup stays correct, but its window
-# is not a dashboard quota bar.
-_HIDDEN_PRODUCT_NUMBERS = frozenset({2})
 _PRODUCT_NAMES = {
     0: ("unspecified", "Other"),
     1: ("api", "API"),
@@ -205,7 +202,6 @@ def normalize_grok_consumer_payload(payload: bytes, *, now: datetime | None = No
     window_kind = period_type if period_type in {"weekly", "monthly"} else "credits"
     window_label = {"weekly": "week", "monthly": "month"}.get(period_type, "credits")
     windows: list[GrokCreditWindow] = []
-    saw_hidden_product = False
     shared_explicit = _float_at(config, 1)
     if shared_explicit is not None or valid_current_period:
         percent_used = _clamp_percent(0.0 if shared_explicit is None else shared_explicit)
@@ -228,11 +224,6 @@ def normalize_grok_consumer_payload(payload: bytes, *, now: datetime | None = No
         product_number = _safe_number(_varint_at(product, 1) if _varint_at(product, 1) is not None else 0)
         if product_number is None:
             continue
-        if product_number in _HIDDEN_PRODUCT_NUMBERS:
-            # A hidden product that would have been a window still proves the
-            # payload parsed, so prepaid credits are not dropped with it.
-            saw_hidden_product = True
-            continue
         product_id, product_label = _PRODUCT_NAMES.get(
             product_number,
             (f"unknown_{product_number}", f"Product {product_number}"),
@@ -249,7 +240,7 @@ def normalize_grok_consumer_payload(payload: bytes, *, now: datetime | None = No
                 resets_at=resets_at,
             )
         )
-    if not windows and not saw_hidden_product:
+    if not windows:
         raise GrokCreditsError("Grok credits payload had no windows")
     prepaid = _first_message(config, 12)
     prepaid_balance: int | None = None
