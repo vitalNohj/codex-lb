@@ -3184,16 +3184,22 @@ export const handlers = [
     return HttpResponse.json(createPermissionDescriptors());
   }),
 
-  http.get("/api/models", () => {
-    return HttpResponse.json({
-      models: [
-        { id: "gpt-5.1", name: "GPT 5.1" },
-        { id: "gpt-5.1-codex-mini", name: "GPT 5.1 Codex Mini" },
-        { id: "gpt-4o-mini", name: "GPT 4o Mini" },
-        { id: "claude-sonnet", name: "CLIProxyAPI: claude-sonnet" },
-        { id: "gpt-oss:120b-cloud", name: "Ollama: gpt-oss:120b-cloud" },
-      ],
-    });
+  http.get("/api/models", ({ request }) => {
+    const scope = new URL(request.url).searchParams.get("scope");
+    const models = [
+      { id: "gpt-5.1", name: "GPT 5.1" },
+      { id: "gpt-5.1-codex-mini", name: "GPT 5.1 Codex Mini" },
+      { id: "gpt-4o-mini", name: "GPT 4o Mini" },
+      { id: "claude-sonnet", name: "CLIProxyAPI: claude-sonnet" },
+      { id: "grok-4", name: "CLIProxyAPI: grok-4" },
+      { id: "gpt-oss:120b-cloud", name: "Ollama: gpt-oss:120b-cloud" },
+    ];
+    // The limit-rules picker asks for subscription models only. Codex registry
+    // models stay; a Codex login's CLIProxyAPI model and free providers do not.
+    const visible = scope === "subscriptions"
+      ? models.filter((model) => model.id !== "gpt-5.1-codex-mini" && !model.name.startsWith("Ollama:"))
+      : models;
+    return HttpResponse.json({ models: visible });
   }),
 
   http.get("/api/model-sources/", () => {

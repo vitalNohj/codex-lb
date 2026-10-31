@@ -17,6 +17,36 @@ describe("ModelMultiSelect", () => {
     expect(screen.getByText("claude-sonnet")).toBeInTheDocument();
   });
 
+  it("limits the subscription picker to Codex and subscription models", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(
+      <ModelMultiSelect value={[]} onChange={vi.fn()} scope="subscriptions" />,
+    );
+
+    await user.click(screen.getByRole("button"));
+    expect(await screen.findByText("GPT 5.1")).toBeInTheDocument();
+    expect(screen.getByText("CLIProxyAPI: claude-sonnet")).toBeInTheDocument();
+    expect(screen.getByText("CLIProxyAPI: grok-4")).toBeInTheDocument();
+    expect(screen.queryByText("GPT 5.1 Codex Mini")).not.toBeInTheDocument();
+    expect(screen.queryByText("Ollama: gpt-oss:120b-cloud")).not.toBeInTheDocument();
+  });
+
+  it("keeps a saved model that the subscription list no longer offers", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(
+      <ModelMultiSelect
+        value={["openrouter/removed-model"]}
+        onChange={vi.fn()}
+        scope="subscriptions"
+      />,
+    );
+
+    expect(await screen.findByText("openrouter/removed-model")).toBeInTheDocument();
+    await user.click(await screen.findByRole("button", { name: "1 model selected" }));
+    expect(await screen.findAllByText("openrouter/removed-model")).toHaveLength(2);
+    expect(screen.queryByText("Ollama: gpt-oss:120b-cloud")).not.toBeInTheDocument();
+  });
+
   it("keeps a saved account alias visible when it is not in the catalog", async () => {
     const user = userEvent.setup();
     renderWithProviders(

@@ -41,6 +41,9 @@ export function regenerateApiKey(keyId: string) {
   );
 }
 
-export function listModels() {
-  return get(MODELS_PATH, ModelsResponseSchema);
+export type ModelListScope = "subscriptions";
+
+export function listModels(scope?: ModelListScope) {
+  const path = scope == null ? MODELS_PATH : `${MODELS_PATH}?scope=${encodeURIComponent(scope)}`;
+  return get(path, ModelsResponseSchema);
 }
