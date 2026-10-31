@@ -156,7 +156,7 @@ async def test_subscription_models_keep_codex_and_claude_xai_logins(async_client
             "claudeSidecarEnabled": True,
             "claudeSidecarApiKey": "sidecar-key",
             "claudeSidecarModelPrefixes": [{"prefix": "cc/", "strip": True}],
-            "claudeSidecarFullModels": ["claude-sonnet-4-6"],
+            "claudeSidecarFullModels": ["claude-sonnet-4-6", "gpt-5.3-codex"],
         },
     )
     assert response.status_code == 200
@@ -173,6 +173,7 @@ async def test_subscription_models_keep_codex_and_claude_xai_logins(async_client
     assert "cc/grok-4" in by_id
     assert by_id["cc/grok-4"]["name"] == "CLIProxyAPI: cc/grok-4"
     assert "gpt-5.3-codex" not in by_id
+    assert "cc/gpt-5.3-codex" not in by_id
     assert "cc/gpt-5.4" not in by_id
     assert "gemini-2.5-pro" not in by_id
     assert "cc/gemini-2.5-pro" not in by_id

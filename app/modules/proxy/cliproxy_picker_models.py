@@ -173,10 +173,17 @@ async def subscription_picker_model_ids(
             )
             continue
         discovered.extend(catalog)
+    # A configured full model is a client id, not proof that a subscription
+    # serves it. Offer it only when a Claude or xAI catalog dispatches to it.
+    served = {_dispatch_model(_model_after_account_alias(model_id) or "").casefold() for model_id in discovered}
+    served.discard("")
+    subscription_full_models = [
+        model_id for model_id in config.full_models if _dispatch_model(model_id).casefold() in served
+    ]
     return cliproxy_picker_model_ids(
         discovered,
         prefixes=config.prefixes,
-        full_models=config.full_models,
+        full_models=subscription_full_models,
     )
 
 
