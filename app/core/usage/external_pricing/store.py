@@ -125,6 +125,19 @@ class ExternalModelPriceStore:
         row = result.scalar_one_or_none()
         return _to_record(row) if row is not None else None
 
+    async def get_many(self, keys: Collection[tuple[str, str]]) -> dict[tuple[str, str], PriceRecord]:
+        """Every persisted record among ``keys``, keyed by its normalized ``(provider, model)``."""
+
+        normalized_keys = {normalized for key in keys if all(normalized := normalize_lookup_key(*key))}
+        if not normalized_keys:
+            return {}
+        result = await self._session.execute(
+            select(ExternalModelPrice).where(
+                tuple_(ExternalModelPrice.provider, ExternalModelPrice.incoming_model).in_(normalized_keys)
+            )
+        )
+        return {(row.provider, row.incoming_model): _to_record(row) for row in result.scalars().all()}
+
     async def get_statuses(
         self,
         keys: Collection[tuple[str, str]],
