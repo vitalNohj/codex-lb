@@ -166,6 +166,8 @@ class _FakeModel:
     created: int | None = 123
     owned_by: str | None = None
     raw: dict | None = None
+    context_window: int | None = None
+    max_output_tokens: int | None = None
 
 
 class _FakeSidecarClient:
@@ -1419,6 +1421,80 @@ async def test_sidecar_models_advertise_their_real_context_window(
     for model_id in ("claude-sonnet-4-5-20250929", "claude-unreleased-9"):
         assert entries[model_id]["supports_vision"] is False
         assert entries[model_id]["capabilities"]["input_modalities"] == ["text"]
+
+
+@pytest.mark.asyncio
+async def test_sidecar_models_advertise_cliproxy_published_limits(
+    lifespan_free_client, sidecar_enabled, fake_sidecar, monkeypatch
+):
+    """``/v1/models`` uses the window CLIProxyAPI publishes for each upstream id.
+
+    CLIProxyAPI's plain listing carries no window, so every xAI model used to
+    advertise the 200k placeholder. Its Codex-client catalog publishes the
+    real limits (``SidecarModel.context_window`` / ``max_output_tokens``). A
+    discovered id and the ``cc/`` alias of it both use the upstream id's row,
+    including per-login ``lb<hash>/`` ids. A model CLIProxyAPI publishes
+    nothing for keeps the existing fallback, and a dashboard override still
+    wins over the published value.
+    """
+
+    config = replace(
+        fake_sidecar.config,
+        full_models=(),
+        prefixes=(SidecarPrefix(prefix="cc/", strip=True),),
+    )
+    fake_sidecar.config = config
+    fake_sidecar.models = [
+        _FakeModel("grok-4.7", owned_by="xai", context_window=500_000, max_output_tokens=500_000),
+        _FakeModel("grok-4.7-build-fast", owned_by="xai", context_window=500_000, max_output_tokens=500_000),
+        _FakeModel("lb5dc882f41e/grok-4.7", owned_by="xai", context_window=500_000, max_output_tokens=500_000),
+        _FakeModel("grok-3-mini", owned_by="xai", context_window=131_072, max_output_tokens=32_768),
+        _FakeModel("grok-imagine-image", owned_by="xai"),
+        _FakeModel("claude-opus-5-5", owned_by="anthropic", context_window=1_000_000, max_output_tokens=128_000),
+        # CLIProxyAPI is the source of truth over the static Claude table (1M).
+        _FakeModel("claude-sonnet-4-6", owned_by="anthropic", context_window=200_000, max_output_tokens=64_000),
+        # Unpublished Claude ids keep the table window.
+        _FakeModel("claude-sonnet-5-5", owned_by="anthropic"),
+    ]
+
+    async def load_config():
+        return config
+
+    monkeypatch.setattr("app.modules.proxy.api.load_sidecar_config", load_config)
+    stored = await lifespan_free_client.put(
+        "/api/settings/model-context-window-overrides/cc/grok-3-mini", json={"contextWindow": 64_000}
+    )
+    assert stored.status_code == 200
+
+    listed = await lifespan_free_client.get("/v1/models")
+
+    assert listed.status_code == 200
+    entries = {item["id"]: item for item in listed.json()["data"]}
+    expected = {
+        "cc/grok-4.7": (500_000, 500_000),
+        "cc/grok-4.7-build-fast": (500_000, 500_000),
+        "cc/lb5dc882f41e/grok-4.7": (500_000, 500_000),
+        # Override for the advertised id wins; the output limit is still published.
+        "cc/grok-3-mini": (64_000, 32_768),
+        "cc/grok-imagine-image": (200_000, None),
+        "cc/claude-opus-5-5": (1_000_000, 128_000),
+        "cc/claude-sonnet-4-6": (200_000, 64_000),
+        "cc/claude-sonnet-5-5": (1_000_000, None),
+    }
+    assert set(expected) <= set(entries)
+    for model_id, (window, max_output) in expected.items():
+        entry = entries[model_id]
+        assert entry["context_length"] == window, model_id
+        assert entry["contextLength"] == window, model_id
+        assert entry["capabilities"]["context_length"] == window, model_id
+        if max_output is None:
+            assert "max_output_tokens" not in entry, model_id
+            assert "maxOutputTokens" not in entry, model_id
+            assert "max_output_tokens" not in entry["capabilities"], model_id
+        else:
+            assert entry["max_output_tokens"] == max_output, model_id
+            assert entry["maxOutputTokens"] == max_output, model_id
+            assert entry["capabilities"]["max_output_tokens"] == max_output, model_id
 
 
 _CLAUDE_IMAGE = "data:image/png;base64,BBBB"

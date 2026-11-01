@@ -223,6 +223,15 @@ def _reset_claude_sidecar_cooldown_gate():
 
 
 @pytest.fixture(autouse=True)
+def _reset_cliproxy_published_model_limits_cache():
+    from app.core.clients.claude_sidecar import reset_published_model_limits_cache
+
+    reset_published_model_limits_cache()
+    yield
+    reset_published_model_limits_cache()
+
+
+@pytest.fixture(autouse=True)
 def _disable_request_log_count_cache(monkeypatch):
     """Zero the request-log COUNT cache TTL so listing totals stay exact
     within a test. The TTL is a fixed constant in production (issue #1340

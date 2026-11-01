@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import math
+import threading
 import time
 from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
@@ -14,6 +15,7 @@ from urllib.parse import urlencode
 import aiohttp
 
 from app.core.clients.cliproxy_routing_config import CliproxyRoutingConfigError, apply_session_affinity_yaml
+from app.core.clients.codex_version_snapshot import CODEX_VERSION
 from app.core.clients.http import lease_http_session
 from app.core.types import JsonValue
 from app.core.usage.pricing import ModelPrice
@@ -49,6 +51,16 @@ class SidecarModel:
     owned_by: str | None = None
     raw: Mapping[str, JsonValue] | None = None
     pricing: ModelPrice | None = None
+    # Limits CLIProxyAPI publishes for this exact id on its Codex-client catalog
+    # (``GET /v1/models?client_version=...``). ``None`` when it publishes none.
+    context_window: int | None = None
+    max_output_tokens: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class PublishedModelLimits:
+    context_window: int
+    max_output_tokens: int
 
 
 def parse_sidecar_per_token_usd(value: JsonValue) -> float | None:
@@ -178,6 +190,100 @@ class ClaudeSidecarClient:
                 )
             )
         return models
+
+    async def list_published_model_limits(self) -> dict[str, PublishedModelLimits]:
+        """Context window and max output tokens CLIProxyAPI publishes per model id.
+
+        CLIProxyAPI's plain ``/v1/models`` keeps only id, object, created and
+        owned_by. Its Codex-client catalog (the same route with a
+        ``client_version`` query) carries ``context_window`` and ``max_tokens``
+        under ``models[].slug``, where ``slug`` is the same id the plain listing
+        returns, auth prefix included.
+
+        A row counts only when it carries both a positive ``context_window`` and
+        a positive ``max_tokens``. CLIProxyAPI emits ``max_tokens`` only from a
+        model's real registry limit, while a model with no known window (image,
+        video and TTS ids) still gets the catalog template's placeholder
+        ``context_window``, which is not a published value.
+        """
+
+        query = urlencode({"client_version": CODEX_VERSION})
+        url = f"{self.base_url}/v1/models?{query}"
+        try:
+            async with lease_http_session() as session:
+                async with session.get(url, headers=self._headers(), timeout=self._catalog_timeout()) as resp:
+                    data = await _read_response_json(resp)
+                    if resp.status >= 400:
+                        raise _error_from_status(resp.status, data)
+        except ClaudeSidecarError:
+            raise
+        except (asyncio.TimeoutError, aiohttp.ClientError, OSError) as exc:
+            raise ClaudeSidecarUnavailableError(_transport_message(exc, "fetch CLIProxyAPI model catalog")) from exc
+
+        if not is_json_mapping(data):
+            raise ClaudeSidecarError(502, "Invalid response format from CLIProxyAPI model catalog", body=None)
+        raw_models = data.get("models")
+        if not isinstance(raw_models, list):
+            raise ClaudeSidecarError(502, "Missing 'models' key in CLIProxyAPI model catalog", body=None)
+
+        limits: dict[str, PublishedModelLimits] = {}
+        for entry in raw_models:
+            if not is_json_mapping(entry):
+                continue
+            slug = entry.get("slug")
+            context_window = _positive_int(entry.get("context_window"))
+            max_output_tokens = _positive_int(entry.get("max_tokens"))
+            if not isinstance(slug, str) or not slug or context_window is None or max_output_tokens is None:
+                continue
+            limits[slug] = PublishedModelLimits(context_window=context_window, max_output_tokens=max_output_tokens)
+        return limits
+
+    def _catalog_timeout(self) -> aiohttp.ClientTimeout:
+        # The catalog only enriches the listing, so it must never hold
+        # ``/v1/models`` for the full request timeout.
+        total = min(self._config.request_timeout_seconds, _CATALOG_TIMEOUT_SECONDS)
+        connect = min(self._config.connect_timeout_seconds, total)
+        return aiohttp.ClientTimeout(total=total, connect=connect, sock_connect=connect)
+
+    async def _published_model_limits_cached(self) -> dict[str, PublishedModelLimits]:
+        """Published limits, cached per sidecar endpoint for the models cache TTL.
+
+        The cache is module level because a client is built per request. A
+        failed refresh keeps the last good limits; with none it returns an empty
+        mapping, so the listing keeps today's windows. A failed attempt is
+        cached for the same TTL as a good one, so a catalog that stays down or
+        times out is retried once per TTL rather than on every listing.
+        """
+
+        global _published_limits_cache
+        key = (self.base_url, (self._config.api_key or "").strip())
+        ttl = self._config.models_cache_ttl_seconds
+        now = time.monotonic()
+        with _published_limits_cache_lock:
+            snapshot = _published_limits_cache
+        cached = snapshot if snapshot is not None and snapshot.key == key else None
+        if cached is not None and ttl > 0 and now - cached.fetched_at < ttl:
+            return cached.limits
+        try:
+            limits = await self.list_published_model_limits()
+        except ClaudeSidecarError:
+            with _published_limits_cache_lock:
+                current = _published_limits_cache
+                if current is not snapshot and current is not None and current.key == key:
+                    # A concurrent refresh finished while this one was failing;
+                    # its result is newer than anything this attempt knows.
+                    return current.limits
+                if cached is not None:
+                    logger.warning("using cached CLIProxyAPI model limits after refresh failure", exc_info=True)
+                    limits = cached.limits
+                else:
+                    logger.warning("CLIProxyAPI model limits unavailable", exc_info=True)
+                    limits = {}
+                _published_limits_cache = _PublishedLimitsCache(key=key, fetched_at=now, limits=limits)
+            return limits
+        with _published_limits_cache_lock:
+            _published_limits_cache = _PublishedLimitsCache(key=key, fetched_at=now, limits=limits)
+        return limits
 
     async def list_auth_files(self) -> list[Mapping[str, JsonValue]]:
         url = f"{self.base_url}/v0/management/auth-files"
@@ -554,8 +660,20 @@ class ClaudeSidecarClient:
         ttl = self._config.models_cache_ttl_seconds
         if self._models_cache is not None and ttl > 0 and now - self._models_cache_fetched_at < ttl:
             return list(self._models_cache)
+        listing, limits = await asyncio.gather(
+            self.list_models(),
+            self._published_model_limits_cached(),
+            return_exceptions=True,
+        )
+        if isinstance(limits, BaseException):
+            # The catalog only enriches the listing; never let it take the
+            # listing down.
+            logger.warning("CLIProxyAPI model limits failed", exc_info=limits)
+            limits = {}
         try:
-            models = await self.list_models()
+            if isinstance(listing, BaseException):
+                raise listing
+            models = _with_published_limits(listing, limits)
         except ClaudeSidecarError:
             if self._models_cache is not None:
                 logger.warning("using cached Claude sidecar models after refresh failure", exc_info=True)
@@ -634,6 +752,60 @@ class ClaudeSidecarClient:
             raise
         except (asyncio.TimeoutError, aiohttp.ClientError, OSError) as exc:
             raise ClaudeSidecarUnavailableError(_transport_message(exc, action)) from exc
+
+
+_CATALOG_TIMEOUT_SECONDS = 10.0
+
+
+@dataclass(frozen=True, slots=True)
+class _PublishedLimitsCache:
+    key: tuple[str, str]
+    fetched_at: float
+    limits: dict[str, PublishedModelLimits]
+
+
+# Single entry: a different base URL or API key evicts the previous endpoint's
+# limits instead of keeping them next to the new ones.
+_published_limits_cache: _PublishedLimitsCache | None = None
+_published_limits_cache_lock = threading.Lock()
+
+
+def reset_published_model_limits_cache() -> None:
+    """Drop the cached CLIProxyAPI catalog limits."""
+
+    global _published_limits_cache
+    with _published_limits_cache_lock:
+        _published_limits_cache = None
+
+
+def _with_published_limits(
+    models: list[SidecarModel],
+    limits: Mapping[str, PublishedModelLimits],
+) -> list[SidecarModel]:
+    enriched: list[SidecarModel] = []
+    for model in models:
+        published = limits.get(model.id)
+        if published is None:
+            enriched.append(model)
+            continue
+        enriched.append(
+            SidecarModel(
+                id=model.id,
+                created=model.created,
+                owned_by=model.owned_by,
+                raw=model.raw,
+                pricing=model.pricing,
+                context_window=published.context_window,
+                max_output_tokens=published.max_output_tokens,
+            )
+        )
+    return enriched
+
+
+def _positive_int(value: JsonValue | None) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        return None
+    return value
 
 
 def _json_or_message(text: str) -> JsonValue:
