@@ -36,6 +36,9 @@ import {
 
 export type AccountAction = "details" | "pause" | "resume" | "reauth" | "warmup-toggle" | "reset-credit";
 
+// Anthropic removed the 5-hour limit; set true to show the dashboard Claude 5h bars again.
+const SHOW_CLAUDE_FIVE_HOUR_BARS = false;
+
 export type AccountCardProps = {
   account: AccountSummary;
   showAccountId?: boolean;
@@ -388,12 +391,14 @@ export function ClaudeAuthCard({
           <CliproxyAuthQuotaBars title={title} windows={dashboardXaiWindows(auth.quotaWindows ?? [])} />
         </div>
       ) : (
-        <div className="mt-3.5 grid grid-cols-2 gap-3">
-          <QuotaBar
-            label="5h"
-            percent={auth.primaryRemainingPercent ?? null}
-            resetLabel={formatQuotaResetLabel(auth.resetAtPrimary ?? null)}
-          />
+        <div className={cn("mt-3.5 grid gap-3", SHOW_CLAUDE_FIVE_HOUR_BARS ? "grid-cols-2" : "grid-cols-1")}>
+          {SHOW_CLAUDE_FIVE_HOUR_BARS ? (
+            <QuotaBar
+              label="5h"
+              percent={auth.primaryRemainingPercent ?? null}
+              resetLabel={formatQuotaResetLabel(auth.resetAtPrimary ?? null)}
+            />
+          ) : null}
           <QuotaBar
             label="Weekly"
             percent={auth.secondaryRemainingPercent ?? null}
@@ -566,12 +571,14 @@ function SyntheticAccountCard({
                       </Button>
                     </div>
                   </div>
-                  <div className="grid gap-3 sm:grid-cols-2">
-                    <QuotaBar
-                      label="5h"
-                      percent={auth.primaryRemainingPercent ?? null}
-                      resetLabel={formatQuotaResetLabel(auth.resetAtPrimary ?? null)}
-                    />
+                  <div className={cn("grid gap-3", SHOW_CLAUDE_FIVE_HOUR_BARS ? "sm:grid-cols-2" : "grid-cols-1")}>
+                    {SHOW_CLAUDE_FIVE_HOUR_BARS ? (
+                      <QuotaBar
+                        label="5h"
+                        percent={auth.primaryRemainingPercent ?? null}
+                        resetLabel={formatQuotaResetLabel(auth.resetAtPrimary ?? null)}
+                      />
+                    ) : null}
                     <QuotaBar
                       label="Weekly"
                       percent={auth.secondaryRemainingPercent ?? null}
@@ -588,12 +595,14 @@ function SyntheticAccountCard({
               <span className="text-xs font-medium">Claude Usage</span>
               <Badge variant="outline" className="text-[11px]">{aggregateUsageSourceLabel}</Badge>
             </div>
-            <div className="grid gap-3 sm:grid-cols-2">
-              <QuotaBar
-                label="5h"
-                percent={primaryRemaining}
-                resetLabel={formatQuotaResetLabel(account.resetAtPrimary ?? null)}
-              />
+            <div className={cn("grid gap-3", SHOW_CLAUDE_FIVE_HOUR_BARS ? "sm:grid-cols-2" : "grid-cols-1")}>
+              {SHOW_CLAUDE_FIVE_HOUR_BARS ? (
+                <QuotaBar
+                  label="5h"
+                  percent={primaryRemaining}
+                  resetLabel={formatQuotaResetLabel(account.resetAtPrimary ?? null)}
+                />
+              ) : null}
               <QuotaBar
                 label="Weekly"
                 percent={secondaryRemaining}

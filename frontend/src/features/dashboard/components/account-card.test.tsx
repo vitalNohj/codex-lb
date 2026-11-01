@@ -234,8 +234,9 @@ describe("AccountCard", () => {
 
     expect(screen.getByText("claude-one@example.com")).toBeInTheDocument();
     expect(screen.getByText(/Claude/)).toBeInTheDocument();
-    expect(screen.getByText("5h")).toBeInTheDocument();
+    expect(screen.queryByText("5h")).not.toBeInTheDocument();
     expect(screen.getByText("Weekly")).toBeInTheDocument();
+    expect(screen.getByText("Weekly").closest(".grid")).toHaveClass("grid-cols-1");
     expect(screen.getByRole("button", { name: "Details" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Pause claude-one@example.com" })).toBeInTheDocument();
     expect(screen.queryByText("Health")).toBeNull();
@@ -628,6 +629,57 @@ describe("AccountCard", () => {
 
     expect(screen.getByText("Claude Usage")).toBeInTheDocument();
     expect(screen.getByText("Estimated")).toBeInTheDocument();
+    expect(screen.queryByText("5h")).not.toBeInTheDocument();
+    expect(screen.getByText("Weekly")).toBeInTheDocument();
+    expect(screen.getByText("Weekly").closest(".grid")).toHaveClass("grid-cols-1");
+  });
+
+  it("hides the 5h bar on a Claude sidecar login while Codex cards still show 5h", () => {
+    const claudeAccount = createAccountSummary({
+      accountId: "claude-sidecar",
+      displayName: "CLI Proxy API",
+      planType: "claude",
+      status: "active",
+      synthetic: true,
+      kind: "sidecar",
+      provider: "claude",
+      usage: null,
+      sidecarAuths: [
+        {
+          name: "claude-1",
+          authIndex: "0",
+          email: "vitalnohj@example.com",
+          provider: "claude",
+          paused: false,
+          quotaExceeded: false,
+          modelsExceeded: [],
+          excludedModels: [],
+          excludedModelsState: "available",
+          success: 0,
+          failed: 0,
+          primaryRemainingPercent: 40,
+          secondaryRemainingPercent: 80,
+        },
+      ],
+    });
+    const codexAccount = createAccountSummary({
+      accountId: "codex-1",
+      email: "codex@example.com",
+      displayName: "Codex User",
+      planType: "plus",
+      status: "active",
+      usage: { primaryRemainingPercent: 50, secondaryRemainingPercent: 70 },
+      windowMinutesPrimary: 300,
+      windowMinutesSecondary: 10_080,
+    });
+
+    const { unmount } = renderWithProviders(<AccountCard account={claudeAccount} />);
+    expect(screen.getByText("Weekly")).toBeInTheDocument();
+    expect(screen.queryByText("5h")).not.toBeInTheDocument();
+    expect(screen.getByText("Weekly").closest(".grid")).toHaveClass("grid-cols-1");
+    unmount();
+
+    render(<AccountCard account={codexAccount} />);
     expect(screen.getByText("5h")).toBeInTheDocument();
     expect(screen.getByText("Weekly")).toBeInTheDocument();
   });
