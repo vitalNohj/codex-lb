@@ -311,21 +311,9 @@ async def test_shared_key_refuses_an_unpriced_model_on_the_proxy(async_client):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("shared", "limits"),
-    [
-        pytest.param(False, [_lifetime_cost()], id="not-shared-with-cost-budget"),
-        pytest.param(
-            True,
-            [{"limitType": "total_tokens", "limitWindow": "lifetime", "maxValue": 1_000_000}],
-            id="shared-without-cost-limit",
-        ),
-        pytest.param(True, [], id="shared-without-limits"),
-    ],
-)
-async def test_other_keys_still_serve_an_unpriced_model(async_client, shared, limits):
+async def test_a_key_that_is_not_shared_still_serves_an_unpriced_model(async_client):
     key_id, _ = await _create_key(
-        async_client, name=f"unpriced-allowed-{shared}-{len(limits)}", shared=shared, limits=limits
+        async_client, name="unpriced-allowed-private", shared=False, limits=[_lifetime_cost()]
     )
 
     await _enforce(key_id, _UNPRICED_MODEL)

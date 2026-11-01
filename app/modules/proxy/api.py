@@ -308,6 +308,7 @@ from app.modules.proxy.alias_pool_dispatch import (
 from app.modules.proxy.api_key_pricing import (
     never_charged,
     pool_price_check,
+    priced_listed_models,
     route_price_check,
     source_price_check,
 )
@@ -4552,6 +4553,40 @@ async def _build_codex_models_response(api_key: ApiKeyData | None) -> Response:
             await _release_reservation_deferring_cancellation(reservation)
 
 
+async def _keep_priced_models(api_key: ApiKeyData | None, items: list[_T], model_id: Callable[[_T], str]) -> list[_T]:
+    """``items`` without the models a shared key would be refused; unchanged for any other key.
+
+    A shared key is refused every model that is not priced yet, so its listing
+    shows only the ids it would be served.
+    """
+
+    if api_key is None or not api_key_is_shared(api_key) or not items:
+        return items
+    routing_entries = await _enabled_sidecar_routing_entries()
+    sources_by_model: dict[str, ModelSource] = {}
+    async with get_background_session() as session:
+        sources = await ModelSourcesRepository(session).list_enabled_sources()
+        detach_session_objects(session)
+    assigned_source_ids = _allowed_source_ids_for_api_key(api_key)
+    # Source selection's precedence: a key with no source assignment is served
+    # a subscription-registry model by its subscription, never by a source that
+    # lists the same name, so that model is priced from the static table.
+    registry_models = get_model_registry().get_models_with_fallback() if assigned_source_ids is None else {}
+    for source in sources:
+        if assigned_source_ids is not None and source.id not in assigned_source_ids:
+            continue
+        for source_model in source.models:
+            if source_model.is_enabled and source_model.model not in registry_models:
+                sources_by_model.setdefault(source_model.model, source)
+    priced = await priced_listed_models(
+        [model_id(item) for item in items],
+        routing_entries=routing_entries,
+        sources_by_model=sources_by_model,
+        aliases=await load_model_aliases(),
+    )
+    return [item for item in items if model_id(item) in priced]
+
+
 async def _build_codex_models_response_body(
     api_key: ApiKeyData | None,
 ) -> Response:
@@ -4686,6 +4721,8 @@ async def _build_codex_models_response_body(
                     context_window_overrides=context_window_overrides,
                 )
             )
+    entries = await _keep_priced_models(api_key, entries, lambda entry: entry.slug)
+    data = await _keep_priced_models(api_key, data, lambda item: item.id)
     return JSONResponse(content=CodexModelsResponse(models=entries, data=data).model_dump(mode="json"))
 
 
@@ -5217,6 +5254,7 @@ async def _build_models_response_body(
         if catalog:
             serialized_items = apply_custom_alias_catalog_overrides(serialized_items, catalog)
         items = [ModelListItem.model_validate(entry) for entry in serialized_items]
+    items = await _keep_priced_models(api_key, items, lambda item: item.id)
     return JSONResponse(content=_dump_v1_models_response(ModelListResponse(data=items)))
 
 

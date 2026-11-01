@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import re
 from collections import defaultdict
 from dataclasses import dataclass
@@ -89,6 +90,22 @@ def is_known_free_model(model: str | None) -> bool:
         return False
     normalized = model.strip().lower()
     return normalized in _OPAQUE_FREE_MODELS or bool(_FREE_MODEL_RE.search(normalized))
+
+
+def model_price_is_billable(price: ModelPrice | None) -> bool:
+    """Whether ``price`` charges a real, nonzero amount per token.
+
+    A free model's ``0.0`` rates are a price settlement can record, but they
+    measure nothing: a request at them costs exactly nothing. Callers that may
+    only serve models whose use is actually paid for (shared API keys) treat
+    such a price as no price at all.
+    """
+    if price is None:
+        return False
+    return any(
+        rate is not None and math.isfinite(rate) and rate > 0
+        for rate in (price.input_per_1m, price.output_per_1m, price.cached_input_per_1m)
+    )
 
 
 def _as_number(value: int | float | None) -> float | None:

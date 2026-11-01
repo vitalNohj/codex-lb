@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import secrets
 import time
 import uuid
@@ -23,6 +24,7 @@ from app.core.usage.pricing import (
     UsageTokens,
     calculate_cost_from_usage,
     get_pricing_for_model,
+    model_price_is_billable,
 )
 from app.core.usage.types import UsageWindowRow
 from app.core.utils.time import to_utc_naive, utcnow
@@ -60,6 +62,8 @@ from app.modules.api_keys.repository import (
 )
 from app.modules.api_keys.visibility import DEFAULT_USAGE_SECTIONS, VALID_USAGE_SECTIONS
 from app.modules.usage.repository import UsageRepository
+
+logger = logging.getLogger(__name__)
 
 _SQLITE_BUSY_RETRY_ATTEMPTS = 4
 _SQLITE_BUSY_RETRY_BASE_SECONDS = 0.1
@@ -273,17 +277,17 @@ class ApiKeyValidationError(ValueError):
 
 
 class ApiKeyUnpricedModelError(ValueError):
-    """A shared key with a cost budget asked for a model that has no known price.
+    """A shared key asked for a model that is not priced yet.
 
-    Its spend could not be measured against the budget, so the request is
-    refused before anything is sent upstream.
+    A shared key was handed to someone else, and only a model with a real,
+    nonzero price makes their use measurable. The request is refused before
+    anything is reserved or sent upstream.
     """
 
     def __init__(self, model: str | None) -> None:
         shown = model or "(none)"
         super().__init__(
-            f"Model {shown!r} has no known price, so this shared API key's cost budget cannot meter it. "
-            "Choose a priced model."
+            f"Model {shown!r} is not priced yet, so this shared API key cannot use it. Choose a priced model."
         )
         self.model = model
 
@@ -291,15 +295,19 @@ class ApiKeyUnpricedModelError(ValueError):
 ModelPricedCheck = Callable[[], Awaitable[bool]]
 """Answers whether the request's model has a known price on the route serving it.
 
-Called only when a price matters: the key is shared and has a cost limit. The
-caller supplies it because only the dispatch path knows which price table
-(static, external catalog, or model-source catalog) will charge the request.
+Called only when a price matters: the key is shared. The caller supplies it
+because only the dispatch path knows which price table (static, external
+catalog, or model-source catalog) will charge the request. "Priced" means a
+real, nonzero rate: a free model's ``0`` rates measure nothing.
 """
 
 
 def static_model_is_priced(model: str | None) -> bool:
-    """Whether settlement can price ``model`` from the static table."""
-    return bool(model) and get_pricing_for_model(model or "") is not None
+    """Whether the static table charges ``model`` a real, nonzero rate."""
+    if not model:
+        return False
+    resolved = get_pricing_for_model(model)
+    return resolved is not None and model_price_is_billable(resolved[1])
 
 
 class ApiKeyRateLimitExceededError(ValueError):
@@ -997,12 +1005,12 @@ class ApiKeysService:
     ) -> ApiKeyUsageReservationData | None:
         """Admit one request against the key's limits and reserve its estimate.
 
-        A shared key with any ``cost_usd`` limit refuses a model that has no
-        known price (``ApiKeyUnpricedModelError``): its spend could not be
-        measured, so it would be free against the budget. ``model_is_priced``
-        answers that for the route serving the request; without it the static
-        price table decides. Keys that are not shared, or have no cost limit,
-        are served as before.
+        A shared key refuses a model that is not priced yet
+        (``ApiKeyUnpricedModelError``), whatever limits it has: its use could
+        not be measured. ``model_is_priced`` answers that for the route serving
+        the request's final model; without it the static price table decides.
+        A check that cannot answer refuses. Keys that are not shared are served
+        as before.
 
         ``admission_key`` is the key row already loaded for this request. It
         does not decide whether the key still exists or is still active:
@@ -1071,19 +1079,14 @@ class ApiKeysService:
             reservation_id: str | None = None
             normalized_usage_budget = _normalize_request_usage_budget(request_usage_budget)
             try:
-                if _meters_cost_for_sharing(is_shared, limits) and not await model_is_priced():
+                if is_shared and not await _shared_key_model_is_priced(model_is_priced, request_model):
                     raise ApiKeyUnpricedModelError(request_model)
                 pending_reserves: list[tuple[ApiKeyLimit, int, datetime]] = []
                 for limit in limits:
                     max_value = limit.max_value
                     limit_type = limit.limit_type
                     reset_at = limit.reset_at
-                    if (
-                        not _limit_meters_usage(limit)
-                        or max_value is None
-                        or limit_type is None
-                        or reset_at is None
-                    ):
+                    if not _limit_meters_usage(limit) or max_value is None or limit_type is None or reset_at is None:
                         continue
                     if not _limit_applies_for_request(limit, request_model=request_model):
                         continue
@@ -1962,14 +1965,18 @@ async def _lazy_reset_expired_limits(
     return reset_performed
 
 
-def _meters_cost_for_sharing(is_shared: bool, limits: Sequence[ApiKeyLimit]) -> bool:
-    """Whether this key must only serve models whose cost it can measure.
+async def _shared_key_model_is_priced(model_is_priced: ModelPricedCheck, request_model: str | None) -> bool:
+    """Whether a shared key may be served ``request_model``.
 
-    A shared key with a cost budget was handed to someone else to spend that
-    budget. A model with no known price would be served free against it, so
-    such a key refuses one. Any other key keeps serving every model.
+    A shared key was handed to someone else, so it serves only models whose use
+    is paid for at a real rate. A price lookup that fails cannot prove that,
+    so it refuses rather than serving the model unmetered.
     """
-    return is_shared and any(limit.limit_type == LimitType.COST_USD for limit in limits)
+    try:
+        return await model_is_priced()
+    except Exception:
+        logger.warning("shared_api_key_price_check_failed model=%s", request_model, exc_info=True)
+        return False
 
 
 def _limit_meters_usage(limit: ApiKeyLimit) -> bool:
@@ -2430,9 +2437,7 @@ def _validate_limit_reasoning_efforts(limits: list[LimitRuleInput]) -> None:
             else:
                 covered = "every model"
             efforts = " and ".join(sorted({left_effort, right_effort}))
-            raise ApiKeyValidationError(
-                f"Limit rules covering {covered} set different reasoning efforts: {efforts}"
-            )
+            raise ApiKeyValidationError(f"Limit rules covering {covered} set different reasoning efforts: {efforts}")
 
 
 def _limit_identity_from_input(limit: LimitRuleInput) -> tuple[str, str, str | tuple[str, ...] | None]:
