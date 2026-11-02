@@ -306,9 +306,9 @@ from app.modules.proxy.alias_pool_dispatch import (
     dispatch_chat_with_failover,
 )
 from app.modules.proxy.api_key_pricing import (
+    listed_model_prices,
     never_charged,
     pool_price_check,
-    priced_listed_models,
     route_price_check,
     source_price_check,
 )
@@ -4553,16 +4553,23 @@ async def _build_codex_models_response(api_key: ApiKeyData | None) -> Response:
             await _release_reservation_deferring_cancellation(reservation)
 
 
-async def _keep_priced_models(api_key: ApiKeyData | None, items: list[_T], model_id: Callable[[_T], str]) -> list[_T]:
-    """``items`` without the models a shared key would be refused; unchanged for any other key.
+async def _add_model_prices(
+    api_key: ApiKeyData | None,
+    entries: list[CodexModelEntry],
+    data: list[ModelListItem],
+    *,
+    routing_entries: tuple[SidecarRoutingEntry, ...] | None = None,
+    require_responses: bool = False,
+) -> tuple[list[CodexModelEntry], list[ModelListItem]]:
+    """Attach settlement rates, retaining the existing shared-key price filter.
 
-    A shared key is refused every model that is not priced yet, so its listing
-    shows only the ids it would be served.
+    Codex models and its OpenAI-compatible data share a single price snapshot.
+    Unknown models are retained without pricing for non-shared keys.
     """
-
-    if api_key is None or not api_key_is_shared(api_key) or not items:
-        return items
-    routing_entries = await _enabled_sidecar_routing_entries()
+    if not entries and not data:
+        return entries, data
+    if routing_entries is None:
+        routing_entries = await _enabled_sidecar_routing_entries()
     sources_by_model: dict[str, ModelSource] = {}
     async with get_background_session() as session:
         sources = await ModelSourcesRepository(session).list_enabled_sources()
@@ -4572,19 +4579,33 @@ async def _keep_priced_models(api_key: ApiKeyData | None, items: list[_T], model
     # a subscription-registry model by its subscription, never by a source that
     # lists the same name, so that model is priced from the static table.
     registry_models = get_model_registry().get_models_with_fallback() if assigned_source_ids is None else {}
-    for source in sources:
+    # Match request selection's capability predicates and name/id ordering:
+    # Codex requests require a streaming Responses source, not an earlier chat-
+    # only or non-streaming source that happens to list the same model.
+    for source in sorted(sources, key=lambda source: (source.name, source.id)):
+        if source.kind != "openai_compatible" or (require_responses and not source.supports_responses):
+            continue
         if assigned_source_ids is not None and source.id not in assigned_source_ids:
             continue
         for source_model in source.models:
+            if require_responses and not source_model.supports_streaming:
+                continue
             if source_model.is_enabled and source_model.model not in registry_models:
                 sources_by_model.setdefault(source_model.model, source)
-    priced = await priced_listed_models(
-        [model_id(item) for item in items],
+    prices = await listed_model_prices(
+        [entry.slug for entry in entries] + [item.id for item in data],
         routing_entries=routing_entries,
         sources_by_model=sources_by_model,
         aliases=await load_model_aliases(),
     )
-    return [item for item in items if model_id(item) in priced]
+    for entry in entries:
+        entry.pricing = prices.pricing.get(entry.slug)
+    for item in data:
+        item.pricing = prices.pricing.get(item.id)
+    if api_key is not None and api_key_is_shared(api_key):
+        entries = [entry for entry in entries if entry.slug in prices.billable]
+        data = [item for item in data if item.id in prices.billable]
+    return entries, data
 
 
 async def _build_codex_models_response_body(
@@ -4721,8 +4742,7 @@ async def _build_codex_models_response_body(
                     context_window_overrides=context_window_overrides,
                 )
             )
-    entries = await _keep_priced_models(api_key, entries, lambda entry: entry.slug)
-    data = await _keep_priced_models(api_key, data, lambda item: item.id)
+    entries, data = await _add_model_prices(api_key, entries, data, require_responses=True)
     return JSONResponse(content=CodexModelsResponse(models=entries, data=data).model_dump(mode="json"))
 
 
@@ -5266,7 +5286,7 @@ async def _build_models_response_body(
         if catalog:
             serialized_items = apply_custom_alias_catalog_overrides(serialized_items, catalog)
         items = [ModelListItem.model_validate(entry) for entry in serialized_items]
-    items = await _keep_priced_models(api_key, items, lambda item: item.id)
+    _, items = await _add_model_prices(api_key, [], items, routing_entries=routing_entry_tuple)
     return JSONResponse(content=_dump_v1_models_response(ModelListResponse(data=items)))
 
 
@@ -5451,6 +5471,7 @@ def _to_codex_model_entry(
         "default_reasoning_level",
         "supported_reasoning_levels",
         "supported_in_api",
+        "pricing",  # Never trust upstream rates; settlement prices are attached below.
         "priority",
         "minimal_client_version",
         "supports_reasoning_summaries",
@@ -5475,6 +5496,7 @@ def _to_codex_model_entry(
         extra["max_context_window"] = effective_cw
 
     return CodexModelEntry(
+        pricing=None,
         slug=model.slug,
         display_name=model.display_name,
         description=model.description,

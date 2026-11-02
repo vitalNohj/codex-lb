@@ -9,6 +9,7 @@ from app.core.openai.model_registry import (
     UpstreamModel,
 )
 from app.core.types import JsonValue
+from app.core.usage.pricing import ModelPrice
 from app.core.utils.json_guards import is_json_list, is_json_mapping
 from app.db.models import ModelSource, ModelSourceModel
 
@@ -243,6 +244,20 @@ def source_model_supported_tool_types(source: ModelSource, model: str) -> frozen
     return frozenset(supported)
 
 
+def source_model_price(source: ModelSource, model: str) -> ModelPrice | None:
+    """The token rates used by source request settlement, including partial rates."""
+    entry = _enabled_source_model(source, model)
+    if entry is None:
+        return None
+    if entry.input_per_1m is None and entry.cached_input_per_1m is None and entry.output_per_1m is None:
+        return None
+    return ModelPrice(
+        input_per_1m=entry.input_per_1m or 0.0,
+        cached_input_per_1m=entry.cached_input_per_1m,
+        output_per_1m=entry.output_per_1m or 0.0,
+    )
+
+
 def source_model_cost_usd(
     source: ModelSource,
     model: str,
@@ -258,17 +273,12 @@ def source_model_cost_usd(
     cost handling. Mirrors the subscription pricing semantics: cached input
     tokens are billed at the cached rate and subtracted from billable input.
     """
-    entry = next(
-        (candidate for candidate in source.models if candidate.model == model and candidate.is_enabled),
-        None,
-    )
-    if entry is None:
+    price = source_model_price(source, model)
+    if price is None:
         return None
-    if entry.input_per_1m is None and entry.cached_input_per_1m is None and entry.output_per_1m is None:
-        return None
-    input_rate = entry.input_per_1m or 0.0
-    cached_rate = entry.cached_input_per_1m if entry.cached_input_per_1m is not None else input_rate
-    output_rate = entry.output_per_1m or 0.0
+    input_rate = price.input_per_1m
+    cached_rate = price.cached_input_per_1m if price.cached_input_per_1m is not None else input_rate
+    output_rate = price.output_per_1m
     billable_input = max(0, input_tokens - cached_input_tokens)
     return (
         (billable_input / 1_000_000) * input_rate
