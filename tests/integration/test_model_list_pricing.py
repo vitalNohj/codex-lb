@@ -14,6 +14,7 @@ from app.core.usage.pricing import ModelPrice, UsageTokens, calculate_cost_from_
 from app.db.models import ModelSource, ModelSourceModel
 from app.db.session import SessionLocal
 from app.modules.model_sources.catalog import source_model_cost_usd
+from app.modules.model_sources.repository import ModelSourcesRepository
 from app.modules.proxy.model_aliasing import resolve_model_alias_pool
 from app.modules.settings.model_alias_pools import ModelAliasPool
 
@@ -182,6 +183,59 @@ async def test_unreadable_external_store_omits_rates_without_claiming_zero(prici
     by_id = {entry["id"]: entry for entry in response.json()["data"]}
     assert all("pricing" not in by_id[model] for model in (_CLAUDE, _PAID, _FREE, _UNKNOWN, *_ALIASES))
     assert "pricing" in by_id["gpt-5.4"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["/v1/models", "/backend-api/codex/models", "/v1/models?client_version=0.114.0"])
+async def test_source_prices_match_capability_filtered_request_selection(async_client, path):
+    model = "source/shared-name"
+    sources = []
+    for name, responses, streaming, rate in (
+        ("a-chat-only", False, True, 1.0),
+        ("b-non-streaming", True, False, 3.0),
+        ("c-responses-streaming", True, True, 7.0),
+    ):
+        source = ModelSource(
+            id=name,
+            name=name,
+            kind="openai_compatible",
+            base_url="http://127.0.0.1:9/v1",
+            is_enabled=True,
+            supports_chat_completions=True,
+            supports_responses=responses,
+        )
+        source.models = [
+            ModelSourceModel(
+                model=model,
+                is_enabled=True,
+                supports_streaming=streaming,
+                input_per_1m=rate,
+                output_per_1m=rate * 2,
+                cached_input_per_1m=rate / 10,
+            )
+        ]
+        sources.append(source)
+    codex = path != "/v1/models"
+    async with SessionLocal() as session:
+        session.add_all(sources)
+        await session.commit()
+        repository = ModelSourcesRepository(session)
+        selected = (
+            await repository.find_responses_source_for_model(model, require_streaming=True)
+            if codex
+            else await repository.find_chat_source_for_model(model)
+        )
+        assert selected is not None
+        assert selected.id == ("c-responses-streaming" if codex else "a-chat-only")
+        charged = source_model_cost_usd(selected, model, input_tokens=1000, output_tokens=97, cached_input_tokens=211)
+    response = await async_client.get(path)
+    assert response.status_code == 200, response.text
+    body = response.json()
+    entries = body["data"] + [{**entry, "id": entry["slug"]} for entry in body.get("models", [])]
+    matches = [entry for entry in entries if entry["id"] == model]
+    assert len(matches) == (2 if codex else 1)
+    for entry in matches:
+        assert _listed_cost(entry["pricing"], UsageTokens(1000, 97, 211), None) == pytest.approx(charged)
 
 
 @pytest.mark.asyncio

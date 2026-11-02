@@ -4559,6 +4559,7 @@ async def _add_model_prices(
     data: list[ModelListItem],
     *,
     routing_entries: tuple[SidecarRoutingEntry, ...] | None = None,
+    require_responses: bool = False,
 ) -> tuple[list[CodexModelEntry], list[ModelListItem]]:
     """Attach settlement rates, retaining the existing shared-key price filter.
 
@@ -4578,10 +4579,17 @@ async def _add_model_prices(
     # a subscription-registry model by its subscription, never by a source that
     # lists the same name, so that model is priced from the static table.
     registry_models = get_model_registry().get_models_with_fallback() if assigned_source_ids is None else {}
-    for source in sources:
+    # Match request selection's capability predicates and name/id ordering:
+    # Codex requests require a streaming Responses source, not an earlier chat-
+    # only or non-streaming source that happens to list the same model.
+    for source in sorted(sources, key=lambda source: (source.name, source.id)):
+        if source.kind != "openai_compatible" or (require_responses and not source.supports_responses):
+            continue
         if assigned_source_ids is not None and source.id not in assigned_source_ids:
             continue
         for source_model in source.models:
+            if require_responses and not source_model.supports_streaming:
+                continue
             if source_model.is_enabled and source_model.model not in registry_models:
                 sources_by_model.setdefault(source_model.model, source)
     prices = await listed_model_prices(
@@ -4734,7 +4742,7 @@ async def _build_codex_models_response_body(
                     context_window_overrides=context_window_overrides,
                 )
             )
-    entries, data = await _add_model_prices(api_key, entries, data)
+    entries, data = await _add_model_prices(api_key, entries, data, require_responses=True)
     return JSONResponse(content=CodexModelsResponse(models=entries, data=data).model_dump(mode="json"))
 
 
