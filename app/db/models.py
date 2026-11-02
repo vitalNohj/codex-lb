@@ -814,6 +814,14 @@ class ExternalModelPrice(Base):
     input_per_1m: Mapped[float | None] = mapped_column(Float, nullable=True)
     output_per_1m: Mapped[float | None] = mapped_column(Float, nullable=True)
     cached_input_per_1m: Mapped[float | None] = mapped_column(Float, nullable=True)
+    cache_write_input_per_1m: Mapped[float | None] = mapped_column(Float, nullable=True)
+    cache_write_input_1h_per_1m: Mapped[float | None] = mapped_column(Float, nullable=True)
+    long_context_threshold_tokens: Mapped[float | None] = mapped_column(Float, nullable=True)
+    long_context_input_per_1m: Mapped[float | None] = mapped_column(Float, nullable=True)
+    long_context_output_per_1m: Mapped[float | None] = mapped_column(Float, nullable=True)
+    long_context_cached_input_per_1m: Mapped[float | None] = mapped_column(Float, nullable=True)
+    long_context_cache_write_input_per_1m: Mapped[float | None] = mapped_column(Float, nullable=True)
+    long_context_cache_write_input_1h_per_1m: Mapped[float | None] = mapped_column(Float, nullable=True)
     # Resolution step that produced the mapping (``alias``, ``prefix-exact``,
     # ``exact``...), retained so any recorded price is explainable.
     resolution_step: Mapped[str | None] = mapped_column(String, nullable=True)

@@ -159,7 +159,17 @@ def test_conflicting_priority_rate_cannot_borrow_long_context_rates():
 def test_bundled_snapshot_covers_astra_without_network():
     prices = catalog.decode_snapshot(json.loads(catalog.BUNDLE_PATH.read_text()))
     assert "gpt-6-astra" in prices
-    assert get_pricing_for_model("gpt-6-astra") == ("gpt-6-astra", prices["gpt-6-astra"])
+    resolved = get_pricing_for_model("gpt-6-astra")
+    assert resolved is not None
+    assert resolved[0] == "gpt-6-astra"
+    assert resolved[1] == replace(
+        prices["gpt-6-astra"],
+        cache_write_input_per_1m=12.5,
+        long_context_cache_write_input_per_1m=25.0,
+        priority_cache_write_input_per_1m=25.0,
+        flex_cache_write_input_per_1m=6.25,
+        flex_long_context_cache_write_input_per_1m=12.5,
+    )
 
 
 @pytest.mark.parametrize("tier", ["priority", "flex"])

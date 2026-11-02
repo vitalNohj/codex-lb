@@ -216,6 +216,7 @@ async def _refresh_record(
         catalogs=catalogs,
         aliases=context.aliases if context is not None else None,
         prefixes=context.prefixes if context is not None else (),
+        provider=record.provider,
     )
 
     consultations = SourceConsultations(

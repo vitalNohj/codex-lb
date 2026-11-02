@@ -45,8 +45,10 @@ request. Without a requested service-tier object, use the top-level rates.
 Cache reads and writes are subtracted from uncached input before multiplying
 the respective rates. For model sources, which do not meter cache writes
 separately, all non-cached input uses `input`. The current general billing path
-charges any reported cache-write tokens at twice the effective input rate,
-including non-Claude models; the listing reflects this existing behavior.
+uses the stored cache-write rate for the active context and service tier,
+falling back to twice the effective input rate only when that rate is absent.
+Claude writes retain CLIProxyAPI's 1-hour pricing; the listing uses the same
+rate selection as request settlement.
 
 Single-target aliases inherit their target price. A failover alias publishes
 one price only if every target has identical effective rates; heterogeneous or

@@ -39,7 +39,7 @@ import json
 import logging
 import math
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 from typing import cast
 
@@ -282,10 +282,61 @@ def parse_published_pricing(pricing: JsonValue, *, rate_format: RateFormat) -> M
     if input_per_1m is None or output_per_1m is None:
         return None
     cached_input_per_1m = _parse_rate_usd(pricing.get(rate_format.cached_input_key), rate_format.per_1m_multiplier)
-    return ModelPrice(
+    cached_reading = _read_rate_field(pricing, rate_format.cached_input_key)
+    if cached_reading is _RateReading.UNREADABLE or (
+        cached_reading is _RateReading.PARSED and cached_input_per_1m is None
+    ):
+        return None
+    price = ModelPrice(
         input_per_1m=input_per_1m,
         output_per_1m=output_per_1m,
         cached_input_per_1m=cached_input_per_1m,
+    )
+    if rate_format != OPENROUTER_RATE_FORMAT:
+        return price
+    # Missing/null write rates are not evidence that writes are free. Only an
+    # explicit numeric zero suppresses the legacy fallback charge.
+    for key in ("input_cache_write", "input_cache_write_1h"):
+        reading = _read_rate_field(pricing, key)
+        if reading is _RateReading.UNREADABLE or (
+            reading is _RateReading.PARSED and _parse_rate_usd(pricing.get(key), rate_format.per_1m_multiplier) is None
+        ):
+            return None
+    price = replace(
+        price,
+        cache_write_input_per_1m=_parse_rate_usd(pricing.get("input_cache_write"), rate_format.per_1m_multiplier),
+        cache_write_input_1h_per_1m=_parse_rate_usd(pricing.get("input_cache_write_1h"), rate_format.per_1m_multiplier),
+    )
+    overrides = pricing.get("overrides")
+    if overrides is None or overrides == []:
+        return price
+    if not isinstance(overrides, list):
+        return None
+    tiers: list[tuple[float, Mapping[str, JsonValue]]] = []
+    for override in overrides:
+        if not is_json_mapping(override):
+            return None
+        threshold = _parse_rate_usd(override.get("min_prompt_tokens"), 1.0)
+        if threshold is None or threshold <= 0:
+            return None
+        tiers.append((threshold, override))
+    # ModelPrice represents one long-context tier. Keep the earliest published
+    # threshold, regardless of the source's ordering of its override array.
+    threshold, override = min(tiers, key=lambda tier: tier[0])
+    tier_pricing = {key: value for key, value in pricing.items() if key != "overrides"}
+    tier_pricing.update(override)
+    tier_pricing.pop("overrides", None)
+    tier_price = parse_published_pricing(tier_pricing, rate_format=rate_format)
+    if tier_price is None:
+        return None
+    return replace(
+        price,
+        long_context_threshold_tokens=threshold,
+        long_context_input_per_1m=tier_price.input_per_1m,
+        long_context_output_per_1m=tier_price.output_per_1m,
+        long_context_cached_input_per_1m=tier_price.cached_input_per_1m,
+        long_context_cache_write_input_per_1m=tier_price.cache_write_input_per_1m,
+        long_context_cache_write_input_1h_per_1m=tier_price.cache_write_input_1h_per_1m,
     )
 
 

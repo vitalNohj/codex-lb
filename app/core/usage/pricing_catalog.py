@@ -232,7 +232,7 @@ _prices: dict[str, ModelPrice] | None = None
 def get_active_prices() -> dict[str, ModelPrice]:
     global _prices
     if _prices is None:
-        _prices = {**DEFAULT_PRICING_MODELS, **decode_snapshot(json.loads(BUNDLE_PATH.read_text()))}
+        _prices = merge_catalogs(decode_snapshot(json.loads(BUNDLE_PATH.read_text())), DEFAULT_PRICING_MODELS)
     return _prices
 
 

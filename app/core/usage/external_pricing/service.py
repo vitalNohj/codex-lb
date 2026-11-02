@@ -704,6 +704,7 @@ async def _run_lookup(
                 catalogs=order_catalogs(serving_catalog, reference),
                 aliases=aliases,
                 prefixes=prefixes,
+                provider=provider_key,
             )
             # The secondary reference is a fallback, so it is fetched only when
             # the primary sources did not already settle the id by exact match.
@@ -721,6 +722,7 @@ async def _run_lookup(
                         catalogs=order_catalogs(serving_catalog, reference, orcarouter.catalog),
                         aliases=aliases,
                         prefixes=prefixes,
+                        provider=provider_key,
                     )
     except TimeoutError:
         await preserve_record_for_retry(

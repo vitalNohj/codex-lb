@@ -34,6 +34,14 @@ class ModelPrice:
     flex_long_context_input_per_1m: float | None = None
     flex_long_context_output_per_1m: float | None = None
     flex_long_context_cached_input_per_1m: float | None = None
+    cache_write_input_per_1m: float | None = None
+    cache_write_input_1h_per_1m: float | None = None
+    long_context_cache_write_input_per_1m: float | None = None
+    long_context_cache_write_input_1h_per_1m: float | None = None
+    priority_cache_write_input_per_1m: float | None = None
+    priority_long_context_cache_write_input_per_1m: float | None = None
+    flex_cache_write_input_per_1m: float | None = None
+    flex_long_context_cache_write_input_per_1m: float | None = None
 
 
 # Anthropic bills a prompt-cache write at 2x the base input rate for the 1-hour
@@ -200,65 +208,97 @@ DEFAULT_PRICING_MODELS: dict[str, ModelPrice] = {
     ),
     "gpt-6-astra": ModelPrice(
         input_per_1m=10.0,
+        cache_write_input_per_1m=12.5,
         cached_input_per_1m=1.0,
         output_per_1m=50.0,
         priority_input_per_1m=20.0,
+        priority_cache_write_input_per_1m=25,
         priority_cached_input_per_1m=2.0,
         priority_output_per_1m=100.0,
         flex_input_per_1m=5.0,
+        flex_cache_write_input_per_1m=6.25,
         flex_cached_input_per_1m=0.5,
         flex_output_per_1m=25.0,
+        flex_long_context_cache_write_input_per_1m=12.5,
         long_context_threshold_tokens=272_000,
         long_context_input_per_1m=20.0,
+        long_context_cache_write_input_per_1m=25,
         long_context_cached_input_per_1m=2.0,
         long_context_output_per_1m=75.0,
     ),
     "gpt-6-sol": ModelPrice(
         input_per_1m=2.0,
+        cache_write_input_per_1m=2.5,
         cached_input_per_1m=0.20,
         output_per_1m=10.0,
         priority_input_per_1m=4.0,
+        priority_cache_write_input_per_1m=5,
         priority_cached_input_per_1m=0.40,
         priority_output_per_1m=20.0,
         flex_input_per_1m=1.0,
+        flex_cache_write_input_per_1m=1.25,
         flex_cached_input_per_1m=0.10,
         flex_output_per_1m=5.0,
+        flex_long_context_cache_write_input_per_1m=2.5,
         long_context_threshold_tokens=272_000,
         long_context_input_per_1m=4.0,
+        long_context_cache_write_input_per_1m=5,
         long_context_cached_input_per_1m=0.40,
         long_context_output_per_1m=15.0,
     ),
     # Published list rates, USD per 1M tokens (developers.openai.com/api/docs/pricing).
     # Standard short context is <=272K input tokens. Fast is the former priority
     # tier. Flex long context is the shared 2x/2x/1.5x adjustment. Cache writes
-    # are not a usage field this table prices.
+    # use the published 30-minute rate (1.25x input).
     "gpt-6.1-sol": ModelPrice(
         input_per_1m=2.0,
+        cache_write_input_per_1m=2.5,
         cached_input_per_1m=0.10,
         output_per_1m=10.0,
         priority_input_per_1m=4.0,
+        priority_cache_write_input_per_1m=5,
         priority_cached_input_per_1m=0.20,
         priority_output_per_1m=20.0,
         flex_input_per_1m=1.0,
+        flex_cache_write_input_per_1m=1.25,
         flex_cached_input_per_1m=0.05,
         flex_output_per_1m=5.0,
+        flex_long_context_cache_write_input_per_1m=2.5,
         long_context_threshold_tokens=272_000,
         long_context_input_per_1m=4.0,
+        long_context_cache_write_input_per_1m=5,
         long_context_cached_input_per_1m=0.20,
         long_context_output_per_1m=15.0,
     ),
+    # https://developers.openai.com/api/docs/pricing — Standard, USD per 1M tokens.
+    "gpt-6.1-terra": ModelPrice(
+        input_per_1m=1.0,
+        cached_input_per_1m=0.05,
+        output_per_1m=5.0,
+        cache_write_input_per_1m=1.25,
+        long_context_threshold_tokens=272_000,
+        long_context_input_per_1m=2.0,
+        long_context_cached_input_per_1m=0.10,
+        long_context_output_per_1m=7.5,
+        long_context_cache_write_input_per_1m=2.5,
+    ),
     "gpt-6-luna": ModelPrice(
         input_per_1m=0.10,
+        cache_write_input_per_1m=0.125,
         cached_input_per_1m=0.01,
         output_per_1m=0.50,
         priority_input_per_1m=0.20,
+        priority_cache_write_input_per_1m=0.25,
         priority_cached_input_per_1m=0.02,
         priority_output_per_1m=1.00,
         flex_input_per_1m=0.05,
+        flex_cache_write_input_per_1m=0.0625,
         flex_cached_input_per_1m=0.005,
         flex_output_per_1m=0.25,
+        flex_long_context_cache_write_input_per_1m=0.125,
         long_context_threshold_tokens=272_000,
         long_context_input_per_1m=0.20,
+        long_context_cache_write_input_per_1m=0.25,
         long_context_cached_input_per_1m=0.02,
         long_context_output_per_1m=0.75,
     ),
@@ -456,21 +496,25 @@ DEFAULT_PRICING_MODELS: dict[str, ModelPrice] = {
     # finds the key. A dated or effort-suffixed spelling is a different id.
     "claude-fable-5": ModelPrice(
         input_per_1m=10.0,
+        cache_write_input_per_1m=20,
         cached_input_per_1m=1.0,
         output_per_1m=50.0,
     ),
     "claude-fable-5-1": ModelPrice(
         input_per_1m=10.0,
+        cache_write_input_per_1m=20,
         cached_input_per_1m=0.25,
         output_per_1m=50.0,
     ),
     "claude-mythos-5": ModelPrice(
         input_per_1m=10.0,
+        cache_write_input_per_1m=20,
         cached_input_per_1m=1.0,
         output_per_1m=50.0,
     ),
     "claude-opus-5": ModelPrice(
         input_per_1m=5.0,
+        cache_write_input_per_1m=10,
         cached_input_per_1m=0.5,
         output_per_1m=25.0,
     ),
@@ -478,41 +522,49 @@ DEFAULT_PRICING_MODELS: dict[str, ModelPrice] = {
     # A cc/, cp-, or cp_ prefix on this exact id resolves here. A dotted spelling does not.
     "claude-opus-5-5": ModelPrice(
         input_per_1m=4.0,
+        cache_write_input_per_1m=8,
         cached_input_per_1m=0.20,
         output_per_1m=20.0,
     ),
     "claude-opus-4-8": ModelPrice(
         input_per_1m=5.0,
+        cache_write_input_per_1m=10,
         cached_input_per_1m=0.5,
         output_per_1m=25.0,
     ),
     "claude-opus-4-7": ModelPrice(
         input_per_1m=5.0,
+        cache_write_input_per_1m=10,
         cached_input_per_1m=0.5,
         output_per_1m=25.0,
     ),
     "claude-opus-4-6": ModelPrice(
         input_per_1m=5.0,
+        cache_write_input_per_1m=10,
         cached_input_per_1m=0.5,
         output_per_1m=25.0,
     ),
     "claude-opus-4-5": ModelPrice(
         input_per_1m=5.0,
+        cache_write_input_per_1m=10,
         cached_input_per_1m=0.5,
         output_per_1m=25.0,
     ),
     "claude-opus-4-1": ModelPrice(
         input_per_1m=15.0,
+        cache_write_input_per_1m=30,
         cached_input_per_1m=1.5,
         output_per_1m=75.0,
     ),
     "claude-opus-4": ModelPrice(
         input_per_1m=15.0,
+        cache_write_input_per_1m=30,
         cached_input_per_1m=1.5,
         output_per_1m=75.0,
     ),
     "claude-sonnet-5": ModelPrice(
         input_per_1m=2.0,
+        cache_write_input_per_1m=4,
         cached_input_per_1m=0.2,
         output_per_1m=10.0,
     ),
@@ -522,26 +574,31 @@ DEFAULT_PRICING_MODELS: dict[str, ModelPrice] = {
     # A cc/, cp-, or cp_ prefix on this exact id resolves here. A dotted spelling does not.
     "claude-sonnet-5-5": ModelPrice(
         input_per_1m=2.0,
+        cache_write_input_per_1m=4,
         cached_input_per_1m=0.1,
         output_per_1m=10.0,
     ),
     "claude-sonnet-4-6": ModelPrice(
         input_per_1m=3.0,
+        cache_write_input_per_1m=6,
         cached_input_per_1m=0.3,
         output_per_1m=15.0,
     ),
     "claude-sonnet-4-5": ModelPrice(
         input_per_1m=3.0,
+        cache_write_input_per_1m=6,
         cached_input_per_1m=0.3,
         output_per_1m=15.0,
     ),
     "claude-sonnet-4": ModelPrice(
         input_per_1m=3.0,
+        cache_write_input_per_1m=6,
         cached_input_per_1m=0.3,
         output_per_1m=15.0,
     ),
     "claude-3-7-sonnet": ModelPrice(
         input_per_1m=3.0,
+        cache_write_input_per_1m=6,
         cached_input_per_1m=0.3,
         output_per_1m=15.0,
     ),
@@ -552,28 +609,31 @@ DEFAULT_PRICING_MODELS: dict[str, ModelPrice] = {
     # The prompt length decides the rate for the whole request, output included.
     # It counts every input token, cached ones too. That matches effective_rates,
     # which compares total input_tokens (cached included) to the threshold.
-    # Not stored, because the table has no field for them: 5m cache write
-    # $0.125 / $0.625, 1h cache write $0.20 / $1.00. Batch API is 50% off.
+    # CLIProxyAPI 1h cache writes are $0.20 / $1.00. Batch API is 50% off.
     # Anthropic did not mark any Haiku 5.5 rate as introductory or limited-time
     # (the only introductory note on the page is the expired Sonnet 5 one). If a
     # promotional rate appears later, recheck these numbers.
     # The new tokenizer counts about 30% more tokens than Haiku 4.5 for the same text.
     "claude-haiku-5-5": ModelPrice(
         input_per_1m=0.10,
+        cache_write_input_per_1m=0.2,
         cached_input_per_1m=0.01,
         output_per_1m=0.50,
         long_context_threshold_tokens=100_000,
         long_context_input_per_1m=0.50,
+        long_context_cache_write_input_per_1m=1,
         long_context_cached_input_per_1m=0.05,
         long_context_output_per_1m=2.50,
     ),
     "claude-haiku-4-5": ModelPrice(
         input_per_1m=1.0,
+        cache_write_input_per_1m=2,
         cached_input_per_1m=0.1,
         output_per_1m=5.0,
     ),
     "claude-3-5-haiku": ModelPrice(
         input_per_1m=0.8,
+        cache_write_input_per_1m=1.6,
         cached_input_per_1m=0.08,
         output_per_1m=4.0,
     ),
@@ -601,11 +661,13 @@ DEFAULT_PRICING_MODELS: dict[str, ModelPrice] = {
     ),
     "anthropic/claude-3.5-sonnet": ModelPrice(
         input_per_1m=3.00,
+        cache_write_input_per_1m=6,
         cached_input_per_1m=0.30,
         output_per_1m=15.0,
     ),
     "anthropic/claude-3.5-haiku": ModelPrice(
         input_per_1m=0.80,
+        cache_write_input_per_1m=1.6,
         cached_input_per_1m=0.08,
         output_per_1m=4.0,
     ),
@@ -667,11 +729,13 @@ DEFAULT_PRICING_MODELS: dict[str, ModelPrice] = {
     ),
     "claude-3-5-sonnet-20241022": ModelPrice(
         input_per_1m=3.00,
+        cache_write_input_per_1m=6,
         cached_input_per_1m=0.30,
         output_per_1m=15.0,
     ),
     "claude-3-5-haiku-20241022": ModelPrice(
         input_per_1m=0.80,
+        cache_write_input_per_1m=1.6,
         cached_input_per_1m=0.08,
         output_per_1m=4.0,
     ),
@@ -903,6 +967,56 @@ def effective_rates(
     return input_rate, cached_rate, output_rate
 
 
+def effective_cache_write_rate(
+    usage: UsageTokens, price: ModelPrice, *, service_tier: str | None, input_rate: float
+) -> float:
+    """Write rate for the same context and service tier as ``effective_rates``."""
+    is_long_context = (
+        price.long_context_threshold_tokens is not None
+        and price.long_context_threshold_tokens > 0
+        and usage.input_tokens > price.long_context_threshold_tokens
+    )
+    tier = "priority" if _uses_priority_tier(service_tier) else "flex" if _uses_flex_tier(service_tier) else None
+    if tier is not None and not (
+        (getattr(price, f"{tier}_input_per_1m") is not None and getattr(price, f"{tier}_output_per_1m") is not None)
+        or (
+            is_long_context
+            and getattr(price, f"{tier}_long_context_input_per_1m") is not None
+            and getattr(price, f"{tier}_long_context_output_per_1m") is not None
+        )
+        or (tier == "priority" and price.priority_multiplier is not None)
+    ):
+        tier = None
+    if tier is not None:
+        tier_has_long_rates = (
+            getattr(price, f"{tier}_long_context_input_per_1m") is not None
+            and getattr(price, f"{tier}_long_context_output_per_1m") is not None
+        )
+        flex_uses_long_rates = (
+            tier == "flex"
+            and price.long_context_input_per_1m is not None
+            and price.long_context_output_per_1m is not None
+        )
+        if is_long_context and (tier_has_long_rates or flex_uses_long_rates):
+            rate = getattr(price, f"{tier}_long_context_cache_write_input_per_1m")
+        else:
+            rate = getattr(price, f"{tier}_cache_write_input_per_1m")
+        # Do not borrow a Standard write rate for a different service tier.
+        return rate if rate is not None else input_rate * CACHE_WRITE_INPUT_RATE_MULTIPLIER
+
+    # CLIProxyAPI upgrades Claude writes to 1h and usage has no TTL split.
+    # Preserve both published rates, using 1h when the source supplies it.
+    if is_long_context:
+        rate = price.long_context_cache_write_input_1h_per_1m
+        if rate is None:
+            rate = price.long_context_cache_write_input_per_1m
+    else:
+        rate = price.cache_write_input_1h_per_1m
+        if rate is None:
+            rate = price.cache_write_input_per_1m
+    return rate if rate is not None else input_rate * CACHE_WRITE_INPUT_RATE_MULTIPLIER
+
+
 def calculate_cost_from_usage(
     usage: UsageTokens | ResponseUsage | None,
     price: ModelPrice,
@@ -939,9 +1053,8 @@ def calculate_cost_breakdown_from_usage(
     output_usd = (normalized.output_tokens / 1_000_000) * output_rate
     # Zero writes leave every pre-existing total bit-identical: no extra term is
     # added, so persisted costs keep matching their recomputation.
-    cache_write_input_usd = (
-        (write_tokens / 1_000_000) * input_rate * CACHE_WRITE_INPUT_RATE_MULTIPLIER if write_tokens > 0 else None
-    )
+    write_rate = effective_cache_write_rate(normalized, price, service_tier=service_tier, input_rate=input_rate)
+    cache_write_input_usd = (write_tokens / 1_000_000) * write_rate if write_tokens > 0 else None
 
     if precision is not None:
         input_usd = round(input_usd, precision)
