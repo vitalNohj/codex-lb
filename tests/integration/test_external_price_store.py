@@ -105,6 +105,46 @@ async def _records() -> list[ExternalModelPrice]:
 
 
 @pytest.mark.asyncio
+async def test_cache_write_and_context_rates_survive_store_roundtrip(db_setup) -> None:
+    del db_setup
+    price = ModelPrice(
+        input_per_1m=0.1,
+        output_per_1m=0.5,
+        cached_input_per_1m=0.01,
+        cache_write_input_per_1m=0.125,
+        cache_write_input_1h_per_1m=0.2,
+        long_context_threshold_tokens=100_000,
+        long_context_input_per_1m=0.5,
+        long_context_output_per_1m=2.5,
+        long_context_cached_input_per_1m=0.05,
+        long_context_cache_write_input_per_1m=0.625,
+        long_context_cache_write_input_1h_per_1m=1.0,
+    )
+    async with SessionLocal() as session:
+        await ExternalModelPriceStore(session).record_resolved(
+            provider="cliproxy",
+            incoming_model="cc/lb0123456789/claude-haiku-5-5",
+            catalog_model="anthropic/claude-haiku-5.5",
+            catalog_source="openrouter:reference",
+            price=price,
+            resolution_step="prefix+account-alias+normalized",
+        )
+    async with SessionLocal() as session:
+        record = await ExternalModelPriceStore(session).get("cliproxy", "cc/lb0123456789/claude-haiku-5-5")
+    assert record is not None
+    assert record.price == price
+    cost, status = await calculated_cost_for_request(
+        provider="cliproxy",
+        model="cc/lb0123456789/claude-haiku-5-5",
+        usage=UsageTokens(200_000, 1000, cached_input_tokens=50_000, cache_write_input_tokens=100_000),
+    )
+    assert status is ExternalPriceStatus.RESOLVED
+    assert cost is not None
+    assert cost.cache_write_input_cost_usd == pytest.approx(0.1)
+    assert cost.cost_usd == pytest.approx(0.13)
+
+
+@pytest.mark.asyncio
 async def test_first_sighting_returns_no_cost_and_schedules_one_lookup(db_setup) -> None:
     """The request reports what is known now and never waits on remote work."""
 
@@ -307,6 +347,7 @@ async def test_retryable_failure_preserves_unsettled_ownership_and_provenance(db
     assert after.resolution_step == before.resolution_step
     assert after.retrieved_at == before.retrieved_at
     assert after.attempt_count == before.attempt_count + 1
+    assert before.next_retry_at is not None
     assert after.next_retry_at is not None and after.next_retry_at > before.next_retry_at
 
 

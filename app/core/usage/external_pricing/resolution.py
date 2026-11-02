@@ -212,6 +212,7 @@ def resolve_model_price(
     catalogs: Sequence[Catalog],
     aliases: Mapping[str, str] | None = None,
     prefixes: Sequence[tuple[str, bool]] = (),
+    provider: str | None = None,
 ) -> Resolution:
     """Resolve ``incoming_model`` against ``catalogs`` in precedence order.
 
@@ -255,6 +256,18 @@ def resolve_model_price(
             step_prefix = f"{step_prefix}prefix+"
             candidate = stripped
             continue
+
+        if provider == "cliproxy":
+            # Routing credentials do not change the model identity. Reuse the
+            # picker's account-alias rule, after configured prefixes are gone.
+            from app.modules.proxy.cliproxy_picker_models import _model_after_account_alias
+
+            account_model = _model_after_account_alias(candidate)
+            if account_model is not None and account_model != candidate and account_model not in seen:
+                excluded_prefixed_ids.add(candidate)
+                step_prefix = f"{step_prefix}account-alias+"
+                candidate = account_model
+                continue
 
         resolution = _resolve_against_catalogs(
             candidate,

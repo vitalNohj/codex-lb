@@ -6,7 +6,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.core.usage.pricing import CACHE_WRITE_INPUT_RATE_MULTIPLIER, ModelPrice, UsageTokens, effective_rates
+from app.core.usage.pricing import ModelPrice, UsageTokens, effective_cache_write_rate, effective_rates
 
 
 class TokenPrices(BaseModel):
@@ -36,20 +36,22 @@ def model_pricing(price: ModelPrice, *, source_rates: bool = False) -> ModelPric
     """Expose effective billing rates, including fallbacks, multipliers and tiers.
 
     Model sources only meter plain and cached input, not cache writes or service
-    tiers. Other request paths bill any reported cache writes at 2x input, even
-    for non-Claude models; publishing a provider's advertised rate instead would
-    disagree with settlement.
+    tiers. Other request paths use the stored cache-write rate for the active
+    context/tier, falling back to 2x input only when no rate was published.
     """
 
     def rates(input_tokens: float, service_tier: str | None) -> TokenPrices:
-        input_rate, cached_rate, output_rate = effective_rates(
-            UsageTokens(input_tokens=input_tokens, output_tokens=0), price, service_tier=service_tier
-        )
+        usage = UsageTokens(input_tokens=input_tokens, output_tokens=0)
+        input_rate, cached_rate, output_rate = effective_rates(usage, price, service_tier=service_tier)
         return TokenPrices(
             input=input_rate,
             output=output_rate,
             cache_read=cached_rate,
-            cache_write=0.0 if source_rates else input_rate * CACHE_WRITE_INPUT_RATE_MULTIPLIER,
+            cache_write=(
+                0.0
+                if source_rates
+                else effective_cache_write_rate(usage, price, service_tier=service_tier, input_rate=input_rate)
+            ),
         )
 
     def tier(service_tier: str | None) -> TierPrices:
