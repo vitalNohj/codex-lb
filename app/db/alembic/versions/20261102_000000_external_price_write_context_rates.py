@@ -2,6 +2,8 @@
 
 Existing rows retain their rates and use NULL for the new optional fields;
 normal catalog maintenance populates them on its next successful refresh.
+Downgrade deliberately preserves these optional columns: normal operation may
+have populated them, and the migration cannot prove ownership of those values.
 """
 
 from __future__ import annotations
@@ -35,8 +37,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    columns = {column["name"] for column in sa.inspect(op.get_bind()).get_columns(_TABLE)}
-    with op.batch_alter_table(_TABLE) as batch_op:
-        for name in reversed(_COLUMNS):
-            if name in columns:
-                batch_op.drop_column(name)
+    # Older application versions ignore these nullable columns. Keep prices
+    # populated by normal catalog refreshes rather than destructively deleting
+    # writes whose ownership this migration cannot establish.
+    pass

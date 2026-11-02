@@ -370,13 +370,28 @@ async def _refresh_record(
 def _rates_changed(record: PriceRecord, price: ModelPrice) -> bool:
     if record.price is None:
         return True
-    return (
-        record.price.input_per_1m != price.input_per_1m
-        or record.price.output_per_1m != price.output_per_1m
-        or record.price.cached_input_per_1m != price.cached_input_per_1m
-    )
+    return _persisted_rates(record.price) != _persisted_rates(price)
+
+
+def _persisted_rates(price: ModelPrice) -> dict[str, float | None]:
+    """The published fields stored for an external row, not built-in service tiers."""
+
+    return {
+        "in": price.input_per_1m,
+        "cached": price.cached_input_per_1m,
+        "out": price.output_per_1m,
+        "write": price.cache_write_input_per_1m,
+        "write_1h": price.cache_write_input_1h_per_1m,
+        "long_context_threshold_tokens": price.long_context_threshold_tokens,
+        "long_in": price.long_context_input_per_1m,
+        "long_cached": price.long_context_cached_input_per_1m,
+        "long_out": price.long_context_output_per_1m,
+        "long_write": price.long_context_cache_write_input_per_1m,
+        "long_write_1h": price.long_context_cache_write_input_1h_per_1m,
+    }
 
 
 def _describe_rates(price: ModelPrice) -> str:
-    cached = "none published" if price.cached_input_per_1m is None else price.cached_input_per_1m
-    return f"in={price.input_per_1m} cached={cached} out={price.output_per_1m}"
+    return " ".join(
+        f"{name}={'none published' if value is None else value}" for name, value in _persisted_rates(price).items()
+    )

@@ -182,8 +182,22 @@ def test_external_rate_migration_preserves_old_rows_with_null_new_columns(monkey
         assert row["cache_write_input_1h_per_1m"] is None
         assert row["long_context_threshold_tokens"] is None
         assert row["long_context_cache_write_input_per_1m"] is None
+        connection.execute(
+            sa.text(
+                "UPDATE external_model_prices SET cache_write_input_per_1m = 2.5, "
+                "long_context_threshold_tokens = 272000"
+            )
+        )
         migration.downgrade()
-        assert connection.execute(sa.text("SELECT input_per_1m FROM external_model_prices")).scalar_one() == 2.0
+        row = connection.execute(sa.text("SELECT * FROM external_model_prices")).mappings().one()
+        assert row["input_per_1m"] == 2.0
+        assert row["cache_write_input_per_1m"] == 2.5
+        assert row["long_context_threshold_tokens"] == 272_000
+        migration.upgrade()
+        assert (
+            connection.execute(sa.text("SELECT cache_write_input_per_1m FROM external_model_prices")).scalar_one()
+            == 2.5
+        )
     engine.dispose()
 
 

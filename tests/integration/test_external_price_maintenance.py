@@ -7,6 +7,7 @@ changed, and it must never trade a known rate for nothing because a fetch failed
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import timedelta
 
 import pytest
@@ -216,6 +217,45 @@ async def test_a_newly_published_cache_read_rate_is_applied_and_reported(db_setu
     )
     assert cost is not None
     assert cost.cost_usd == pytest.approx(0.2)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("removing", [False, True], ids=["published", "removed"])
+@pytest.mark.parametrize(
+    "field_name,value,label",
+    [
+        ("cache_write_input_per_1m", 2.5, "write"),
+        ("cache_write_input_per_1m", 0.0, "write"),
+        ("cache_write_input_1h_per_1m", 4.0, "write_1h"),
+        ("long_context_threshold_tokens", 272_000, "long_context_threshold_tokens"),
+        ("long_context_input_per_1m", 4.0, "long_in"),
+        ("long_context_cached_input_per_1m", 0.2, "long_cached"),
+        ("long_context_output_per_1m", 15.0, "long_out"),
+        ("long_context_cache_write_input_per_1m", 5.0, "long_write"),
+        ("long_context_cache_write_input_1h_per_1m", 8.0, "long_write_1h"),
+    ],
+)
+async def test_write_and_context_rate_changes_are_applied_and_reported(
+    db_setup, field_name, value, label, removing
+) -> None:
+    del db_setup
+    base = ModelPrice(2.0, 10.0, cached_input_per_1m=0.1)
+    enriched = replace(base, **{field_name: value})
+    before, after = (enriched, base) if removing else (base, enriched)
+    await _seed_resolved("vendor/model-x", before)
+    _install_catalog("orcarouter", {"vendor/model-x": after})
+
+    report = await run_maintenance_pass()
+    unchanged = await run_maintenance_pass()
+
+    assert [change.incoming_model for change in report.updated] == ["vendor/model-x"]
+    assert report.unchanged == 0
+    expected = "none published" if removing else str(value)
+    assert f"{label}={expected}" in report.updated[0].description
+    assert unchanged.updated == []
+    assert unchanged.unchanged == 1
+    record = await _record("vendor/model-x")
+    assert record is not None and record.price == after
 
 
 @pytest.mark.asyncio

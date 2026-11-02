@@ -6,7 +6,13 @@ from dataclasses import replace
 import pytest
 
 from app.core.usage import pricing_catalog as catalog
-from app.core.usage.pricing import ModelPrice, UsageTokens, calculate_cost_from_usage, get_pricing_for_model
+from app.core.usage.pricing import (
+    ModelPrice,
+    UsageTokens,
+    calculate_cost_breakdown_from_usage,
+    calculate_cost_from_usage,
+    get_pricing_for_model,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -167,9 +173,33 @@ def test_bundled_snapshot_covers_astra_without_network():
         cache_write_input_per_1m=12.5,
         long_context_cache_write_input_per_1m=25.0,
         priority_cache_write_input_per_1m=25.0,
+        priority_long_context_cache_write_input_per_1m=50.0,
         flex_cache_write_input_per_1m=6.25,
         flex_long_context_cache_write_input_per_1m=12.5,
     )
+
+
+@pytest.mark.parametrize("tier", ["priority", "fast"])
+@pytest.mark.parametrize("input_tokens", [272_000, 272_001])
+@pytest.mark.parametrize(
+    "model,short_write,long_write",
+    [
+        ("gpt-6-astra", 25.0, 50.0),
+        ("gpt-6.1-sol", 5.0, 10.0),
+        ("gpt-6-sol", 5.0, 10.0),
+        ("gpt-6-luna", 0.25, 0.50),
+    ],
+)
+def test_active_merged_fast_catalog_keeps_published_write_rates(model, short_write, long_write, input_tokens, tier):
+    resolved = get_pricing_for_model(model)
+    assert resolved is not None
+    price = resolved[1]  # Includes bundled priority long-context input/output rates.
+    cost = calculate_cost_breakdown_from_usage(
+        UsageTokens(input_tokens, 0, cache_write_input_tokens=100_000), price, service_tier=tier
+    )
+    assert cost is not None
+    expected = long_write if input_tokens > 272_000 else short_write
+    assert cost.cache_write_input_usd == pytest.approx(0.1 * expected)
 
 
 @pytest.mark.parametrize("tier", ["priority", "flex"])
