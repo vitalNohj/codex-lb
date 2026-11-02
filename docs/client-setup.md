@@ -14,6 +14,45 @@ The examples below use the current frontier lineup: **`gpt-5.6-sol`** (strongest
 | [Hermes Agent](#hermes-agent) | `http://127.0.0.1:2455/v1` | `~/.hermes/config.yaml` |
 | [OpenAI Python SDK](#openai-python-sdk) | `http://127.0.0.1:2455/v1` | Code |
 
+## Model discovery prices
+
+`GET /v1/models` includes an optional `pricing` object on each `data[]` entry.
+`GET /backend-api/codex/models` (also selected by `/v1/models?client_version=...`)
+includes the same object on both `models[]` and `data[]` entries. Existing model
+metadata and availability rules are unchanged.
+
+| Field | Meaning |
+|-------|---------|
+| `unit` | Always `"usd_per_million_tokens"` |
+| `input` | Uncached input price per million tokens |
+| `output` | Output price per million tokens |
+| `cache_read` | Cached input price per million tokens |
+| `cache_write` | Cache-write input price per million tokens |
+| `long_context` | Optional object with `threshold_tokens` and the four token prices above |
+| `priority`, `flex` | Optional service-tier objects with the four token prices and optional `long_context` |
+
+These are **codex-lb settlement rates**, not an independent provider price table:
+static model aliases and sidecar-prefixed ids use the request billing resolver,
+routed providers use their persisted external prices, and model sources use
+their configured token rates. Unbilled fields are `0`. Known-free models publish
+zero prices; models without a known price omit `pricing` entirely, so absence
+must not be interpreted as free. Shared API keys still see only models they
+can use under their existing nonzero-price admission policy.
+
+A long-context tier applies when **total input tokens**, including cached input,
+are strictly greater than `threshold_tokens`; its prices apply to the entire
+request. Without a requested service-tier object, use the top-level rates.
+Cache reads and writes are subtracted from uncached input before multiplying
+the respective rates. For model sources, which do not meter cache writes
+separately, all non-cached input uses `input`. The current general billing path
+charges any reported cache-write tokens at twice the effective input rate,
+including non-Claude models; the listing reflects this existing behavior.
+
+Single-target aliases inherit their target price. A failover alias publishes
+one price only if every target has identical effective rates; heterogeneous or
+partially unpriced pools omit `pricing`. Discovery reads existing external
+prices in a batch and does not trigger remote price lookups.
+
 ## Codex CLI / IDE Extension
 
 `~/.codex/config.toml`:

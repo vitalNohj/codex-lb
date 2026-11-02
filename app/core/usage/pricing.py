@@ -550,7 +550,7 @@ DEFAULT_PRICING_MODELS: dict[str, ModelPrice] = {
     #   prompt <= 100,000 tokens: $0.10 input, $0.01 cache read, $0.50 output
     #   prompt  > 100,000 tokens: $0.50 input, $0.05 cache read, $2.50 output
     # The prompt length decides the rate for the whole request, output included.
-    # It counts every input token, cached ones too. That matches _effective_rates,
+    # It counts every input token, cached ones too. That matches effective_rates,
     # which compares total input_tokens (cached included) to the threshold.
     # Not stored, because the table has no field for them: 5m cache write
     # $0.125 / $0.625, 1h cache write $0.20 / $1.00. Batch API is 50% off.
@@ -840,7 +840,7 @@ def _normalize_service_tier(service_tier: str | None) -> str | None:
     return stripped or None
 
 
-def _effective_rates(
+def effective_rates(
     usage: UsageTokens,
     price: ModelPrice,
     *,
@@ -928,7 +928,7 @@ def calculate_cost_breakdown_from_usage(
     write_tokens = normalized.cache_write_input_tokens
     billable_input = max(0.0, normalized.input_tokens - normalized.cached_input_tokens - write_tokens)
 
-    input_rate, cached_rate, output_rate = _effective_rates(
+    input_rate, cached_rate, output_rate = effective_rates(
         normalized,
         price,
         service_tier=service_tier,

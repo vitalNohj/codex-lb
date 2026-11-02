@@ -491,6 +491,20 @@ async def billable_price_snapshot(keys: Collection[tuple[str, str]]) -> Callable
     cannot be read, which the caller treats as no model priced.
     """
 
+    prices = await known_price_snapshot(keys)
+    if prices is None:
+        return None
+    return lambda provider, model: model_price_is_billable(prices(provider, model))
+
+
+async def known_price_snapshot(
+    keys: Collection[tuple[str, str]],
+) -> Callable[[str, str], ModelPrice | None] | None:
+    """Persisted request-settlement prices in one read, without scheduling lookups.
+
+    Like ``calculated_cost_for_request``, only RESOLVED records with a price
+    serve a rate. Free prices remain known prices; unreadable state does not.
+    """
     wanted = [(provider, model) for provider, model in keys if is_external_priced_provider(provider)]
     try:
         async with get_background_session() as session:
@@ -499,13 +513,11 @@ async def billable_price_snapshot(keys: Collection[tuple[str, str]]) -> Callable
         logger.warning("external price store batch read failed count=%d", len(wanted), exc_info=True)
         return None
 
-    def is_billable(provider: str, model: str) -> bool:
-        if not is_external_priced_provider(provider):
-            return False
+    def known_price(provider: str, model: str) -> ModelPrice | None:
         record = records.get(normalize_lookup_key(provider, model))
-        return record is not None and record.is_priced and model_price_is_billable(record.price)
+        return record.price if record is not None and record.is_priced else None
 
-    return is_billable
+    return known_price
 
 
 async def _known_price(*, provider: str, model: str) -> ModelPrice | None:

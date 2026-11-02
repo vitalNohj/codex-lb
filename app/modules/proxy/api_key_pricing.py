@@ -22,15 +22,17 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 from app.core.usage.external_pricing import (
-    billable_price_snapshot,
     is_external_priced_provider,
+    known_price_snapshot,
     model_has_billable_price,
 )
 from app.core.usage.external_pricing.providers import PROVIDER_CLIPROXY
+from app.core.usage.pricing import get_pricing_for_model, model_price_is_billable
 from app.db.models import ModelSource
 from app.modules.api_keys.service import ModelPricedCheck, static_model_is_priced
-from app.modules.model_sources.catalog import source_model_has_price
+from app.modules.model_sources.catalog import source_model_has_price, source_model_price
 from app.modules.proxy.model_aliasing import resolve_model_alias_pool
+from app.modules.proxy.model_pricing import ModelPricing, model_pricing
 from app.modules.proxy.sidecar_routing import SidecarRoutingEntry, resolve_sidecar_pool_target, resolve_sidecar_route
 from app.modules.settings.model_alias_pools import ModelAliasPool
 
@@ -141,19 +143,24 @@ def _listed_targets(
     return tuple(listed)
 
 
-async def priced_listed_models(
+@dataclass(frozen=True)
+class ListedModelPrices:
+    billable: frozenset[str]
+    pricing: Mapping[str, ModelPricing]
+
+
+async def listed_model_prices(
     models: Sequence[str],
     *,
     routing_entries: tuple[SidecarRoutingEntry, ...],
     sources_by_model: Mapping[str, ModelSource],
     aliases: Mapping[str, ModelAliasPool],
-) -> frozenset[str]:
-    """The ids in ``models`` a shared key would be served if it asked for them by name.
+) -> ListedModelPrices:
+    """Prices and shared-key admission for a catalog, using one external read.
 
-    Every target an id can land on must be priced at a real rate on the route
-    that serves it. The external prices for the whole listing are read in one
-    query. Anything that fails hides the id: a listing must never show a shared
-    key a model it would be refused.
+    Each target uses its request settlement's price table. An alias can expose
+    one price only when all targets have identical effective rates. A differing
+    pool can still be billable for shared keys, but has no single listed price.
     """
 
     try:
@@ -173,25 +180,51 @@ async def priced_listed_models(
             if target.pricing_provider is not None and is_external_priced_provider(target.pricing_provider)
         }
         # ``None`` when the store cannot be read: every external target is unpriced.
-        external_is_billable = await billable_price_snapshot(external_keys)
+        external_prices = await known_price_snapshot(external_keys)
     except Exception:
         logger.warning("shared_api_key_listing_price_check_failed count=%d", len(models), exc_info=True)
-        return frozenset()
+        return ListedModelPrices(billable=frozenset(), pricing={})
 
-    def target_is_priced(target: _ListedTarget) -> bool:
+    def target_price(target: _ListedTarget) -> tuple[ModelPricing | None, bool]:
+        source_rates = target.pricing_provider is None and target.source is not None
         if target.pricing_provider is not None and is_external_priced_provider(target.pricing_provider):
-            return external_is_billable is not None and external_is_billable(target.pricing_provider, target.model)
-        if target.pricing_provider is None and target.source is not None:
-            return source_model_has_price(target.source, target.model, accepts_audio_rate=False)
-        # Ollama and OmniRoute settle from the static table, as does every
-        # model no sidecar or source owns.
-        return static_model_is_priced(target.model)
+            price = external_prices(target.pricing_provider, target.model) if external_prices is not None else None
+        elif target.pricing_provider is None and target.source is not None:
+            price = source_model_price(target.source, target.model)
+        else:
+            # Ollama and OmniRoute settle from the static table, as does every
+            # model no sidecar or source owns.
+            resolved = get_pricing_for_model(target.model)
+            price = resolved[1] if resolved is not None else None
+        return (
+            model_pricing(price, source_rates=source_rates) if price is not None else None,
+            model_price_is_billable(price),
+        )
 
     priced: set[str] = set()
+    prices: dict[str, ModelPricing] = {}
     for model, targets in targets_by_model.items():
         try:
-            if all(target_is_priced(target) for target in targets):
+            resolved = [target_price(target) for target in targets]
+            if resolved and all(billable for _, billable in resolved):
                 priced.add(model)
+            first = resolved[0][0] if resolved else None
+            if first is not None and all(price == first for price, _ in resolved):
+                prices[model] = first
         except Exception:
             logger.warning("shared_api_key_listing_price_check_failed model=%s", model, exc_info=True)
-    return frozenset(priced)
+    return ListedModelPrices(billable=frozenset(priced), pricing=prices)
+
+
+async def priced_listed_models(
+    models: Sequence[str],
+    *,
+    routing_entries: tuple[SidecarRoutingEntry, ...],
+    sources_by_model: Mapping[str, ModelSource],
+    aliases: Mapping[str, ModelAliasPool],
+) -> frozenset[str]:
+    """The ids a shared key would be served, using the catalog's price resolver."""
+    result = await listed_model_prices(
+        models, routing_entries=routing_entries, sources_by_model=sources_by_model, aliases=aliases
+    )
+    return result.billable

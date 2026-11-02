@@ -35,6 +35,7 @@ from app.core.usage.external_pricing.service import (
     billable_price_snapshot,
     calculated_cost_for_request,
     drain_pending_lookups,
+    known_price_snapshot,
     model_has_billable_price,
     register_serving_context_loader,
 )
@@ -49,6 +50,7 @@ __all__ = [
     "ServingContext",
     "billable_price_snapshot",
     "calculated_cost_for_request",
+    "known_price_snapshot",
     "model_has_billable_price",
     "drain_pending_lookups",
     "is_external_priced_provider",

@@ -7,6 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.core.clients.files import OPENAI_FILE_UPLOAD_LIMIT_BYTES, OPENAI_FILE_USE_CASE
 from app.core.types import JsonValue
+from app.modules.proxy.model_pricing import ModelPricing
 from app.modules.proxy.types import (
     AdditionalRateLimitData,
     CreditStatusDetailsData,
@@ -178,6 +179,7 @@ class CodexModelEntry(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     slug: str
+    pricing: ModelPricing | None = Field(default=None, exclude_if=lambda value: value is None)
     display_name: str
     description: str
     base_instructions: str = ""
@@ -231,6 +233,7 @@ class ModelListItem(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     id: str
+    pricing: ModelPricing | None = Field(default=None, exclude_if=lambda value: value is None)
     object: str = "model"
     created: int
     owned_by: str
