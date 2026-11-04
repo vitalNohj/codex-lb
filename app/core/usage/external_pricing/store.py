@@ -87,10 +87,18 @@ class PriceRecord:
         exception is a rate preserved through an unreadable upstream price, which
         stays ``RESOLVED`` and keeps serving while carrying a deadline, so the
         source is re-read rather than the question being closed.
+
+        A not-token-priced row may also carry a deadline after a re-lookup that
+        still found no rate. That deadline is backoff, not a reason to discard
+        the settled answer, and the row is not due again until it passes. With
+        no deadline it may be looked up once: resolution may since have learned
+        a rate, which a never-due row would leave unpublished.
         """
 
         if self.next_retry_at is None:
-            return self.status not in (ExternalPriceStatus.RESOLVED, ExternalPriceStatus.NOT_TOKEN_PRICED)
+            if self.status is ExternalPriceStatus.NOT_TOKEN_PRICED:
+                return True
+            return self.status is not ExternalPriceStatus.RESOLVED
         return (now or utcnow()) >= self.next_retry_at
 
 
@@ -362,8 +370,30 @@ class ExternalModelPriceStore:
         expected_updated_at: datetime | None = None,
     ) -> bool:
         attempts = previous_attempts + 1
-        if record is not None and record.is_settled:
+        if record is not None and record.is_priced:
             return False
+        # A settled row with no rate keeps that answer. Completing its claim
+        # still has to clear the lease and record backoff: otherwise the lease
+        # deadline is the only retry policy, and every list re-fetches the
+        # catalogs once that lease expires.
+        if record is not None and record.status is ExternalPriceStatus.NOT_TOKEN_PRICED:
+            return await self._upsert(
+                provider=provider,
+                incoming_model=incoming_model,
+                status=ExternalPriceStatus.NOT_TOKEN_PRICED,
+                catalog_model=record.catalog_model,
+                catalog_source=record.catalog_source,
+                input_per_1m=None,
+                output_per_1m=None,
+                cached_input_per_1m=None,
+                resolution_step=record.resolution_step,
+                detail=record.detail,
+                attempt_count=attempts,
+                retry_at=next_retry_at(attempts),
+                claim_token=claim_token,
+                expected_updated_at=expected_updated_at,
+                retrieved_at=record.retrieved_at,
+            )
         # An unsettled record still carries what the last lookup learned about the
         # model's identity. A transient failure says nothing about that, so the
         # record's own catalog identity survives; only a caller that actually

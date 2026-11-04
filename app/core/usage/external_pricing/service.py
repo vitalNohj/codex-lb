@@ -529,6 +529,12 @@ async def known_price_snapshot(
             record = records.get((provider_key, model_key))
             if record is not None and record.is_priced:
                 continue
+            # A future deadline is backoff or a live lease. Submitting it anyway
+            # takes a coordinator slot that ``claim_lookup`` will then refuse,
+            # and a stable listing keeps handing those same slots to the same
+            # rows, so a later id never gets a lookup.
+            if record is not None and not record.retry_due():
+                continue
             raw_model = record.raw_incoming_model if record is not None else model_key
             await _coordinator.submit(
                 (provider_key, model_key),

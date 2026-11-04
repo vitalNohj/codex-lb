@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
 from unittest.mock import AsyncMock
 
 import pytest
@@ -14,11 +15,13 @@ from app.core.usage.external_pricing.catalogs import Catalog, CatalogEntry
 from app.core.usage.external_pricing.service import (
     ServingContext,
     get_lookup_coordinator,
+    known_price_snapshot,
     register_serving_context_loader,
     reset_serving_context_loaders,
 )
 from app.core.usage.external_pricing.store import ExternalModelPriceStore
 from app.core.usage.pricing import ModelPrice, UsageTokens, calculate_cost_from_usage, get_pricing_for_model
+from app.core.utils.time import utcnow
 from app.db.models import ExternalPriceStatus, ModelSource, ModelSourceModel
 from app.db.session import SessionLocal
 from app.modules.model_sources.catalog import source_model_cost_usd
@@ -364,6 +367,60 @@ async def test_settled_grok_variants_list_the_grok_47_price(async_client, monkey
             assert record.price is not None
             assert record.price.input_per_1m == 2.0
     reset_serving_context_loaders()
+
+
+@pytest.mark.asyncio
+async def test_a_listing_skips_unpriced_rows_that_are_not_due_yet(db_setup) -> None:
+    """Rows still inside backoff must not take the four lookup slots.
+
+    A stable listing otherwise submits the same first four, the coordinator
+    drops everything after them, and an id that can now be priced never runs.
+    """
+
+    del db_setup
+    async with SessionLocal() as session:
+        store = ExternalModelPriceStore(session)
+        for index in range(4):
+            await store.record_unresolved(
+                provider="cliproxy",
+                incoming_model=f"backed-off-{index}",
+                status=ExternalPriceStatus.UNRESOLVED,
+                detail="no catalog entry",
+                previous_attempts=1,
+            )
+        await store.record_not_token_priced(
+            provider="cliproxy",
+            incoming_model="cc/grok-4.7-build-fast",
+            catalog_model="cc/grok-4.7-build-fast",
+            catalog_source="cliproxy",
+            resolution_step="prefix+exact",
+            detail="catalog lists the model without a per-token price",
+        )
+    submitted: list[str] = []
+    original = pricing_service._coordinator.submit
+
+    async def record_submit(key, factory):
+        submitted.append(key[1])
+        await original(key, factory)
+
+    pricing_service._coordinator.submit = record_submit
+    try:
+        snapshot = await known_price_snapshot(
+            [("cliproxy", f"backed-off-{index}") for index in range(4)] + [("cliproxy", "cc/grok-4.7-build-fast")],
+            schedule_unpriced=True,
+        )
+        await get_lookup_coordinator().drain()
+    finally:
+        pricing_service._coordinator.submit = original
+
+    assert snapshot is not None
+    assert submitted == ["cc/grok-4.7-build-fast"]
+    async with SessionLocal() as session:
+        store = ExternalModelPriceStore(session)
+        for index in range(4):
+            record = await store.get("cliproxy", f"backed-off-{index}")
+            assert record is not None and record.next_retry_at is not None
+            assert record.next_retry_at > utcnow() + timedelta(minutes=4)
 
 
 async def test_unreadable_external_store_omits_rates_without_claiming_zero(pricing_catalog, monkeypatch):
