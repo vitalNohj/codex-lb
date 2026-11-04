@@ -65,6 +65,11 @@ from enum import Enum
 from app.core.usage.pricing import ModelPrice
 from app.modules.proxy.sidecar_routing import prefix_variants
 
+# Explicit identity for the one CLIProxyAPI id no catalog prices. See the
+# rewrite in ``resolve_model_price``.
+_GROK_47_BUILD_FAST = "grok-4.7-build-fast"
+_GROK_47 = "grok-4.7"
+
 # ``.`` and ``_`` are pure spelling variation in every catalog observed; folding
 # them introduced zero within-catalog collisions across 577 live ids.
 _PUNCTUATION_RE = re.compile(r"[._]")
@@ -276,6 +281,18 @@ def resolve_model_price(
         )
         if resolution.outcome is not ResolutionOutcome.UNRESOLVED:
             return _with_step_prefix(resolution, step_prefix)
+
+        # No catalog lists this Fast id. OpenRouter and OrcaRouter price
+        # grok-4.7 and publish no Fast row, and CLIProxyAPI publishes no rates,
+        # so the Fast id takes the grok-4.7 entry. A catalog that later lists
+        # the Fast id resolves above and this alias does not run. Nothing else
+        # ending in -build-fast is rewritten. Rewriting to the bare id and
+        # re-entering lets the same grok-4.7 lookup price it, including a
+        # doubled vendor listing.
+        if _bare_name(candidate) == _GROK_47_BUILD_FAST and _GROK_47 not in seen:
+            step_prefix = f"{step_prefix}alias+"
+            candidate = _GROK_47
+            continue
 
         undated = _strip_release_date_suffix(candidate)
         if undated is not None and undated not in seen:

@@ -6,9 +6,17 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from app.core.clients.claude_sidecar import ClaudeSidecarClient
+from app.core.clients.claude_sidecar import ClaudeSidecarClient, SidecarModel
 from app.core.clients.openrouter_sidecar import OpenRouterSidecarClient
 from app.core.usage.external_pricing import calculated_cost_for_request
+from app.core.usage.external_pricing import service as pricing_service
+from app.core.usage.external_pricing.catalogs import Catalog, CatalogEntry
+from app.core.usage.external_pricing.service import (
+    ServingContext,
+    get_lookup_coordinator,
+    register_serving_context_loader,
+    reset_serving_context_loaders,
+)
 from app.core.usage.external_pricing.store import ExternalModelPriceStore
 from app.core.usage.pricing import ModelPrice, UsageTokens, calculate_cost_from_usage, get_pricing_for_model
 from app.db.models import ModelSource, ModelSourceModel
@@ -176,7 +184,105 @@ async def test_every_listed_price_reconstructs_request_settlement(pricing_catalo
                     assert _listed_cost(standard, usage, tier) == pytest.approx(charged, abs=1e-14), (model, tier)
 
 
+# Every Grok 4.7 id GET /v1/models serves: the bare id behind the cc/ strip
+# prefix, the xAI subscription account alias, and Grok 4.7 Fast in both forms.
+_GROK_VARIANTS = (
+    "cc/grok-4.7",
+    "cc/lb5dc882f41e/grok-4.7",
+    "cc/grok-4.7-build-fast",
+    "cc/lb5dc882f41e/grok-4.7-build-fast",
+)
+# OpenRouter's published grok-4.7 rates, including the above-200K tier. No
+# catalog lists a grok-4.7-build-fast row.
+_GROK_PRICE = ModelPrice(
+    input_per_1m=2.0,
+    output_per_1m=6.0,
+    cached_input_per_1m=0.5,
+    long_context_threshold_tokens=200_000,
+    long_context_input_per_1m=4.0,
+    long_context_output_per_1m=12.0,
+    long_context_cached_input_per_1m=1.0,
+)
+
+
 @pytest.mark.asyncio
+async def test_grok_build_fast_lists_the_grok_47_price(async_client, monkeypatch):
+    """Every served Grok 4.7 id takes the one published price.
+
+    OpenRouter prices ``x-ai/grok-4.7`` and lists no Fast id, and CLIProxyAPI
+    publishes no rates. The subscription ids differ by a routing prefix and an
+    account alias; build-fast is the same model. A sibling ``-build-fast`` id
+    does not inherit the price.
+    """
+
+    reset_serving_context_loaders()
+
+    async def reference():
+        return Catalog.from_entries(
+            "openrouter:reference",
+            [CatalogEntry(model_id="x-ai/grok-4.7", price=_GROK_PRICE)],
+        )
+
+    async def cliproxy(_provider: str) -> ServingContext:
+        return ServingContext(catalog=None, aliases={}, prefixes=(("cc/", True),), publishes_price_catalog=False)
+
+    monkeypatch.setattr(pricing_service, "_load_reference_catalog", reference)
+    register_serving_context_loader("cliproxy", cliproxy)
+    monkeypatch.setattr(
+        ClaudeSidecarClient,
+        "list_models_cached",
+        AsyncMock(
+            return_value=[
+                SidecarModel(id="grok-4.7", owned_by="xai"),
+                SidecarModel(id="lb5dc882f41e/grok-4.7", owned_by="xai"),
+                SidecarModel(id="grok-4.7-build-fast", owned_by="xai"),
+                SidecarModel(id="lb5dc882f41e/grok-4.7-build-fast", owned_by="xai"),
+                SidecarModel(id="other-build-fast"),
+            ]
+        ),
+    )
+    settings = await async_client.put(
+        "/api/settings",
+        json={
+            "claudeSidecarEnabled": True,
+            "claudeSidecarBaseUrl": "http://127.0.0.1:9",
+            "claudeSidecarApiKey": "synthetic-key",
+            "claudeSidecarModelPrefixes": [{"prefix": "cc/", "strip": True}],
+        },
+    )
+    assert settings.status_code == 200, settings.text
+
+    for model in (*_GROK_VARIANTS, "cc/other-build-fast"):
+        await calculated_cost_for_request(
+            provider="cliproxy", model=model, usage=UsageTokens(1, 1), schedule_lookup=True
+        )
+    await get_lookup_coordinator().drain()
+
+    response = await async_client.get("/v1/models")
+    assert response.status_code == 200, response.text
+    by_id = {entry["id"]: entry for entry in response.json()["data"]}
+    expected = {
+        "input": 2.0,
+        "output": 6.0,
+        "cache_read": 0.5,
+        "cache_write": 4.0,
+        "long_context": {
+            "threshold_tokens": 200_000,
+            "input": 4.0,
+            "output": 12.0,
+            "cache_read": 1.0,
+            "cache_write": 8.0,
+        },
+    }
+    for model in _GROK_VARIANTS:
+        listed = by_id[model]["pricing"]
+        assert listed["unit"] == "usd_per_million_tokens"
+        for key, value in expected.items():
+            assert listed[key] == value, model
+    assert "pricing" not in by_id["cc/other-build-fast"]
+    reset_serving_context_loaders()
+
+
 async def test_unreadable_external_store_omits_rates_without_claiming_zero(pricing_catalog, monkeypatch):
     async def unreadable(self, keys):
         raise RuntimeError("synthetic store failure")
