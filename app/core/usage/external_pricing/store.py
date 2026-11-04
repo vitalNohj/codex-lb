@@ -195,8 +195,25 @@ class ExternalModelPriceStore:
         insert = pg_insert if dialect == "postgresql" else sqlite_insert
         statement = insert(ExternalModelPrice).values(**values)
         due = or_(ExternalModelPrice.next_retry_at.is_(None), ExternalModelPrice.next_retry_at <= now)
-        retryable = ExternalModelPrice.status.not_in(
-            (ExternalPriceStatus.RESOLVED.value, ExternalPriceStatus.NOT_TOKEN_PRICED.value)
+        # A resolved rate is never re-claimed. A settled row that holds no rate
+        # is claimable too: resolution may since have learned a price for that
+        # id, and the only writer that can record it is a lookup. The row stores
+        # no deadline, so ``due`` is true until a lookup sets one; that lease
+        # stops a second worker.
+        unpriced = and_(
+            ExternalModelPrice.status == ExternalPriceStatus.NOT_TOKEN_PRICED.value,
+            ExternalModelPrice.input_per_1m.is_(None),
+            ExternalModelPrice.output_per_1m.is_(None),
+            due,
+        )
+        retryable = or_(
+            and_(
+                ExternalModelPrice.status.not_in(
+                    (ExternalPriceStatus.RESOLVED.value, ExternalPriceStatus.NOT_TOKEN_PRICED.value)
+                ),
+                due,
+            ),
+            unpriced,
         )
         statement = statement.on_conflict_do_update(
             index_elements=[ExternalModelPrice.provider, ExternalModelPrice.incoming_model],
@@ -205,7 +222,7 @@ class ExternalModelPriceStore:
                 "next_retry_at": lease_until,
                 "updated_at": now,
             },
-            where=and_(retryable, due),
+            where=retryable,
         ).returning(ExternalModelPrice)
         async with sqlite_writer_section():
             result = await self._session.execute(statement)

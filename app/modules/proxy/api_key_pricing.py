@@ -180,7 +180,10 @@ async def listed_model_prices(
             if target.pricing_provider is not None and is_external_priced_provider(target.pricing_provider)
         }
         # ``None`` when the store cannot be read: every external target is unpriced.
-        external_prices = await known_price_snapshot(external_keys)
+        # The same read schedules a lookup for every external id with no stored
+        # rate. This list still answers from the rows that exist now; the next
+        # list publishes a rate once that lookup resolves one.
+        external_prices = await known_price_snapshot(external_keys, schedule_unpriced=True)
     except Exception:
         logger.warning("shared_api_key_listing_price_check_failed count=%d", len(models), exc_info=True)
         return ListedModelPrices(billable=frozenset(), pricing={})

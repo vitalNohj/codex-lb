@@ -19,7 +19,7 @@ from app.core.usage.external_pricing.service import (
 )
 from app.core.usage.external_pricing.store import ExternalModelPriceStore
 from app.core.usage.pricing import ModelPrice, UsageTokens, calculate_cost_from_usage, get_pricing_for_model
-from app.db.models import ModelSource, ModelSourceModel
+from app.db.models import ExternalPriceStatus, ModelSource, ModelSourceModel
 from app.db.session import SessionLocal
 from app.modules.model_sources.catalog import source_model_cost_usd
 from app.modules.model_sources.repository import ModelSourcesRepository
@@ -280,6 +280,89 @@ async def test_grok_build_fast_lists_the_grok_47_price(async_client, monkeypatch
         for key, value in expected.items():
             assert listed[key] == value, model
     assert "pricing" not in by_id["cc/other-build-fast"]
+    reset_serving_context_loaders()
+
+
+@pytest.mark.asyncio
+async def test_settled_grok_variants_list_the_grok_47_price(async_client, monkeypatch):
+    """A Grok 4.7 id already stored as unpriced is priced again after the alias exists.
+
+    GET /v1/models reads the persisted row and never starts a lookup. Before the
+    Fast id was aliased to grok-4.7, each served variant was settled with no
+    token rate, and a settled row is not claimed again. The model list therefore
+    keeps omitting the price after the code that would resolve it is deployed.
+    """
+
+    reset_serving_context_loaders()
+
+    async def reference():
+        return Catalog.from_entries(
+            "openrouter:reference",
+            [CatalogEntry(model_id="x-ai/grok-4.7", price=_GROK_PRICE)],
+        )
+
+    async def cliproxy(_provider: str) -> ServingContext:
+        return ServingContext(catalog=None, aliases={}, prefixes=(("cc/", True),), publishes_price_catalog=False)
+
+    monkeypatch.setattr(pricing_service, "_load_reference_catalog", reference)
+    register_serving_context_loader("cliproxy", cliproxy)
+    monkeypatch.setattr(
+        ClaudeSidecarClient,
+        "list_models_cached",
+        AsyncMock(
+            return_value=[
+                SidecarModel(id="grok-4.7", owned_by="xai"),
+                SidecarModel(id="lb5dc882f41e/grok-4.7", owned_by="xai"),
+                SidecarModel(id="grok-4.7-build-fast", owned_by="xai"),
+                SidecarModel(id="lb5dc882f41e/grok-4.7-build-fast", owned_by="xai"),
+            ]
+        ),
+    )
+    settings = await async_client.put(
+        "/api/settings",
+        json={
+            "claudeSidecarEnabled": True,
+            "claudeSidecarBaseUrl": "http://127.0.0.1:9",
+            "claudeSidecarApiKey": "synthetic-key",
+            "claudeSidecarModelPrefixes": [{"prefix": "cc/", "strip": True}],
+        },
+    )
+    assert settings.status_code == 200, settings.text
+
+    async with SessionLocal() as session:
+        store = ExternalModelPriceStore(session)
+        for model in _GROK_VARIANTS:
+            await store.record_not_token_priced(
+                provider="cliproxy",
+                incoming_model=model,
+                catalog_model=model,
+                catalog_source="cliproxy",
+                resolution_step="prefix+exact",
+                detail="catalog lists the model without a per-token price",
+            )
+
+    # The list schedules the lookup and answers from the rows that exist now.
+    # Draining is what the next list, or the next request, waits for.
+    first = await async_client.get("/v1/models")
+    assert first.status_code == 200, first.text
+    await get_lookup_coordinator().drain()
+
+    response = await async_client.get("/v1/models")
+    assert response.status_code == 200, response.text
+    by_id = {entry["id"]: entry for entry in response.json()["data"]}
+    for model in _GROK_VARIANTS:
+        assert "pricing" in by_id[model], model
+        assert by_id[model]["pricing"]["input"] == 2.0
+        assert by_id[model]["pricing"]["output"] == 6.0
+        record_status = by_id[model]["pricing"]["unit"]
+        assert record_status == "usd_per_million_tokens"
+    async with SessionLocal() as session:
+        store = ExternalModelPriceStore(session)
+        for model in _GROK_VARIANTS:
+            record = await store.get("cliproxy", model)
+            assert record is not None and record.status is ExternalPriceStatus.RESOLVED, model
+            assert record.price is not None
+            assert record.price.input_per_1m == 2.0
     reset_serving_context_loaders()
 
 
