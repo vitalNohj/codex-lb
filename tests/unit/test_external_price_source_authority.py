@@ -91,7 +91,9 @@ def _expected_preservation(
         and proposed_source == owner
         and answered(owner)
     )
-    if settled:
+    # A settled row with no rate yields once resolution returns a rate. A
+    # priced row does not: another source must not replace its owner.
+    if settled and not (current_state == "not_token_priced" and outcome is ResolutionOutcome.RESOLVED):
         if outcome is not ResolutionOutcome.RESOLVED and not authoritative_no_token_transition:
             return True
         if owner is not None and proposed_source != owner:

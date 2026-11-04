@@ -1164,6 +1164,53 @@ async def test_an_authoritative_no_token_price_statement_updates_a_priced_record
     assert record.status is ExternalPriceStatus.NOT_TOKEN_PRICED
     assert record.price is None
     assert record.next_retry_at is None
+    assert record.retry_due() is True
+
+
+@pytest.mark.asyncio
+async def test_a_reclaimed_unpriced_row_that_stays_unpriced_records_backoff(db_setup) -> None:
+    """A settled empty row that gains no rate must not be looked up on every lease.
+
+    Claiming it sets a short lease. Leaving that lease as the only deadline makes
+    the next list, about two minutes later, fetch the catalogs again.
+    """
+
+    del db_setup
+    async with SessionLocal() as session:
+        store = ExternalModelPriceStore(session)
+        await store.record_not_token_priced(
+            provider="cliproxy",
+            incoming_model="cc/other-build-fast",
+            catalog_model="cc/other-build-fast",
+            catalog_source="cliproxy",
+            resolution_step="prefix+exact",
+            detail="catalog lists the model without a per-token price",
+        )
+        claim = await store.claim_lookup("cliproxy", "cc/other-build-fast")
+        assert claim is not None
+        before = claim.record
+        applied = await store.record_retryable_failure(
+            provider="cliproxy",
+            incoming_model="cc/other-build-fast",
+            record=before,
+            detail="stored price has no valid replacement",
+            previous_attempts=before.attempt_count,
+            claim_token=claim.token,
+        )
+        after = await store.get("cliproxy", "cc/other-build-fast")
+
+    assert applied is True
+    assert after is not None
+    assert after.status is ExternalPriceStatus.NOT_TOKEN_PRICED
+    assert after.price is None
+    assert after.catalog_model == before.catalog_model
+    assert after.catalog_source == before.catalog_source
+    assert after.detail == before.detail
+    assert after.attempt_count == before.attempt_count + 1
+    assert after.next_retry_at is not None
+    assert after.retry_due() is False
+    async with SessionLocal() as session:
+        assert await ExternalModelPriceStore(session).claim_lookup("cliproxy", "cc/other-build-fast") is None
 
 
 def test_retry_backoff_widens_then_caps() -> None:

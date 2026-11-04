@@ -499,19 +499,51 @@ async def billable_price_snapshot(keys: Collection[tuple[str, str]]) -> Callable
 
 async def known_price_snapshot(
     keys: Collection[tuple[str, str]],
+    *,
+    schedule_unpriced: bool = False,
 ) -> Callable[[str, str], ModelPrice | None] | None:
-    """Persisted request-settlement prices in one read, without scheduling lookups.
+    """Persisted request-settlement prices in one read.
 
     Like ``calculated_cost_for_request``, only RESOLVED records with a price
     serve a rate. Free prices remain known prices; unreadable state does not.
+
+    ``schedule_unpriced`` starts a background lookup for every external id in
+    that same read whose row has no rate, including a row settled before
+    resolution could price it. The returned snapshot still answers from the
+    rows that exist now.
     """
-    wanted = [(provider, model) for provider, model in keys if is_external_priced_provider(provider)]
+    wanted = [
+        normalize_lookup_key(provider, model)
+        for provider, model in keys
+        if is_external_priced_provider(provider) and model.strip()
+    ]
     try:
         async with get_background_session() as session:
             records = await ExternalModelPriceStore(session).get_many(wanted)
     except Exception:
         logger.warning("external price store batch read failed count=%d", len(wanted), exc_info=True)
         return None
+
+    if schedule_unpriced:
+        for provider_key, model_key in dict.fromkeys(wanted):
+            record = records.get((provider_key, model_key))
+            if record is not None and record.is_priced:
+                continue
+            # A future deadline is backoff or a live lease. Submitting it anyway
+            # takes a coordinator slot that ``claim_lookup`` will then refuse,
+            # and a stable listing keeps handing those same slots to the same
+            # rows, so a later id never gets a lookup.
+            if record is not None and not record.retry_due():
+                continue
+            raw_model = record.raw_incoming_model if record is not None else model_key
+            await _coordinator.submit(
+                (provider_key, model_key),
+                lambda provider_key=provider_key, model_key=model_key, raw_model=raw_model: _run_lookup(
+                    provider_key,
+                    model_key,
+                    raw_incoming_model=raw_model,
+                ),
+            )
 
     def known_price(provider: str, model: str) -> ModelPrice | None:
         record = records.get(normalize_lookup_key(provider, model))
@@ -591,10 +623,16 @@ def preservation_reason(
             and resolution.catalog_source == owner
             and consultations.source_answered(owner, provider_key)
         )
-        if resolution.outcome is not ResolutionOutcome.RESOLVED and not authoritative_no_token_transition:
-            return "stored price has no valid replacement"
-        if owner is not None and resolution.catalog_source != owner:
-            return f"stored price remains owned by {owner}"
+        # A settled row with no rate is an answer only while resolution still
+        # cannot price it. Once resolution returns a rate, that rate replaces
+        # the empty row: the model list reads the row and would otherwise keep
+        # publishing no price after a deployed alias can resolve one.
+        gained_a_rate = resolution.outcome is ResolutionOutcome.RESOLVED and not record.is_priced
+        if not gained_a_rate:
+            if resolution.outcome is not ResolutionOutcome.RESOLVED and not authoritative_no_token_transition:
+                return "stored price has no valid replacement"
+            if owner is not None and resolution.catalog_source != owner:
+                return f"stored price remains owned by {owner}"
     if (
         record is not None
         and record.is_settled
