@@ -50,6 +50,16 @@ A cache-read rate published in a shape the system cannot read MUST NOT be treate
 - **THEN** the recorded cost is `$4.02`
 - **AND** the persisted record carries no cache-read rate
 
+A published input-size tier MUST be read from every catalog that publishes one: OpenRouter's `overrides` (`min_prompt_tokens`) and OrcaRouter's `tiers` (`max_input_tokens`, with `0` marking the open-ended last tier). The first boundary is the long-context threshold and the next tier's rates are the long-context rates. Two catalogs listing one model with the same tiers MUST therefore publish the same price. A tier block the system cannot read MUST make the entry unparseable rather than price long inputs at the base rate.
+
+#### Scenario: OrcaRouter's input-size tier matches OpenRouter's override
+
+- **GIVEN** OpenRouter listing `x-ai/grok-4.7` at $2.00/$6.00/$0.50 per 1M with an override above 200,000 prompt tokens at $4.00/$12.00/$1.00
+- **AND** OrcaRouter listing `grok/grok-4.7` with tiers up to 200,000 input tokens at $2.00/$6.00/$0.50 and above at $4.00/$12.00/$1.00
+- **WHEN** an id matching both is resolved
+- **THEN** both entries carry the same price, including the 200,000-token tier
+- **AND** the id resolves to that price instead of abstaining
+
 #### Scenario: An unreadable cache-read rate does not fall back to the input rate
 
 - **GIVEN** a model never priced before

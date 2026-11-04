@@ -8,7 +8,7 @@ import threading
 import time
 from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import cast
 
 import aiohttp
@@ -369,8 +369,66 @@ def sanitize_orcarouter_error_body(body: JsonValue | None, *, api_key: str | Non
 
 
 def _parse_orcarouter_pricing(pricing: JsonValue) -> ModelPrice | None:
+    """Per-1M rates from one OrcaRouter ``pricing`` block, including its context tier.
+
+    OrcaRouter publishes input-size tiers as ``tiers``: each entry carries the
+    rates for inputs up to ``max_input_tokens``, and ``0`` marks the open-ended
+    last tier. ``grok/grok-4.7`` lists ``200000`` at the base rates and ``0`` at
+    double. ``ModelPrice`` holds one long-context tier, so the first boundary is
+    the threshold and the tier after it supplies the long-context rates, the same
+    reduction OpenRouter's ``overrides`` get. Dropping the tier priced long
+    inputs at the base rate and made this entry differ from OpenRouter's listing
+    of the same model, which the resolver then had to treat as a price conflict.
+
+    Tiers this build cannot read make the whole block unreadable rather than
+    falling back to the base rates.
+    """
+
     if not is_json_mapping(pricing):
         return None
+    base = _parse_orcarouter_rates(pricing)
+    if base is None:
+        return None
+    tiers = pricing.get("tiers")
+    if tiers is None or tiers == []:
+        return base
+    if not isinstance(tiers, list):
+        return None
+    bounded: list[tuple[int, Mapping[str, JsonValue]]] = []
+    open_ended: list[Mapping[str, JsonValue]] = []
+    for tier in tiers:
+        if not is_json_mapping(tier):
+            return None
+        limit = tier.get("max_input_tokens")
+        if not isinstance(limit, int) or isinstance(limit, bool) or limit < 0:
+            return None
+        if limit == 0:
+            open_ended.append(tier)
+        else:
+            bounded.append((limit, tier))
+    if len(open_ended) > 1:
+        return None
+    ordered = [tier for _limit, tier in sorted(bounded, key=lambda item: item[0])] + open_ended
+    if len(ordered) < 2:
+        # A single tier is the base rate restated; there is no long-context tier.
+        return base
+    if not bounded:
+        return None
+    threshold = min(limit for limit, _tier in bounded)
+    # A tier inherits any rate it does not restate, as an OpenRouter override does.
+    long_context = _parse_orcarouter_rates({**pricing, **ordered[1]})
+    if long_context is None:
+        return None
+    return replace(
+        base,
+        long_context_threshold_tokens=float(threshold),
+        long_context_input_per_1m=long_context.input_per_1m,
+        long_context_output_per_1m=long_context.output_per_1m,
+        long_context_cached_input_per_1m=long_context.cached_input_per_1m,
+    )
+
+
+def _parse_orcarouter_rates(pricing: Mapping[str, JsonValue]) -> ModelPrice | None:
     input_per_1m = parse_sidecar_per_token_usd(pricing.get("prompt"))
     output_per_1m = parse_sidecar_per_token_usd(pricing.get("completion"))
     if input_per_1m is None or output_per_1m is None:

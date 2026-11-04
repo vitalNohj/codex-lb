@@ -1,0 +1,227 @@
+{
+ "data": [
+  {
+   "architecture": {
+    "input_modalities": [
+     "text",
+     "image",
+     "file"
+    ],
+    "modality": "text+image+file->text",
+    "output_modalities": [
+     "text"
+    ]
+   },
+   "context_length": 500000,
+   "created": 1626777600,
+   "description": "Grok 4.6 is SpaceXAI's smartest model to date, with frontier performance across coding, knowledge work, and STEM. It is the current flagship of the Grok line \u2014 listed as \"Latest\" in xAI's own developer docs \u2014 and succeeds Grok 4.5 with the same 500K-token context window, the same text / image / file input surface, and the same base pricing.\n\nIt supports configurable reasoning effort, native tool calling, structured outputs, and the full sampling surface (temperature / top_p / seed / logprobs / penalties), so it drops into existing integrations unchanged. As a first-class OpenAI Responses model on api.x.ai it plugs directly into agent frameworks and tool-calling loops without a translation layer.\n\nPricing is tiered by prompt length: requests above 200K input tokens bill at double the base rate. Use Grok 4.6 as the high-capability tier for complex coding agents, research, and multi-step automation where quality matters more than cost.",
+   "endpoint_capabilities": [
+    "chat_completions",
+    "openai_responses"
+   ],
+   "id": "grok/grok-4.6",
+   "name": "SpaceXAI: Grok 4.6",
+   "object": "model",
+   "owned_by": "xAI",
+   "pricing": {
+    "completion": "0.0000060000",
+    "completion_per_million": "6.000000",
+    "input_cache_read": "0.0000005000",
+    "prompt": "0.0000020000",
+    "prompt_per_million": "2.000000",
+    "tiers": [
+     {
+      "completion": "0.0000060000",
+      "input_cache_read": "0.0000005000",
+      "max_input_tokens": 200000,
+      "prompt": "0.0000020000"
+     },
+     {
+      "completion": "0.0000120000",
+      "input_cache_read": "0.0000010000",
+      "max_input_tokens": 0,
+      "prompt": "0.0000040000"
+     }
+    ]
+   },
+   "supported_endpoint_types": [
+    "openai",
+    "openai-response"
+   ],
+   "supported_parameters": [
+    "frequency_penalty",
+    "include_reasoning",
+    "logprobs",
+    "max_tokens",
+    "presence_penalty",
+    "reasoning",
+    "reasoning_effort",
+    "response_format",
+    "seed",
+    "stop",
+    "structured_outputs",
+    "temperature",
+    "tool_choice",
+    "tools",
+    "top_logprobs",
+    "top_p"
+   ],
+   "top_provider": {
+    "context_length": 500000,
+    "max_completion_tokens": 0
+   }
+  },
+  {
+   "architecture": {
+    "input_modalities": [
+     "text",
+     "image",
+     "file"
+    ],
+    "modality": "text+image+file->text",
+    "output_modalities": [
+     "text"
+    ]
+   },
+   "context_length": 500000,
+   "created": 1626777600,
+   "description": "Grok 4.7 is SpaceXAI's flagship model for coding, agentic tasks, and knowledge work, succeeding Grok 4.6. Particularly strong at long-running software engineering and verifying its own work. Multimodal input (text, image, file), 500K-token context, up to 450K output tokens, reasoning with configurable effort, tools and structured outputs.",
+   "endpoint_capabilities": [
+    "chat_completions",
+    "openai_responses"
+   ],
+   "id": "grok/grok-4.7",
+   "max_completion_tokens": 450000,
+   "name": "Grok 4.7",
+   "object": "model",
+   "owned_by": "xAI",
+   "pricing": {
+    "completion": "0.0000060000",
+    "completion_per_million": "6.000000",
+    "input_cache_read": "0.0000005000",
+    "prompt": "0.0000020000",
+    "prompt_per_million": "2.000000",
+    "tiers": [
+     {
+      "completion": "0.0000060000",
+      "input_cache_read": "0.0000005000",
+      "max_input_tokens": 200000,
+      "prompt": "0.0000020000"
+     },
+     {
+      "completion": "0.0000120000",
+      "input_cache_read": "0.0000010000",
+      "max_input_tokens": 0,
+      "prompt": "0.0000040000"
+     }
+    ]
+   },
+   "supported_endpoint_types": [
+    "openai",
+    "openai-response"
+   ],
+   "supported_parameters": [
+    "include_reasoning",
+    "logprobs",
+    "max_tokens",
+    "reasoning",
+    "reasoning_effort",
+    "response_format",
+    "seed",
+    "structured_outputs",
+    "temperature",
+    "tool_choice",
+    "tools",
+    "top_logprobs",
+    "top_p"
+   ],
+   "top_provider": {
+    "context_length": 500000,
+    "max_completion_tokens": 450000
+   }
+  },
+  {
+   "architecture": {
+    "input_modalities": [
+     "text"
+    ],
+    "modality": "text->text",
+    "output_modalities": [
+     "text"
+    ]
+   },
+   "context_length": 262144,
+   "created": 1626777600,
+   "description": "Qwen3 Max \u2014 proprietary flagship chat model, 256k context, thinking mode + function calling.",
+   "endpoint_capabilities": [
+    "chat_completions"
+   ],
+   "id": "qwen/qwen3-max",
+   "max_completion_tokens": 65536,
+   "name": "Qwen: Qwen3 Max",
+   "object": "model",
+   "owned_by": "Alibaba",
+   "pricing": {
+    "completion": "0.0000014340",
+    "completion_per_million": "1.434000",
+    "prompt": "0.0000003590",
+    "prompt_per_million": "0.359000",
+    "tiers": [
+     {
+      "completion": "0.0000014340",
+      "max_input_tokens": 32000,
+      "prompt": "0.0000003590"
+     },
+     {
+      "completion": "0.0000022940",
+      "max_input_tokens": 128000,
+      "prompt": "0.0000005740"
+     },
+     {
+      "completion": "0.0000040140",
+      "max_input_tokens": 256000,
+      "prompt": "0.0000010040"
+     },
+     {
+      "completion": "0.0000040140",
+      "max_input_tokens": 0,
+      "prompt": "0.0000010040"
+     }
+    ]
+   },
+   "supported_endpoint_types": [
+    "openai"
+   ],
+   "supported_parameters": [
+    "enable_search",
+    "enable_thinking",
+    "include_reasoning",
+    "logprobs",
+    "max_tokens",
+    "n",
+    "parallel_tool_calls",
+    "presence_penalty",
+    "reasoning",
+    "repetition_penalty",
+    "response_format",
+    "seed",
+    "stop",
+    "stream",
+    "stream_options",
+    "temperature",
+    "thinking_budget",
+    "tool_choice",
+    "tools",
+    "top_k",
+    "top_logprobs",
+    "top_p"
+   ],
+   "top_provider": {
+    "context_length": 262144,
+    "max_completion_tokens": 65536
+   }
+  }
+ ],
+ "object": "list",
+ "success": true
+}
