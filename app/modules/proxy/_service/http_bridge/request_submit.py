@@ -245,7 +245,11 @@ from app.modules.proxy.helpers import (
     _normalize_error_code,
     _parse_openai_error,
 )
-from app.modules.proxy.load_balancer import effective_account_concurrency_caps, effective_routing_tunables
+from app.modules.proxy.load_balancer import (
+    AccountConcurrencyCaps,
+    effective_account_concurrency_caps,
+    effective_routing_tunables,
+)
 from app.modules.proxy.tool_call_dedupe import (
     dedupe_replayed_side_effect_input_items,
 )
@@ -1747,8 +1751,8 @@ class _HTTPBridgeRequestSubmitMixin:
             # critical section (issue #1971) — and only when the reacquire can
             # actually run: a session already holding its lease never depended
             # on a settings read to admit a turn.
-            fair_share_threshold_pct, routing_tunables = (
-                await self._http_bridge_reacquire_snapshot(session) if needs_stream_lease else (0, None)
+            fair_share_threshold_pct, routing_tunables, concurrency_caps = (
+                await self._http_bridge_reacquire_snapshot(session) if needs_stream_lease else (0, None, None)
             )
             async with session.pending_lock:
                 await self._ensure_http_bridge_session_stream_lease_locked(
@@ -1756,6 +1760,7 @@ class _HTTPBridgeRequestSubmitMixin:
                     request_state=request_state,
                     fair_share_threshold_pct=fair_share_threshold_pct,
                     routing_tunables=routing_tunables,
+                    concurrency_caps=concurrency_caps,
                 )
         except BaseException:
             # Recovery claims are made before admission. If reacquiring an
@@ -1827,6 +1832,7 @@ class _HTTPBridgeRequestSubmitMixin:
                     request_state=request_state,
                     fair_share_threshold_pct=fair_share_threshold_pct,
                     routing_tunables=routing_tunables,
+                    concurrency_caps=concurrency_caps,
                 )
                 session.queued_request_count += 1
                 if getattr(session, "unanchored_reservation_id", None) == request_scope_id:
@@ -2807,25 +2813,25 @@ class _HTTPBridgeRequestSubmitMixin:
     async def _http_bridge_reacquire_snapshot(
         self: Any,
         session: "_HTTPBridgeSession",
-    ) -> tuple[int, RoutingTunables | None]:
+    ) -> tuple[int, RoutingTunables, AccountConcurrencyCaps]:
         """Resolve the reacquire's settings inputs WITHOUT holding pending_lock.
 
-        For a keyed session one cached dashboard row yields both the fair-share
-        threshold and the routing tunables the lease is judged against (C2-2
-        routing/overload: the lease TTL). An unkeyed session reads no settings
-        here, as before: its threshold is ``0`` and the balancer falls back to
-        the snapshot of its most recent request. The settings-cache refresh
-        runs a DB query behind a process-global lock; awaiting it while holding
-        a session's ``pending_lock`` let one stalled query wedge every keyed
-        submit process-wide (issue #1971). Callers resolve the snapshot first
-        and pass both values into ``_ensure_http_bridge_session_stream_lease_locked``.
+        One cached dashboard row yields the account caps, routing tunables
+        (C2-2 routing/overload: the lease TTL), and keyed fair-share threshold.
+        Unkeyed sessions still need the dashboard caps, but their threshold
+        remains ``0``. The settings-cache refresh runs a DB query behind a
+        process-global lock; awaiting it while holding a session's
+        ``pending_lock`` let one stalled query wedge every keyed submit
+        process-wide (issue #1971). Callers resolve the snapshot first and pass
+        all three values into ``_ensure_http_bridge_session_stream_lease_locked``.
         """
-        if session.key.api_key_id is None:
-            return 0, None
         dashboard_settings = await _service_get_settings_cache().get()
         return (
-            _api_key_fair_share_threshold_pct_from_settings(dashboard_settings),
+            _api_key_fair_share_threshold_pct_from_settings(dashboard_settings)
+            if session.key.api_key_id is not None
+            else 0,
             effective_routing_tunables(dashboard_settings),
+            effective_account_concurrency_caps(dashboard_settings),
         )
 
     async def _ensure_http_bridge_session_stream_lease_locked(
@@ -2835,17 +2841,18 @@ class _HTTPBridgeRequestSubmitMixin:
         request_state: _WebSocketRequestState | None = None,
         fair_share_threshold_pct: int | None = None,
         routing_tunables: RoutingTunables | None = None,
+        concurrency_caps: AccountConcurrencyCaps | None = None,
     ) -> None:
         """Reacquire the account stream lease for a session idled between turns.
 
-        Callers hold ``session.pending_lock`` and MUST pass both
-        ``fair_share_threshold_pct`` and ``routing_tunables`` (see
-        ``_http_bridge_reacquire_snapshot``) computed before acquiring it:
-        resolving either reads the settings cache, whose refresh runs a DB
-        query behind a process-global lock — one stalled refresh under
-        ``pending_lock`` wedged every keyed submit for days (issue #1971).
-        The ``None`` fallback resolves them inline from one cached row and
-        exists for lock-free callers only.
+        Callers holding ``session.pending_lock`` MUST pass
+        ``fair_share_threshold_pct``, ``routing_tunables``, and
+        ``concurrency_caps`` (see ``_http_bridge_reacquire_snapshot``) computed
+        before acquiring it: resolving these reads the settings cache, whose
+        refresh runs a DB query behind a process-global lock — one stalled
+        refresh under ``pending_lock`` wedged every keyed submit for days
+        (issue #1971). The ``None`` fallback resolves missing inputs inline
+        from one cached row and exists for lock-free callers only.
 
         The lease is released when the
         session's last in-flight turn detaches, so an idle session does not
@@ -2873,17 +2880,21 @@ class _HTTPBridgeRequestSubmitMixin:
         api_key_id = session.key.api_key_id
         if api_key_id is None:
             fair_share_threshold_pct = 0
-        elif fair_share_threshold_pct is None:
+        if concurrency_caps is None or fair_share_threshold_pct is None:
             # Lock-free callers only (see the docstring): one cached row serves
-            # both inputs.
+            # every missing input, including caps when the threshold is known.
             dashboard_settings = await _service_get_settings_cache().get()
-            fair_share_threshold_pct = _api_key_fair_share_threshold_pct_from_settings(dashboard_settings)
+            if concurrency_caps is None:
+                concurrency_caps = effective_account_concurrency_caps(dashboard_settings)
+            if fair_share_threshold_pct is None:
+                fair_share_threshold_pct = _api_key_fair_share_threshold_pct_from_settings(dashboard_settings)
             if routing_tunables is None:
                 routing_tunables = effective_routing_tunables(dashboard_settings)
         try:
             lease = await load_balancer.acquire_account_lease(
                 session.account.id,
                 kind="stream",
+                concurrency_caps=concurrency_caps,
                 routing_tunables=routing_tunables,
                 # Carry the turn's usage-budget estimate like initial selection
                 # and reconnect do, so capacity-weighted routing pressure still
