@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock
 from urllib.parse import quote
 
 import pytest
-from sqlalchemy import event, select, update
+from sqlalchemy import delete, event, select, update
 
 import app.core.auth.dependencies as auth_dependencies
 from app.core.auth.dashboard_access import guest_principal
@@ -16,7 +16,12 @@ from app.core.utils.time import utcnow
 from app.db.models import Account, AccountStatus, ApiKey, RequestKind, RequestLog
 from app.db.session import SessionLocal, engine
 from app.modules.accounts.repository import AccountsRepository
-from app.modules.request_logs.repository import RequestLogsRepository
+from app.modules.request_logs.repository import (
+    ConversationFacet,
+    ConversationListResult,
+    ConversationListSummary,
+    RequestLogsRepository,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -1111,6 +1116,155 @@ async def test_since_filter_composes_with_search(async_client, db_setup):
     body = response.json()
     assert [row["conversationId"] for row in body["conversations"]] == ["conv-search-match"]
     assert body["total"] == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("time_filtered", "search", "expected_ids"),
+    [
+        (True, None, ["conv-primary", "conv-secondary", "conv-other", "conv-split"]),
+        (False, "needle", ["conv-primary", "conv-secondary", "conv-split", "conv-old"]),
+        (True, "needle", ["conv-primary", "conv-secondary"]),
+        (False, "CONV-PRIMARY", ["conv-primary"]),
+        (True, "CONV-PRIMARY", ["conv-primary"]),
+    ],
+    ids=["time", "user-agent-search", "time-and-search", "id-search", "time-and-id-search"],
+)
+async def test_conversation_filtered_envelope_preserves_full_history(db_setup, time_filtered, search, expected_ids):
+    # This exact envelope is shared by the original candidate-membership
+    # facets and the page-ID-only facets. Filters select conversations, not
+    # the history that contributes to their summaries or facets.
+    base = datetime(2025, 1, 15, 12)
+    old = base - timedelta(days=60)
+    recent = base - timedelta(hours=1)
+    async with SessionLocal() as session:
+        session.add_all([_account("acc-a"), _account("acc-b"), _account("acc-excluded")])
+        session.add_all(
+            ApiKey(id=key, name=key, key_hash=key, key_prefix=key)
+            for key in ("key-a", "key-b", "key-deleted", "key-excluded")
+        )
+        await session.commit()
+
+        def row(
+            request_id,
+            conversation_id,
+            requested_at,
+            *,
+            account_id="acc-b",
+            model="model-b",
+            api_key_id="key-b",
+            useragent_group="other",
+            request_kind=RequestKind.NORMAL.value,
+            deleted_at=None,
+        ):
+            return RequestLog(
+                request_id=request_id,
+                conversation_id=conversation_id,
+                requested_at=requested_at,
+                account_id=account_id,
+                model=model,
+                api_key_id=api_key_id,
+                useragent_group=useragent_group,
+                request_kind=request_kind,
+                deleted_at=deleted_at,
+                status="success",
+                input_tokens=10,
+                output_tokens=1,
+                cached_input_tokens=1,
+                cost_usd=0.25,
+            )
+
+        session.add_all(
+            [
+                row("primary-old-a1", "conv-primary", old, account_id="acc-a", model="model-a", api_key_id="key-a"),
+                row("primary-old-a2", "conv-primary", old, account_id="acc-a", model="model-a", api_key_id="key-a"),
+                row("primary-old-b", "conv-primary", old, api_key_id="key-deleted"),
+                row("primary-recent", "conv-primary", recent, useragent_group="needle"),
+                row("primary-null", "conv-primary", recent, account_id=None, model="model-c", api_key_id=None),
+                row("secondary", "conv-secondary", recent, useragent_group="needle"),
+                row("other", "conv-other", base - timedelta(hours=2)),
+                row("split-old", "conv-split", old, useragent_group="needle"),
+                row("split-recent", "conv-split", base - timedelta(hours=3)),
+                row("old-only", "conv-old", old, useragent_group="needle"),
+                row("blank", "", recent, useragent_group="needle"),
+                row("null", None, recent, useragent_group="needle"),
+            ]
+        )
+        # Exclusions must apply both to candidate membership and to every
+        # facet of a conversation that does have eligible history.
+        for conversation_id in ("conv-primary", "conv-excluded-only"):
+            for suffix, kind, deleted_at in (
+                ("warmup", RequestKind.WARMUP.value, None),
+                ("limit-warmup", "limit_warmup", None),
+                ("deleted", RequestKind.NORMAL.value, base),
+            ):
+                session.add(
+                    row(
+                        f"{conversation_id}-{suffix}",
+                        conversation_id,
+                        base,
+                        account_id="acc-excluded",
+                        model="model-excluded",
+                        api_key_id="key-excluded",
+                        useragent_group="needle",
+                        request_kind=kind,
+                        deleted_at=deleted_at,
+                    )
+                )
+        await session.commit()
+        # Request logs retain the stale key ID after the key itself is gone.
+        await session.execute(delete(ApiKey).where(ApiKey.id == "key-deleted"))
+        await session.commit()
+
+        expected_summaries = {
+            "conv-primary": ConversationListSummary("conv-primary", old, recent, 5, 2, 55, 5, 1.25),
+            "conv-secondary": ConversationListSummary("conv-secondary", recent, recent, 1, 1, 11, 1, 0.25),
+            "conv-other": ConversationListSummary(
+                "conv-other", base - timedelta(hours=2), base - timedelta(hours=2), 1, 1, 11, 1, 0.25
+            ),
+            "conv-split": ConversationListSummary("conv-split", old, base - timedelta(hours=3), 2, 1, 22, 2, 0.5),
+            "conv-old": ConversationListSummary("conv-old", old, old, 1, 1, 11, 1, 0.25),
+        }
+        repo = RequestLogsRepository(session)
+        # Check the full page, every single-row page, and an empty tail.
+        # A total larger than the page must not leak off-page facet values.
+        for limit, offset in [(50, 0), *((1, offset) for offset in range(len(expected_ids) + 1))]:
+            page_ids = expected_ids[offset : offset + limit]
+            account_facets = []
+            api_key_facets = []
+            model_facets = []
+            for conversation_id in sorted(page_ids):
+                if conversation_id == "conv-primary":
+                    account_facets.extend(
+                        [ConversationFacet(conversation_id, "acc-b", 2), ConversationFacet(conversation_id, "acc-a", 2)]
+                    )
+                    api_key_facets.extend(
+                        [ConversationFacet(conversation_id, "key-a", 2), ConversationFacet(conversation_id, "key-b", 1)]
+                    )
+                    model_facets.extend(
+                        [
+                            ConversationFacet(conversation_id, "model-b", 2),
+                            ConversationFacet(conversation_id, "model-a", 2),
+                            ConversationFacet(conversation_id, "model-c", 1),
+                        ]
+                    )
+                else:
+                    count = expected_summaries[conversation_id].request_count
+                    account_facets.append(ConversationFacet(conversation_id, "acc-b", count))
+                    api_key_facets.append(ConversationFacet(conversation_id, "key-b", count))
+                    model_facets.append(ConversationFacet(conversation_id, "model-b", count))
+            assert await repo.list_conversations(
+                since=base - timedelta(days=7) if time_filtered else None,
+                search=search,
+                limit=limit,
+                offset=offset,
+            ) == ConversationListResult(
+                summaries=[expected_summaries[conversation_id] for conversation_id in page_ids],
+                account_facets=account_facets,
+                api_key_facets=api_key_facets,
+                model_facets=model_facets,
+                total=len(expected_ids),
+            )
 
 
 @pytest.mark.asyncio
