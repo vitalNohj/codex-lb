@@ -228,6 +228,43 @@ async def test_send_during_processing_is_consumed_and_later_send_wakes_once(monk
         await _cancel_relay(reader_task)
 
 
+@pytest.mark.parametrize("replacement_has_new_reader", [False, True])
+async def test_relay_cancel_during_replacement_send_fences_only_its_own_session(
+    monkeypatch: pytest.MonkeyPatch, replacement_has_new_reader: bool
+) -> None:
+    upstream = _ScriptedUpstream(['{"type":"error","error":{"code":"websocket_connection_limit_reached"}}'])
+    replacement = _ScriptedUpstream([])
+    replay_send_started = asyncio.Event()
+    replay_send_blocker = asyncio.Event()
+    replacement_reader = asyncio.create_task(asyncio.Event().wait()) if replacement_has_new_reader else None
+
+    async def reconnect_and_block_replay(session: proxy_service._HTTPBridgeSession, text: str, **_kwargs: Any) -> None:
+        # Reconnect publishes the replacement before the retry send returns.
+        # The relay must fence it even if cancellation skips the successful
+        # return from event processing. A separate replacement reader, however,
+        # owns its session independently of this exiting old reader.
+        session.upstream = cast(UpstreamWebSocket, replacement)
+        session.upstream_reader = replacement_reader or asyncio.current_task()
+        session.closed = False
+        replay_send_started.set()
+        await replay_send_blocker.wait()
+
+    _service, session, reader_task, _process_text, _snapshots = _start_relay(
+        monkeypatch, upstream, process_side_effect=reconnect_and_block_replay
+    )
+    try:
+        await asyncio.wait_for(replay_send_started.wait(), timeout=1.0)
+        await _cancel_relay(reader_task)
+        assert session.upstream is replacement
+        assert session.closed is not replacement_has_new_reader
+    finally:
+        if not reader_task.done():
+            await _cancel_relay(reader_task)
+        if replacement_reader is not None:
+            replacement_reader.cancel()
+            await asyncio.gather(replacement_reader, return_exceptions=True)
+
+
 async def test_relay_loop_processes_messages_in_order_without_wakeup_churn(monkeypatch: pytest.MonkeyPatch) -> None:
     texts = [f'{{"type":"response.output_text.delta","delta":"{index}"}}' for index in range(5)]
     upstream = _ScriptedUpstream(list(texts))

@@ -7,7 +7,7 @@ Regenerate with `uv run python scripts/generate_settings_reference.py`;
 `tests/unit/test_settings_reference.py` fails when this page drifts from
 `app/core/config/settings.py`.
 
-codex-lb currently exposes 147 settings. Every setting is an environment
+codex-lb currently exposes 148 settings. Every setting is an environment
 variable, normally with the `CODEX_LB_` prefix (process environment or `.env` /
 `.env.local` next to the process); aliased settings list every accepted name.
 All defaults work with zero configuration —
@@ -144,6 +144,7 @@ anything else belongs in `app/core/config/settings.py`.
 | `CODEX_LB_HTTP_RESPONSES_SESSION_BRIDGE_OPERATION_SPOOL_RETENTION_SECONDS` | T3 (dashboard) | `float` | `604800` |
 | `CODEX_LB_HTTP_RESPONSES_SESSION_BRIDGE_QUEUE_LIMIT` | T1 | `int` | `8` |
 | `CODEX_LB_HTTP_RESPONSES_SESSION_BRIDGE_REQUEST_BUDGET_SECONDS` | T3 (dashboard) | `float` | `7200.0` |
+| `CODEX_LB_HTTP_RESPONSES_SESSION_BRIDGE_UPSTREAM_MAX_AGE_SECONDS` | T1 | `float` | `3300.0` |
 
 ## Proxy admission & account caps
 

@@ -3077,6 +3077,9 @@ class _HTTPBridgeStreamingMixin:
                         # the original hold without its lifecycle owner.
                         reservation=request_state.api_key_reservation,
                     )
+                    retry_request_state.upstream_connection_limit_retried = (
+                        request_state.upstream_connection_limit_retried
+                    )
                     retry_request_state.enforce_openai_sdk_contract = enforce_openai_sdk_contract
                     retry_request_state.affinity_policy = affinity
                     retry_request_state.affinity_observation = AffinityObservation.retaining_source(
@@ -4306,6 +4309,7 @@ class _HTTPBridgeStreamingMixin:
                     retry_payload,
                     reservation=retry_api_key_reservation,
                 )
+                retry_request_state.upstream_connection_limit_retried = request_state.upstream_connection_limit_retried
                 local_previous_response_recovery = recovery_path in {
                     "local_previous_response_error",
                     "local_previous_response_fresh_replay",

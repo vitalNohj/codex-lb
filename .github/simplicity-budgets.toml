@@ -68,7 +68,9 @@ max_items = 5
 # cliproxy_xai_native_responses_enabled (rollback switch for CLIProxyAPI's
 # native xAI /v1/responses path), hourly_rollup_retention_days and
 # proxy_continuity_owner_hold_seconds (#130). Lower it when fields are removed.
-max = 147
+# 147 -> 148 upstream websocket max age: deployment-specific proxy lifetimes
+# can be shorter than the provider's 60-minute limit; rotate before either cap.
+max = 148
 
 [root_files]
 # Complete allowlist of tracked repository-root entries (files and

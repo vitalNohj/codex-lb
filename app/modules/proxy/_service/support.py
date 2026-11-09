@@ -1092,6 +1092,9 @@ class _WebSocketRequestState:
     # replay when the replacement upstream socket also closes cleanly before
     # producing any response event.
     clean_close_replay_count: int = 0
+    # An explicit websocket lifetime rejection proves this turn was refused.
+    # Keep its one retry separate from ambiguous-close and continuity recovery.
+    upstream_connection_limit_retried: bool = False
     clean_close_retry_in_progress: bool = False
     clean_close_retry_result: bool | None = None
     clean_close_retry_close_generation: int | None = None
@@ -1382,6 +1385,7 @@ class _HTTPBridgeSession:
     queued_request_count: int
     last_used_at: float
     idle_ttl_seconds: float
+    upstream_connected_at: float = field(default_factory=REAL_CLOCK.monotonic)
     # Wakes a reader that began an unbounded receive before the first request
     # was enqueued. The reader keeps one receive task alive across wakeups.
     upstream_reader_wakeup: asyncio.Event = field(default_factory=asyncio.Event)

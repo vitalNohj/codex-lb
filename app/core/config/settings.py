@@ -426,6 +426,9 @@ class Settings(BaseSettings):
     http_responses_session_bridge_codex_prewarm_enabled: bool = False
     http_responses_session_bridge_max_sessions: int = Field(default=256, gt=0)
     http_responses_session_bridge_queue_limit: int = Field(default=8, gt=0)
+    # Rotate idle upstream sockets before the provider's 60-minute lifetime.
+    # Deployment-specific intermediaries may require a shorter lifetime.
+    http_responses_session_bridge_upstream_max_age_seconds: float = Field(default=3300.0, gt=0, lt=3600)
     # Bound durable replay storage per operation so a long response cannot
     # exhaust the database. An incomplete spool is never replayed.
     http_responses_session_bridge_operation_event_spool_max_bytes: int = Field(default=2 * 1024 * 1024, gt=0)

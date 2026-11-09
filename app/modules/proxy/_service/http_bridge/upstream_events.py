@@ -2435,7 +2435,7 @@ class _HTTPBridgeUpstreamEventsMixin:
                         scheduler=scheduler,
                         clock=clock,
                     )
-                    if await self._retire_http_bridge_after_drain_if_ready(session):
+                    if session.closed or await self._retire_http_bridge_after_drain_if_ready(session):
                         break
                     continue
 
@@ -2586,8 +2586,12 @@ class _HTTPBridgeUpstreamEventsMixin:
             # cancellations below suspend: the persistent wakeup waiter is
             # normally still pending here, and a recovery that replaces the
             # socket during that suspension clears the flag itself after
-            # swapping ``session.upstream``.
-            if session.upstream is relay_upstream:
+            # swapping ``session.upstream``. An in-reader lifetime retry can
+            # swap the socket and then be cancelled during its replay send.
+            # The current reader still owns admission in that case, even if
+            # processing never returned to the relay loop. A superseded reader
+            # must not fence a socket that already has a different reader.
+            if session.upstream is relay_upstream or session.upstream_reader is asyncio.current_task():
                 session.closed = True
             await _cancel_http_bridge_reader_child(
                 wakeup_task,
@@ -2781,6 +2785,24 @@ class _HTTPBridgeUpstreamEventsMixin:
         scheduler: Scheduler,
         clock: Clock,
     ) -> None:
+        if (
+            event_type in {"error", "response.failed", "response.incomplete"}
+            and _websocket_event_error_code(event_type, payload) == "websocket_connection_limit_reached"
+        ):
+            if await self._retry_http_bridge_connection_limit_request(session):
+                return
+            # This is a transport lifetime, not an account quota or a bad
+            # request. Fail all pending turns normally when replay is unsafe
+            # (or the one replacement also expired), without account penalties.
+            async with session.lifecycle_lock:
+                await self._fail_http_bridge_reader_and_maybe_retire(
+                    session,
+                    error_code="upstream_unavailable",
+                    error_message="The upstream websocket expired; retry the request on a new connection.",
+                    penalize_account=False,
+                    force_retire=True,
+                )
+            return
         original_text = text
         error_message = _websocket_event_error_message(event_type, payload)
         is_typeless_error_event = (
