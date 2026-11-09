@@ -2435,11 +2435,6 @@ class _HTTPBridgeUpstreamEventsMixin:
                         scheduler=scheduler,
                         clock=clock,
                     )
-                    if session.upstream is not relay_upstream and session.upstream_reader is asyncio.current_task():
-                        # A lifetime retry replaces the socket inside this
-                        # reader. Its finalizer must own the replacement, not
-                        # leave a readerless session marked open on cancel.
-                        relay_upstream = session.upstream
                     if session.closed or await self._retire_http_bridge_after_drain_if_ready(session):
                         break
                     continue
@@ -2591,8 +2586,12 @@ class _HTTPBridgeUpstreamEventsMixin:
             # cancellations below suspend: the persistent wakeup waiter is
             # normally still pending here, and a recovery that replaces the
             # socket during that suspension clears the flag itself after
-            # swapping ``session.upstream``.
-            if session.upstream is relay_upstream:
+            # swapping ``session.upstream``. An in-reader lifetime retry can
+            # swap the socket and then be cancelled during its replay send.
+            # The current reader still owns admission in that case, even if
+            # processing never returned to the relay loop. A superseded reader
+            # must not fence a socket that already has a different reader.
+            if session.upstream is relay_upstream or session.upstream_reader is asyncio.current_task():
                 session.closed = True
             await _cancel_http_bridge_reader_child(
                 wakeup_task,
