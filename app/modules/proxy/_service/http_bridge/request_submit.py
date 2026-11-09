@@ -1929,6 +1929,7 @@ class _HTTPBridgeRequestSubmitMixin:
                         502,
                         openai_error("upstream_unavailable", "HTTP responses session bridge is closed"),
                     )
+                await self._rotate_idle_http_bridge_upstream(session, request_state=request_state)
                 recovery_receipt: DurableBridgeAliasRegistrationReceipt | None = None
                 upstream_send_started = False
                 try:
@@ -3634,6 +3635,77 @@ class _HTTPBridgeRequestSubmitMixin:
             cache_key_family=session.key.affinity_kind,
             model_class=_extract_model_class(session.request_model) if session.request_model else None,
         )
+
+    async def _rotate_idle_http_bridge_upstream(
+        self: Any,
+        session: _HTTPBridgeSession,
+        *,
+        request_state: _WebSocketRequestState,
+    ) -> None:
+        """Rotate between turns. The submitter holds lifecycle_lock and the create gate."""
+        max_age = _service_get_settings().http_responses_session_bridge_upstream_max_age_seconds
+        if clock_for(self).monotonic() - session.upstream_connected_at < max_age:
+            return
+        async with session.pending_lock:
+            if session.pending_requests:
+                # Never interrupt another response to rotate a shared socket.
+                return
+        await self._reconnect_http_bridge_session(
+            session,
+            request_state=request_state,
+            restart_reader=True,
+            rotate_upstream=True,
+        )
+
+    async def _retry_http_bridge_connection_limit_request(
+        self: Any,
+        session: _HTTPBridgeSession,
+    ) -> bool:
+        """Replay one explicitly refused turn, never an accepted or ambiguous send."""
+        async with session.lifecycle_lock:
+            async with session.pending_lock:
+                if len(session.pending_requests) != 1:
+                    return False
+                request_state = session.pending_requests[0]
+                if (
+                    request_state.upstream_connection_limit_retried
+                    or request_state.response_event_count != 0
+                    or request_state.response_id is not None
+                    or request_state.downstream_visible
+                    or request_state.upstream_model_output_seen
+                    or request_state.draining_until_terminal
+                    or request_state.event_queue is None
+                    or request_state.response_create_sent_at is None
+                    or not request_state.request_text
+                ):
+                    return False
+                request_state.upstream_connection_limit_retried = True
+                text_data = request_state.request_text
+            try:
+                # The reader calls this after consuming the rejection. It keeps
+                # reading the replacement socket; no second reader is spawned.
+                # Keep previous_response_id and turn state on the same account.
+                # If the provider lost its connection-local store, the existing
+                # previous_response_not_found path performs continuity recovery.
+                await self._reconnect_http_bridge_session(
+                    session,
+                    request_state=request_state,
+                    rotate_upstream=True,
+                )
+                text_data = self._http_bridge_text_with_account_installation_id(session, request_state, text_data)
+                await _send_http_bridge_request_text_with_archive_id(
+                    session, request_state, text_data, clock=clock_for(self)
+                )
+                _clear_websocket_request_error_overrides(request_state)
+                session.last_used_at = clock_for(self).monotonic()
+                return True
+            except UpstreamWebSocketTransportError:
+                # A replacement send may have been accepted. The normal reader
+                # failure path must settle it without another replay.
+                raise
+            except Exception:
+                logger.warning("HTTP bridge websocket lifetime rotation failed", exc_info=True)
+                return False
 
     async def _retry_http_bridge_request_on_fresh_upstream(
         self: Any,

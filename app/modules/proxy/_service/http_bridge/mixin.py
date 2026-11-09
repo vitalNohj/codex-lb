@@ -1620,42 +1620,6 @@ class _HTTPBridgeMixin(
             return False
         return True
 
-    def _prune_http_bridge_sessions_locked(self) -> list["_HTTPBridgeSession"]:
-        now = clock_for(self).monotonic()
-        stale_keys: list[_HTTPBridgeSessionKey] = []
-        for key, session in self._http_bridge_sessions.items():
-            if _http_bridge_session_has_admission_waiter(session):
-                continue
-            if session.handoff_in_progress:
-                continue
-            if session.closed:
-                stale_keys.append(key)
-                continue
-            if getattr(session, "unanchored_reservation_id", None) is not None:
-                continue
-            pending_count = self._http_bridge_pending_count_nowait(session, context="idle_prune")
-            if pending_count is None:
-                continue
-            if pending_count:
-                continue
-            if now - session.last_used_at < session.idle_ttl_seconds:
-                continue
-            stale_keys.append(key)
-        sessions_to_close: list[_HTTPBridgeSession] = []
-        for key in stale_keys:
-            session = self._detach_http_bridge_session_locked(key)
-            if session is not None:
-                _log_http_bridge_event(
-                    "evict_idle",
-                    key,
-                    account_id=session.account.id,
-                    model=session.request_model,
-                    cache_key_family=key.affinity_kind,
-                    model_class=_extract_model_class(session.request_model) if session.request_model else None,
-                )
-                sessions_to_close.append(session)
-        return sessions_to_close
-
     _close_http_bridge_session = _helpers_close_http_bridge_session
 
     async def _create_http_bridge_session(
@@ -1960,6 +1924,7 @@ class _HTTPBridgeMixin(
             queued_request_count=0,
             lifecycle_lock=fast_lock(),
             last_used_at=clock_for(self).monotonic(),
+            upstream_connected_at=clock_for(self).monotonic(),
             idle_ttl_seconds=idle_ttl_seconds,
             codex_session=(affinity.kind == StickySessionKind.CODEX_SESSION or key.affinity_kind == "thread_header"),
             access_token_expires_at=_token_expiry(account, self._encryptor),
@@ -1982,6 +1947,7 @@ class _HTTPBridgeMixin(
         require_security_work_authorized: bool = False,
         require_same_account: bool = False,
         require_preferred_account: bool = False,
+        rotate_upstream: bool = False,
         owner_rebind_affinity: _AffinityPolicy | None = None,
         selection_affinity: _AffinityPolicy | None = None,
         dashboard_settings: DashboardSettings | None = None,
@@ -2045,9 +2011,12 @@ class _HTTPBridgeMixin(
             required_preferred_account_id = resolve_required_account_id(
                 ("requested reconnect owner", requested_preferred_account_id),
                 ("account-neutral recovery", session.account.id if account_neutral_recovery else None),
+                ("upstream lifetime rotation", session.account.id if rotate_upstream else None),
             )
             close_skips_account = session.last_upstream_close_code in _UPSTREAM_CLOSE_CODES_SKIP_SAME_ACCOUNT_RETRY
-            hard_close_account_bound = session.key.strength == "hard" and (close_skips_account or require_same_account)
+            hard_close_account_bound = rotate_upstream or (
+                session.key.strength == "hard" and (close_skips_account or require_same_account)
+            )
             skip_same_account = (
                 session.key.strength != "hard" and close_skips_account and required_preferred_account_id is None
             )
@@ -2417,6 +2386,7 @@ class _HTTPBridgeMixin(
                     session.account_lease = None
             session.account_lease = selected_account_lease
             session.replace_connection(account, connect_headers, upstream, _token_expiry(account, self._encryptor))
+            session.upstream_connected_at = clock_for(self).monotonic()
             session.catalog_omission_quota_admission = selection.catalog_omission_quota_admission
             session.upstream_control = _WebSocketUpstreamControl()
             session.closed = False

@@ -66,6 +66,7 @@ SETTING_TIERS: Final[dict[str, Tier]] = {
     "http_responses_session_bridge_codex_prewarm_enabled": "T3",
     "http_responses_session_bridge_max_sessions": "T1",
     "http_responses_session_bridge_queue_limit": "T1",
+    "http_responses_session_bridge_upstream_max_age_seconds": "T1",
     "http_responses_session_bridge_operation_event_spool_max_bytes": "T1",
     "http_responses_session_bridge_operation_spool_format": "T1",
     "http_responses_session_bridge_operation_event_spool_batch_size": "T1",

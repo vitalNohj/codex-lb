@@ -2435,7 +2435,12 @@ class _HTTPBridgeUpstreamEventsMixin:
                         scheduler=scheduler,
                         clock=clock,
                     )
-                    if await self._retire_http_bridge_after_drain_if_ready(session):
+                    if session.upstream is not relay_upstream and session.upstream_reader is asyncio.current_task():
+                        # A lifetime retry replaces the socket inside this
+                        # reader. Its finalizer must own the replacement, not
+                        # leave a readerless session marked open on cancel.
+                        relay_upstream = session.upstream
+                    if session.closed or await self._retire_http_bridge_after_drain_if_ready(session):
                         break
                     continue
 
@@ -2781,6 +2786,24 @@ class _HTTPBridgeUpstreamEventsMixin:
         scheduler: Scheduler,
         clock: Clock,
     ) -> None:
+        if (
+            event_type in {"error", "response.failed", "response.incomplete"}
+            and _websocket_event_error_code(event_type, payload) == "websocket_connection_limit_reached"
+        ):
+            if await self._retry_http_bridge_connection_limit_request(session):
+                return
+            # This is a transport lifetime, not an account quota or a bad
+            # request. Fail all pending turns normally when replay is unsafe
+            # (or the one replacement also expired), without account penalties.
+            async with session.lifecycle_lock:
+                await self._fail_http_bridge_reader_and_maybe_retire(
+                    session,
+                    error_code="upstream_unavailable",
+                    error_message="The upstream websocket expired; retry the request on a new connection.",
+                    penalize_account=False,
+                    force_retire=True,
+                )
+            return
         original_text = text
         error_message = _websocket_event_error_message(event_type, payload)
         is_typeless_error_event = (
