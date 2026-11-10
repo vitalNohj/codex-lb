@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from unittest.mock import AsyncMock
 
 import pytest
 
+from app.core.usage.model_capabilities import ModelCapabilities, decode_model_capabilities
 from app.core.usage.pricing import ModelPrice
 from app.core.usage.pricing_catalog import encode_snapshot
 from scripts import update_upstream_metadata as script
@@ -48,6 +51,44 @@ async def test_generation_preserves_unchanged_snapshot_and_fails_before_writing_
         await script.main()
     assert path.read_text() == original
     assert 'CODEX_VERSION = "1.2.3"' in version_path.read_text()
+
+
+async def test_generation_bundles_capabilities_without_a_second_fetch(tmp_path, monkeypatch):
+    path = tmp_path / "pricing.json"
+    path.write_text(encode_snapshot({"gpt-test": ModelPrice(10, 50)}))
+    monkeypatch.setattr(script, "BUNDLE_PATH", path)
+    monkeypatch.setattr(script, "ROOT", tmp_path)
+    monkeypatch.setattr(script.CodexVersionCache, "_fetch_latest_version", AsyncMock(return_value="1.2.3"))
+    primary = json.loads((Path(__file__).parents[1] / "fixtures" / "claude_models_dev.json").read_text())
+    primary["openai"] = {
+        "models": {"gpt-test": {"modalities": {"output": ["text"]}, "cost": {"input": 10, "output": 50}}}
+    }
+    secondary = {
+        "gpt-test": {
+            "litellm_provider": "openai",
+            "mode": "chat",
+            "input_cost_per_token": 1e-5,
+            "output_cost_per_token": 5e-5,
+        }
+    }
+    requests: list[str] = []
+
+    def fetch(url):
+        requests.append(url)
+        return primary if url == script.MODELS_DEV_URL else secondary
+
+    monkeypatch.setattr(script, "fetch", fetch)
+    await script.main()
+    generated = path.read_text()
+    expected = {"claude-fable-5-2": ModelCapabilities(("text", "image", "pdf"), 1_000_000, 128_000)}
+    assert decode_model_capabilities(json.loads(generated)) == expected
+    assert requests == [script.MODELS_DEV_URL, script.LITELLM_URL]
+    await script.main()
+    assert path.read_text() == generated
+    # An incomplete later payload must not erase fields already bundled.
+    primary["anthropic"]["models"]["claude-fable-5-2"]["limit"] = {"context": True}
+    await script.main()
+    assert path.read_text() == generated
 
 
 def test_fetch_rejects_oversized_response_before_json_parsing(monkeypatch):

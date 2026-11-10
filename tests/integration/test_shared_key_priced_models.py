@@ -20,7 +20,7 @@ from app.db.models import ApiKeyUsageReservation, ModelSource, ModelSourceModel
 from app.db.session import SessionLocal
 from app.modules.api_keys.repository import ApiKeysRepository
 from app.modules.api_keys.service import ApiKeysService, ApiKeyUnpricedModelError
-from app.modules.proxy.api_key_pricing import source_price_check
+from app.modules.proxy.api_key_pricing import route_price_check, source_price_check
 
 pytestmark = pytest.mark.integration
 
@@ -211,6 +211,29 @@ async def test_a_shared_key_refuses_a_model_source_rated_at_zero(async_client):
             )
         await service.enforce_limits_for_request(
             key_id, request_model="local-paid", model_is_priced=source_price_check(source, "local-paid")
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("model", ["claude-fable-5-2", "cc/claude-fable-5-2"])
+async def test_a_shared_key_accepts_a_claude_catalog_price_only_after_route_resolution(async_client, model):
+    key_id, _ = await _create_key(async_client, name="shared-claude-catalog", shared=True)
+    async with SessionLocal() as session:
+        service = ApiKeysService(ApiKeysRepository(session))
+        with pytest.raises(ApiKeyUnpricedModelError):
+            await service.enforce_limits_for_request(
+                key_id, request_model=model, model_is_priced=route_price_check("claude", model)
+            )
+        await ExternalModelPriceStore(session).record_resolved(
+            provider="cliproxy",
+            incoming_model=model,
+            catalog_model="anthropic/claude-fable-5.2",
+            catalog_source="openrouter:reference",
+            price=ModelPrice(input_per_1m=8, output_per_1m=40, cached_input_per_1m=0.2),
+            resolution_step="vendor-qualified" if model.startswith("claude") else "prefix+vendor-qualified",
+        )
+        await service.enforce_limits_for_request(
+            key_id, request_model=model, model_is_priced=route_price_check("claude", model)
         )
 
 

@@ -1,17 +1,24 @@
-"""Public catalog adapters; only validated OpenAI text-token prices enter accounting."""
+"""Public pricing and Claude capability metadata, with last-good offline fallbacks."""
 
 from __future__ import annotations
 
 import json
 import logging
 import math
-from dataclasses import asdict, fields
+from dataclasses import asdict, dataclass, field, fields
 from datetime import datetime, timezone
 from pathlib import Path
 
 import aiohttp
 
 from app.core.types import JsonValue
+from app.core.usage.model_capabilities import (
+    ModelCapabilities,
+    decode_model_capabilities,
+    merge_model_capabilities,
+    parse_models_dev_capabilities,
+)
+from app.core.usage.model_ids import strip_known_sidecar_prefix
 from app.core.usage.pricing import DEFAULT_PRICING_MODELS, ModelPrice
 
 logger = logging.getLogger(__name__)
@@ -182,7 +189,7 @@ def decode_snapshot(payload: JsonValue) -> dict[str, ModelPrice]:
     return result
 
 
-def encode_snapshot(prices: dict[str, ModelPrice]) -> str:
+def encode_snapshot(prices: dict[str, ModelPrice], *, capabilities: dict[str, ModelCapabilities] | None = None) -> str:
     return (
         json.dumps(
             {
@@ -193,6 +200,10 @@ def encode_snapshot(prices: dict[str, ModelPrice]) -> str:
                     model: {k: v for k, v in asdict(price).items() if v is not None}
                     for model, price in sorted(prices.items())
                 },
+                "model_capabilities": {
+                    model: {k: v for k, v in asdict(entry).items() if v is not None}
+                    for model, entry in sorted((capabilities or {}).items())
+                },
             },
             indent=2,
             allow_nan=False,
@@ -201,8 +212,15 @@ def encode_snapshot(prices: dict[str, ModelPrice]) -> str:
     )
 
 
-async def fetch_catalogs() -> dict[str, ModelPrice]:
+@dataclass(frozen=True, slots=True)
+class CatalogMetadata:
+    prices: dict[str, ModelPrice]
+    capabilities: dict[str, ModelCapabilities] = field(default_factory=dict)
+
+
+async def fetch_catalogs() -> CatalogMetadata:
     catalogs: list[dict[str, ModelPrice]] = []
+    capabilities: dict[str, ModelCapabilities] = {}
     async with aiohttp.ClientSession(
         timeout=aiohttp.ClientTimeout(total=20),
         trust_env=True,
@@ -217,16 +235,37 @@ async def fetch_catalogs() -> dict[str, ModelPrice]:
                         body.extend(chunk)
                         if len(body) > MAX_CATALOG_BYTES:
                             raise ValueError("Pricing response too large")
-                    catalogs.append(parser(json.loads(body)))
+                    payload = json.loads(body)
+                    if url == MODELS_DEV_URL:
+                        capabilities = parse_models_dev_capabilities(payload)
+                    catalogs.append(parser(payload))
             except (aiohttp.ClientError, TimeoutError, ValueError):
                 logger.warning("Pricing source unavailable: %s", url, exc_info=True)
                 catalogs.append({})
-    if not any(catalogs):
+    if not any(catalogs) and not capabilities:
         raise ValueError("All pricing sources failed")
-    return merge_catalogs(catalogs[0], catalogs[1])
+    return CatalogMetadata(merge_catalogs(catalogs[0], catalogs[1]), capabilities)
 
 
 _prices: dict[str, ModelPrice] | None = None
+_capabilities: dict[str, ModelCapabilities] | None = None
+
+
+def get_active_model_capabilities() -> dict[str, ModelCapabilities]:
+    global _capabilities
+    if _capabilities is None:
+        _capabilities = decode_model_capabilities(json.loads(BUNDLE_PATH.read_text()))
+    return _capabilities
+
+
+def get_model_capabilities(model: str) -> ModelCapabilities | None:
+    """One routing prefix, then an exact id; never a pricing/family alias."""
+    return get_active_model_capabilities().get(strip_known_sidecar_prefix(model.strip()))
+
+
+def install_model_capabilities(capabilities: dict[str, ModelCapabilities]) -> None:
+    global _capabilities
+    _capabilities = merge_model_capabilities(capabilities, get_active_model_capabilities())
 
 
 def get_active_prices() -> dict[str, ModelPrice]:

@@ -30,6 +30,7 @@ from app.core.openai.message_coercion import chat_tool_content_parts
 from app.core.types import JsonValue
 from app.core.usage.logs import CANCELLED_STATUS, CLIENT_DISCONNECT_ERROR_CODE
 from app.core.usage.pricing import UsageTokens
+from app.core.usage.pricing_catalog import get_model_capabilities
 from app.core.usage.runtime_pricing import calculate_reference_cost
 from app.core.utils.cancellation import await_deferring_cancellation
 from app.core.utils.json_guards import is_json_mapping
@@ -1130,19 +1131,36 @@ def sanitize_sidecar_forward_payload(body: dict[str, JsonValue]) -> None:
         body.pop(key, None)
 
 
-def claude_sidecar_context_window(model: str) -> int | None:
-    """The published context window of a Claude sidecar model, if known.
-
-    Same lookup as the output bounds below. One leading ``cc/``, ``cp-``, or
-    ``cp_`` prefix is removed, then the id must exactly match a bounds row.
-    A dotted, dated, or effort-suffixed id does not borrow another model's
-    window. ``None`` when no row matches.
-    """
+def _fixed_sidecar_output_bounds(model: str) -> _OutputBounds | None:
     canonical = canonical_sidecar_model(model)
-    if canonical is None:
+    return _SIDECAR_MAX_TOKENS_BOUNDS.get(canonical) if canonical is not None else None
+
+
+def has_fixed_claude_sidecar_bounds(model: str) -> bool:
+    """The legacy known-vision set, independent of catalog-derived limits."""
+    return _fixed_sidecar_output_bounds(model) is not None
+
+
+def _sidecar_output_bounds(model: str) -> _OutputBounds | None:
+    fixed = _fixed_sidecar_output_bounds(model)
+    if fixed is not None:
+        return fixed
+    metadata = get_model_capabilities(model)
+    if metadata is None or metadata.max_output_tokens is None or metadata.context_window is None:
         return None
-    bounds = _SIDECAR_MAX_TOKENS_BOUNDS.get(canonical)
-    return bounds.context_window if bounds is not None else None
+    return _OutputBounds(_SIDECAR_OUTPUT_FLOOR, metadata.max_output_tokens, metadata.context_window)
+
+
+def claude_sidecar_context_window(model: str) -> int | None:
+    """Fixed context first, then the exact public catalog row after one prefix.
+
+    Dotted, dated, and effort-suffixed ids never borrow another model's window.
+    """
+    fixed = _fixed_sidecar_output_bounds(model)
+    if fixed is not None:
+        return fixed.context_window
+    metadata = get_model_capabilities(model)
+    return metadata.context_window if metadata is not None else None
 
 
 def apply_sidecar_max_tokens_bounds(body: dict[str, JsonValue], *, wire_model: str) -> None:
@@ -1157,10 +1175,7 @@ def apply_sidecar_max_tokens_bounds(body: dict[str, JsonValue], *, wire_model: s
     (at most ``_SIDECAR_MINIMAL_OUTPUT_MAX_TOKENS``) is also forwarded unchanged,
     so prompt-cache keep-warm replays stay cache reads.
     """
-    canonical = canonical_sidecar_model(wire_model)
-    if canonical is None:
-        return
-    bounds = _SIDECAR_MAX_TOKENS_BOUNDS.get(canonical)
+    bounds = _sidecar_output_bounds(wire_model)
     if bounds is None:
         return
     window_room = max(bounds.context_window - _estimate_sidecar_input_tokens(body), 0)

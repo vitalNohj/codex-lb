@@ -463,7 +463,7 @@ from app.modules.proxy.schemas import (
     WarmupSubmittedAccount,
 )
 from app.modules.proxy.selection_errors import USAGE_LIMIT_REACHED
-from app.modules.proxy.sidecar_model_capabilities import sidecar_supports_vision
+from app.modules.proxy.sidecar_model_capabilities import sidecar_input_modalities
 from app.modules.proxy.sidecar_model_profiles import apply_sidecar_model_profile_with_suffix_effort
 from app.modules.proxy.sidecar_routing import (
     SidecarRoutingEntry,
@@ -4951,11 +4951,11 @@ async def _build_models_response_body(
                                 slug,
                                 overrides=context_window_overrides,
                                 raw=raw_by_model.get(slug),
-                                claude_model=slug,
+                                claude_model=decision.wire_model,
                                 published=published_window_by_model.get(slug),
                             ),
                             raw=raw_by_model.get(slug),
-                            claude_model=slug,
+                            claude_model=decision.wire_model,
                             max_output_tokens=published_max_output_by_model.get(slug),
                         ),
                     }
@@ -5685,9 +5685,11 @@ def _advertised_sidecar_fields(
     advertised the way registry rows advertise theirs, and omitted when unknown.
     """
 
+    modalities = sidecar_input_modalities(raw, claude_model=claude_model)
     fields = _sidecar_model_list_fields(
         context_window,
-        supports_vision=sidecar_supports_vision(raw, claude_model=claude_model),
+        supports_vision="image" in modalities,
+        input_modalities=modalities,
     )
     if max_output_tokens is not None:
         fields["max_output_tokens"] = max_output_tokens
@@ -5702,6 +5704,7 @@ def _sidecar_model_list_fields(
     context_window: int = _SIDECAR_DEFAULT_CONTEXT_WINDOW,
     *,
     supports_vision: bool = False,
+    input_modalities: list[str] | None = None,
 ) -> dict[str, JsonValue]:
     # Mirror the capability/context fields registry models expose so Cursor's
     # local-provider discovery can learn the context window and trigger its own
@@ -5710,12 +5713,14 @@ def _sidecar_model_list_fields(
     # ``_sidecar_context_window``. Vision is false unless the row's catalog, or
     # a known Claude model, says otherwise. A zero-argument call is the alias
     # fallback for a target that is not already in the catalog.
-    input_modalities: list[JsonValue] = ["text", "image"] if supports_vision else ["text"]
+    modalities: list[JsonValue] = (
+        list(input_modalities) if input_modalities is not None else ["text", "image"] if supports_vision else ["text"]
+    )
     capabilities: dict[str, JsonValue] = {
         "context_length": context_window,
         "supports_tool_use": True,
         "supports_streaming": True,
-        "input_modalities": input_modalities,
+        "input_modalities": modalities,
         "output_modalities": ["text"],
     }
     return {
