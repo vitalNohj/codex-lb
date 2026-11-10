@@ -1,0 +1,12 @@
+{
+  "anthropic": {
+    "models": {
+      "claude-fable-5-2": {
+        "id": "claude-fable-5-2",
+        "modalities": {"input": ["text", "image", "pdf"], "output": ["text"]},
+        "limit": {"context": 1000000, "output": 128000},
+        "cost": {"input": 8, "output": 40, "cache_read": 0.2, "cache_write": 10}
+      }
+    }
+  }
+}

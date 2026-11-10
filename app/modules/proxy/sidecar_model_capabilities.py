@@ -1,10 +1,8 @@
-"""Vision advertised for sidecar rows on ``/v1/models``.
+"""Input modalities advertised for sidecar rows on ``/v1/models``.
 
-OpenAI-compatible catalogs often omit modality metadata. Those rows are not
-image-capable. A row is vision-capable only when its own catalog says so, or
-when it is a Claude model whose published context window we already treat as
-known — every model in that table accepts image input. Dated and unknown
-Claude ids do not borrow another model's modalities.
+Claude rows use the exact public catalog entry when available. Provider-row
+metadata and the legacy fixed-model vision set remain the offline fallback.
+Limits alone never imply image support.
 """
 
 from __future__ import annotations
@@ -12,8 +10,9 @@ from __future__ import annotations
 from collections.abc import Mapping
 
 from app.core.types import JsonValue
+from app.core.usage.pricing_catalog import get_model_capabilities
 from app.core.utils.json_guards import is_json_mapping
-from app.modules.proxy.claude_sidecar_dispatch import claude_sidecar_context_window
+from app.modules.proxy.claude_sidecar_dispatch import has_fixed_claude_sidecar_bounds
 
 
 def catalog_input_modalities(raw: Mapping[str, JsonValue] | None) -> list[str] | None:
@@ -42,19 +41,33 @@ def catalog_input_modalities(raw: Mapping[str, JsonValue] | None) -> list[str] |
     return parts or None
 
 
+def sidecar_input_modalities(
+    raw: Mapping[str, JsonValue] | None,
+    *,
+    claude_model: str | None = None,
+) -> list[str]:
+    """Resolve one row's modalities without inferring them from its limits."""
+    if claude_model is not None:
+        metadata = get_model_capabilities(claude_model)
+        if metadata is not None and metadata.input_modalities is not None:
+            return list(metadata.input_modalities)
+    modalities = catalog_input_modalities(raw)
+    if modalities is not None:
+        # Preserve the existing provider-row advertisement when no public
+        # Claude modalities are available, including text-only for an empty list.
+        return ["text", "image"] if "image" in modalities else ["text"]
+    if claude_model is not None and has_fixed_claude_sidecar_bounds(claude_model):
+        return ["text", "image"]
+    return ["text"]
+
+
 def sidecar_supports_vision(
     raw: Mapping[str, JsonValue] | None,
     *,
     claude_model: str | None = None,
 ) -> bool:
     """Whether a sidecar catalog row should advertise image input."""
-
-    modalities = catalog_input_modalities(raw)
-    if modalities is not None:
-        return "image" in modalities
-    if claude_model is not None and claude_sidecar_context_window(claude_model) is not None:
-        return True
-    return False
+    return "image" in sidecar_input_modalities(raw, claude_model=claude_model)
 
 
 def _string_list(value: JsonValue) -> list[str] | None:

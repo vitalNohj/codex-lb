@@ -15,6 +15,8 @@ from app.core.clients.claude_sidecar import ClaudeSidecarConfig, ClaudeSidecarEr
 from app.core.config.settings import get_settings
 from app.core.config.settings_cache import get_settings_cache
 from app.core.openai.model_registry import ReasoningLevel, UpstreamModel, get_model_registry
+from app.core.usage import pricing_catalog
+from app.core.usage.model_capabilities import parse_models_dev_capabilities
 from app.db.models import ApiKeyLimit, ApiKeyUsageReservation, RequestLog
 from app.db.session import SessionLocal
 from app.modules.api_keys.repository import ApiKeysRepository
@@ -1495,6 +1497,79 @@ async def test_sidecar_models_advertise_cliproxy_published_limits(
             assert entry["max_output_tokens"] == max_output, model_id
             assert entry["maxOutputTokens"] == max_output, model_id
             assert entry["capabilities"]["max_output_tokens"] == max_output, model_id
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("catalog_available", [True, False])
+async def test_new_claude_catalog_modalities_are_advertised_and_bounded(
+    lifespan_free_client, sidecar_enabled, fake_sidecar, monkeypatch, catalog_available
+):
+    payload = json.loads((Path(__file__).parents[1] / "fixtures" / "claude_models_dev.json").read_text())
+    monkeypatch.setattr(
+        pricing_catalog, "_capabilities", parse_models_dev_capabilities(payload) if catalog_available else {}
+    )
+    config = replace(
+        fake_sidecar.config,
+        full_models=(),
+        prefixes=(SidecarPrefix(prefix="claude", strip=False), SidecarPrefix(prefix="cc/", strip=True)),
+    )
+    fake_sidecar.config = config
+    fake_sidecar.models = [_FakeModel("claude-fable-5-2"), _FakeModel("claude-unreleased-9")]
+    monkeypatch.setattr("app.modules.proxy.api.load_sidecar_config", AsyncMock(return_value=config))
+
+    listed = await lifespan_free_client.get("/v1/models")
+    assert listed.status_code == 200
+    entries = {item["id"]: item for item in listed.json()["data"]}
+    for model in ("claude-fable-5-2", "cc/claude-fable-5-2"):
+        row = entries[model]
+        for flag in ("supports_images", "supportsImages", "supports_vision", "supportsVision"):
+            assert row[flag] is catalog_available
+        assert row["capabilities"]["input_modalities"] == (["text", "image", "pdf"] if catalog_available else ["text"])
+        assert row["context_length"] == (1_000_000 if catalog_available else 200_000)
+    unknown = entries["claude-unreleased-9"]
+    assert unknown["supports_vision"] is False
+    assert unknown["capabilities"]["input_modalities"] == ["text"]
+
+    forwarded = await lifespan_free_client.post(
+        "/v1/chat/completions",
+        json={"model": "cc/claude-fable-5-2", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 4096},
+    )
+    assert forwarded.status_code == 200, forwarded.text
+    assert fake_sidecar.chat_payloads[-1]["model"] == "claude-fable-5-2"
+    assert fake_sidecar.chat_payloads[-1]["max_tokens"] == (32_768 if catalog_available else 4096)
+
+
+@pytest.mark.asyncio
+async def test_pinned_claude_catalog_lookup_uses_the_exact_forwarded_id(
+    lifespan_free_client, sidecar_enabled, fake_sidecar, monkeypatch
+):
+    payload = json.loads((Path(__file__).parents[1] / "fixtures" / "claude_models_dev.json").read_text())
+    monkeypatch.setattr(pricing_catalog, "_capabilities", parse_models_dev_capabilities(payload))
+    config = replace(
+        fake_sidecar.config,
+        full_models=("relay/claude-fable-5-2", "relay/claude-fable-5.2"),
+        prefixes=(SidecarPrefix(prefix="relay/", strip=True),),
+    )
+    fake_sidecar.config = config
+    fake_sidecar.models = []
+    monkeypatch.setattr("app.modules.proxy.api.load_sidecar_config", AsyncMock(return_value=config))
+    listed = await lifespan_free_client.get("/v1/models")
+    assert listed.status_code == 200
+    entries = {item["id"]: item for item in listed.json()["data"]}
+    # An exact pinned full-model route wins before strip-prefix routes. It
+    # forwards relay/ unchanged, so it must not borrow the bare catalog row.
+    pinned = entries["relay/claude-fable-5-2"]
+    assert pinned["supports_vision"] is False
+    assert pinned["capabilities"]["input_modalities"] == ["text"]
+    assert pinned["context_length"] == 200_000
+    assert entries["relay/claude-fable-5.2"]["supports_vision"] is False
+    forwarded = await lifespan_free_client.post(
+        "/v1/chat/completions",
+        json={"model": "relay/claude-fable-5-2", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 4096},
+    )
+    assert forwarded.status_code == 200, forwarded.text
+    assert fake_sidecar.chat_payloads[-1]["model"] == "relay/claude-fable-5-2"
+    assert fake_sidecar.chat_payloads[-1]["max_tokens"] == 4096
 
 
 _CLAUDE_IMAGE = "data:image/png;base64,BBBB"

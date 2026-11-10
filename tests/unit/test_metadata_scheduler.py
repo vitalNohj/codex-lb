@@ -10,12 +10,14 @@ import pytest
 from app.core.clients.codex_version import CodexVersionCache
 from app.core.usage import metadata_scheduler as module
 from app.core.usage import pricing_catalog as catalog
-from app.core.usage.pricing import ModelPrice, get_pricing_for_model
+from app.core.usage.model_capabilities import ModelCapabilities
+from app.core.usage.pricing import DEFAULT_PRICING_MODELS, ModelPrice, get_pricing_for_model
 
 
 @pytest.fixture
 def setup(monkeypatch, tmp_path):
     monkeypatch.setattr(catalog, "_prices", None)
+    monkeypatch.setattr(catalog, "_capabilities", None)
     monkeypatch.setattr(module, "get_settings", lambda: SimpleNamespace(data_dir=tmp_path))
     cache = CodexVersionCache()
     monkeypatch.setattr(cache, "_fetch_latest_version", AsyncMock(return_value=None))
@@ -24,7 +26,9 @@ def setup(monkeypatch, tmp_path):
 
 
 async def test_refresh_persists_and_offline_restart_restores(setup, monkeypatch):
-    monkeypatch.setattr(module, "fetch_catalogs", AsyncMock(return_value={"gpt-test": ModelPrice(3, 9)}))
+    monkeypatch.setattr(
+        module, "fetch_catalogs", AsyncMock(return_value=catalog.CatalogMetadata({"gpt-test": ModelPrice(3, 9)}))
+    )
     first = module.MetadataRefreshScheduler()
     await first._refresh()
     assert get_pricing_for_model("gpt-test") == ("gpt-test", ModelPrice(3, 9))
@@ -70,7 +74,9 @@ async def test_newer_bundle_beats_old_disk_cache(setup, monkeypatch):
     monkeypatch.setattr(scheduler, "_run_loop", AsyncMock())
     await scheduler.start()
     bundled = catalog.decode_snapshot(json.loads(catalog.BUNDLE_PATH.read_text()))
-    assert get_pricing_for_model("gpt-6-astra") == ("gpt-6-astra", bundled["gpt-6-astra"])
+    # Compatible legacy write rates supplement the bundle, as on cold startup.
+    expected = catalog.merge_catalogs(bundled, DEFAULT_PRICING_MODELS)
+    assert get_pricing_for_model("gpt-6-astra") == ("gpt-6-astra", expected["gpt-6-astra"])
     await scheduler.stop()
 
 
@@ -80,7 +86,7 @@ async def test_follower_refreshes_prices_without_running_backfill(setup, monkeyp
 
     async def fetch():
         refreshed.set()
-        return {"gpt-test": ModelPrice(3, 9)}
+        return catalog.CatalogMetadata({"gpt-test": ModelPrice(3, 9)})
 
     async def run_if_leader(callback):
         finished.set()
@@ -101,7 +107,9 @@ async def test_follower_refreshes_prices_without_running_backfill(setup, monkeyp
 
 async def test_compatible_partial_refresh_does_not_restart_backfill_cursor(setup, monkeypatch):
     catalog.install_prices({"gpt-test": ModelPrice(10, 50, 1, flex_input_per_1m=5, flex_output_per_1m=25)})
-    monkeypatch.setattr(module, "fetch_catalogs", AsyncMock(return_value={"gpt-test": ModelPrice(10, 50, 1)}))
+    monkeypatch.setattr(
+        module, "fetch_catalogs", AsyncMock(return_value=catalog.CatalogMetadata({"gpt-test": ModelPrice(10, 50, 1)}))
+    )
     scheduler = module.MetadataRefreshScheduler(_cursor=123)
     await scheduler._refresh()
     assert scheduler._cursor == 123
@@ -112,7 +120,7 @@ async def test_unexpected_failure_backs_off_only_the_failed_operation(setup, mon
     current = 0.0
     ticks = iter([5.0, 300.0])
     scheduler = module.MetadataRefreshScheduler()
-    fetch = AsyncMock(return_value={"gpt-test": ModelPrice(3, 9)})
+    fetch = AsyncMock(return_value=catalog.CatalogMetadata({"gpt-test": ModelPrice(3, 9)}))
     backfill = AsyncMock(return_value=True)
     if failed_operation == "refresh":
         fetch.side_effect = RuntimeError("unexpected catalog failure")
@@ -139,3 +147,58 @@ async def test_unexpected_failure_backs_off_only_the_failed_operation(setup, mon
     await scheduler._run_loop()
     assert fetch.await_count == (2 if failed_operation == "refresh" else 1)
     assert backfill.await_count == (2 if failed_operation == "backfill" else 3)
+
+
+async def test_capabilities_survive_partial_outage_and_offline_restart(setup, monkeypatch):
+    capabilities = {"claude-fable-5-2": ModelCapabilities(("text", "image", "pdf"), 1_000_000, 128_000)}
+    fetch = AsyncMock(return_value=catalog.CatalogMetadata({"gpt-test": ModelPrice(3, 9)}, capabilities))
+    monkeypatch.setattr(module, "fetch_catalogs", fetch)
+    scheduler = module.MetadataRefreshScheduler()
+    await scheduler._refresh()
+    assert catalog.get_model_capabilities("cc/claude-fable-5-2") == capabilities["claude-fable-5-2"]
+    # A successful LiteLLM-only refresh has no Claude data; keep the last-good row.
+    fetch.return_value = catalog.CatalogMetadata({"gpt-test": ModelPrice(3, 9)})
+    await scheduler._refresh()
+    assert catalog.get_model_capabilities("claude-fable-5-2") == capabilities["claude-fable-5-2"]
+    monkeypatch.setattr(catalog, "_prices", None)
+    monkeypatch.setattr(catalog, "_capabilities", None)
+    fetch.side_effect = ValueError("offline")
+    restarted = module.MetadataRefreshScheduler()
+    monkeypatch.setattr(restarted, "_run_loop", AsyncMock())
+    await restarted.start()
+    await restarted._refresh()
+    assert catalog.get_model_capabilities("claude-fable-5-2") == capabilities["claude-fable-5-2"]
+    await restarted.stop()
+
+
+@pytest.mark.parametrize("bundle_is_newer", [True, False])
+async def test_capabilities_obey_bundle_and_cache_freshness(setup, monkeypatch, bundle_is_newer):
+    cached = json.loads(
+        catalog.encode_snapshot(
+            {"gpt-test": ModelPrice(3, 9)},
+            capabilities={"claude-fable-5-2": ModelCapabilities(("text",), 200_000, 64_000)},
+        )
+    )
+    bundled = json.loads(
+        catalog.encode_snapshot(
+            {"gpt-test": ModelPrice(3, 9)},
+            capabilities={"claude-fable-5-2": ModelCapabilities(("text", "image", "pdf"), 1_000_000, 128_000)},
+        )
+    )
+    older, newer = "2000-01-01T00:00:00+00:00", "2026-11-09T00:00:00+00:00"
+    cached["updated_at"] = older if bundle_is_newer else newer
+    bundled["updated_at"] = newer if bundle_is_newer else older
+    (setup / "pricing-cache.json").write_text(json.dumps(cached))
+    bundle_path = setup / "bundle.json"
+    bundle_path.write_text(json.dumps(bundled))
+    monkeypatch.setattr(catalog, "BUNDLE_PATH", bundle_path)
+    monkeypatch.setattr(module, "BUNDLE_PATH", bundle_path)
+    scheduler = module.MetadataRefreshScheduler()
+    monkeypatch.setattr(scheduler, "_run_loop", AsyncMock())
+    await scheduler.start()
+    expected = bundled if bundle_is_newer else cached
+    assert (
+        catalog.get_model_capabilities("claude-fable-5-2")
+        == module.decode_model_capabilities(expected)["claude-fable-5-2"]
+    )
+    await scheduler.stop()

@@ -14,6 +14,11 @@ sys.path.insert(0, str(ROOT))
 from app.core.clients.codex_version import CodexVersionCache  # noqa: E402
 from app.core.metadata_store import write_metadata  # noqa: E402
 from app.core.types import JsonValue  # noqa: E402
+from app.core.usage.model_capabilities import (  # noqa: E402
+    decode_model_capabilities,
+    merge_model_capabilities,
+    parse_models_dev_capabilities,
+)
 from app.core.usage.pricing_catalog import (  # noqa: E402
     BUNDLE_PATH,
     LITELLM_URL,
@@ -38,7 +43,9 @@ def fetch(url: str) -> JsonValue:
 
 async def main() -> None:
     # Generation requires both sources; never commit a degraded/partial snapshot.
-    primary = parse_models_dev(await asyncio.to_thread(fetch, MODELS_DEV_URL))
+    payload = await asyncio.to_thread(fetch, MODELS_DEV_URL)
+    primary = parse_models_dev(payload)
+    capabilities = parse_models_dev_capabilities(payload)
     secondary = parse_litellm(await asyncio.to_thread(fetch, LITELLM_URL))
     prices = merge_catalogs(primary, secondary)
     version = await CodexVersionCache()._fetch_latest_version()
@@ -47,8 +54,14 @@ async def main() -> None:
     previous = json.loads(BUNDLE_PATH.read_text()) if BUNDLE_PATH.exists() else None
     if previous is not None:
         prices = merge_catalogs(prices, decode_snapshot(previous))
-    content = encode_snapshot(prices)
-    if previous is None or "updated_at" not in previous or decode_snapshot(previous) != prices:
+        capabilities = merge_model_capabilities(capabilities, decode_model_capabilities(previous))
+    content = encode_snapshot(prices, capabilities=capabilities)
+    if (
+        previous is None
+        or "updated_at" not in previous
+        or decode_snapshot(previous) != prices
+        or decode_model_capabilities(previous) != capabilities
+    ):
         write_metadata(BUNDLE_PATH, content)
     write_metadata(
         ROOT / "app/core/clients/codex_version_snapshot.py",
