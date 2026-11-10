@@ -242,7 +242,7 @@ async def fetch_catalogs() -> CatalogMetadata:
             except (aiohttp.ClientError, TimeoutError, ValueError):
                 logger.warning("Pricing source unavailable: %s", url, exc_info=True)
                 catalogs.append({})
-    if not any(catalogs):
+    if not any(catalogs) and not capabilities:
         raise ValueError("All pricing sources failed")
     return CatalogMetadata(merge_catalogs(catalogs[0], catalogs[1]), capabilities)
 

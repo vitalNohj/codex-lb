@@ -44,6 +44,11 @@ The service SHALL persist last-good capabilities with pricing metadata, retain t
 - **WHEN** a successful refresh learns a Claude model and a later fetch fails or omits its metadata
 - **THEN** its last-good capabilities remain available, including after an offline restart
 
+#### Scenario: Valid capabilities refresh independently of prices
+- **WHEN** models.dev supplies valid Anthropic capabilities but no valid OpenAI prices and the other pricing source is unavailable
+- **THEN** the service installs and persists the new capabilities while retaining last-good prices
+- **AND** a subsequent failure of all metadata sources leaves the persisted snapshot unchanged
+
 #### Scenario: Bundle generation retains capability metadata
 - **WHEN** the existing metadata generator refreshes a bundled snapshot
 - **THEN** it retains validated Claude capabilities from its existing models.dev payload without another fetch

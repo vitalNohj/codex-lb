@@ -2,6 +2,7 @@
 
 - [x] 1.1 Parse typed Claude capabilities from the existing models.dev payload; verify exact-id and malformed-field parser tests.
 - [x] 1.2 Extend the existing cache/refresh lifecycle with optional capabilities; verify partial outage, legacy cache, bundle precedence, and offline restart tests.
+- [x] 1.3 Accept a valid capability-only runtime refresh when prices fail; verify persistence, unchanged pricing, and last-good cache retention on total failure.
 
 ## 2. Apply capabilities
 

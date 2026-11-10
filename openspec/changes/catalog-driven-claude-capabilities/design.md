@@ -12,7 +12,7 @@ See `proposal.md` for motivation and `specs/upstream-metadata/spec.md` for the b
 
 ## Decisions
 
-1. Return a typed metadata refresh containing the existing price map plus a separate Claude capability map. Parse capabilities from the same decoded models.dev payload. This avoids a second request and keeps fetches free of global installation side effects.
+1. Return a typed metadata refresh containing the existing price map plus a separate Claude capability map. Parse capabilities from the same decoded models.dev payload. This avoids a second request and keeps fetches free of global installation side effects. A runtime refresh succeeds when either map contains valid data; a capability-only refresh returns an empty price update so installation preserves last-good prices.
 2. Store optional `model_capabilities` in the version-1 pricing snapshot format. Legacy caches remain valid. The current bundled snapshot contains no Claude metadata, so a cold offline start retains the fixed-table and unknown-id behavior. Merge valid fields and preserve absent or malformed fields across partial updates, like last-good pricing. The existing snapshot generator retains the same metadata from its models.dev payload, so future generated bundles provide the same offline fallback without another fetch.
 3. Use `strip_known_sidecar_prefix` once for capability lookup, not the broader pricing alias resolver. Exact catalog keys remain distinct, including dotted, dated, and suffixed ids.
 4. Public catalog modalities win for known Claude rows; provider metadata and the existing fixed-model vision heuristic remain the fallback. Use the same resolved modalities to generate vision flags and input modalities. Do not infer vision from newly catalog-derived context limits.
