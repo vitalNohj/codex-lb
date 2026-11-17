@@ -559,9 +559,7 @@ class ApiKeysRepository:
                 matched.current_value = incoming.current_value
                 matched.reset_at = incoming.reset_at
 
-        removed_limit_ids = {
-            old_limit.id for old_limit in existing if _limit_key(old_limit) not in incoming_keys
-        }
+        removed_limit_ids = {old_limit.id for old_limit in existing if _limit_key(old_limit) not in incoming_keys}
         forget_admission_items_for_limits(removed_limit_ids)
         for old_limit in existing:
             if old_limit.id in removed_limit_ids:
@@ -655,6 +653,9 @@ class ApiKeysRepository:
 
     async def reset_expired_limits(self, *, now: datetime) -> int:
         reset_count = 0
+        # Advance past guarded misses too: legacy SQLite timestamp text can
+        # parse to the same datetime without matching its bound representation.
+        last_id = 0
         while True:
             result = await self._session.execute(
                 select(
@@ -665,12 +666,14 @@ class ApiKeysRepository:
                 .where(ApiKeyLimit.reset_at < now)
                 # A lifetime budget never resets, whatever its reset_at says.
                 .where(ApiKeyLimit.limit_window != LimitWindow.LIFETIME)
-                .order_by(ApiKeyLimit.reset_at.asc(), ApiKeyLimit.id.asc())
+                .where(ApiKeyLimit.id > last_id)
+                .order_by(ApiKeyLimit.id.asc())
                 .limit(_EXPIRED_LIMIT_RESET_BATCH_SIZE)
             )
             expired_limits = result.all()
             if not expired_limits:
                 return reset_count
+            last_id = expired_limits[-1].id
 
             for limit in expired_limits:
                 if limit.reset_at is None or limit.limit_window is None:
