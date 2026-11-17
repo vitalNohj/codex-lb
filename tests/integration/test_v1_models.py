@@ -2409,3 +2409,68 @@ async def test_hidden_same_slug_source_does_not_shadow_retained_metadata_for_cod
     assert entries["gpt-5.6-sol"]["base_instructions"] == "retained sol metadata"
     assert entries["gpt-5.6-sol"]["use_responses_lite"] is True
     assert "gpt-5.6-sol" not in {item["id"] for item in resp.json()["data"]}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("override,expected", [(None, 872_000), (515_000, 515_000), (1_050_000, 872_000)])
+async def test_gpt62_catalog_windows_and_prices_share_settlement(async_client, monkeypatch, override, expected):
+    from app.core.usage.pricing import get_pricing_for_model
+    from app.modules.proxy.model_pricing import model_pricing
+
+    models = [
+        replace(
+            _make_upstream_model(slug, raw=_raw_with_max_context_window(872_000)),
+            context_window=window,
+        )
+        for slug, window in (("gpt-6.2-sol", 500_000), ("gpt-6.2-astra", 272_000), ("gpt-6.1-sol", 500_000))
+    ]
+    await get_model_registry().update({"pro": models})
+
+    async def overrides():
+        return {} if override is None else {"gpt-6.2-sol": override, "gpt-6.2-astra": override}
+
+    monkeypatch.setattr(proxy_api, "_effective_context_window_overrides", overrides)
+    for path in ("/v1/models", "/backend-api/codex/models"):
+        response = await async_client.get(path)
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert {"gpt-6.2-sol", "gpt-6.2-astra"} <= {entry["id"] for entry in body["data"]}
+        for entry in body["data"]:
+            if entry["id"] == "gpt-6.1-sol":
+                assert entry["context_length"] == 500_000  # No other model changes.
+            if entry["id"] not in ("gpt-6.2-sol", "gpt-6.2-astra"):
+                continue
+            assert entry["context_length"] == expected
+            assert entry["contextLength"] == expected
+            assert entry["metadata"]["context_window"] == expected
+            assert entry["metadata"]["input_context_window"] == expected
+            assert entry["capabilities"]["context_length"] == expected
+            assert entry["max_output_tokens"] == 128_000
+            assert entry["metadata"]["max_output_tokens"] == 128_000
+            resolved = get_pricing_for_model(entry["id"])
+            assert resolved is not None
+            assert entry["pricing"] == model_pricing(resolved[1]).model_dump()
+            assert "batch" in entry["pricing"]
+            assert "flex" not in entry["pricing"]
+        if "models" in body:
+            by_slug = {entry["slug"]: entry for entry in body["models"]}
+            for slug in ("gpt-6.2-sol", "gpt-6.2-astra"):
+                assert by_slug[slug]["context_window"] == expected
+                assert by_slug[slug]["max_context_window"] == expected
+                resolved = get_pricing_for_model(slug)
+                assert resolved is not None
+                assert by_slug[slug]["pricing"] == model_pricing(resolved[1]).model_dump()
+
+
+@pytest.mark.parametrize("slug", ["gpt-6.2-sol", "gpt-6.2-astra"])
+def test_gpt62_verified_default_honors_a_lower_backend_ceiling(slug):
+    model = _make_upstream_model(slug, raw=_raw_with_max_context_window(600_000))
+    assert proxy_api._resolved_context_window(model, {}) == 600_000
+
+
+@pytest.mark.parametrize("slug", ["gpt-6.2-sol", "gpt-6.2-astra"])
+def test_gpt62_verified_subscription_window_does_not_override_custom_sources(slug):
+    from app.core.openai.model_registry import MODEL_SOURCE_KIND_OPENAI_COMPATIBLE
+
+    model = replace(_make_upstream_model(slug), source_kind=MODEL_SOURCE_KIND_OPENAI_COMPATIBLE)
+    assert proxy_api._resolved_context_window(model, {}) == 272_000

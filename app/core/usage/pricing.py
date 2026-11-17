@@ -42,6 +42,22 @@ class ModelPrice:
     priority_long_context_cache_write_input_per_1m: float | None = None
     flex_cache_write_input_per_1m: float | None = None
     flex_long_context_cache_write_input_per_1m: float | None = None
+    cache_write_input_12h_per_1m: float | None = None
+    long_context_cache_write_input_12h_per_1m: float | None = None
+    priority_cache_write_input_12h_per_1m: float | None = None
+    priority_long_context_cache_write_input_12h_per_1m: float | None = None
+    flex_cache_write_input_12h_per_1m: float | None = None
+    flex_long_context_cache_write_input_12h_per_1m: float | None = None
+    batch_input_per_1m: float | None = None
+    batch_output_per_1m: float | None = None
+    batch_cached_input_per_1m: float | None = None
+    batch_cache_write_input_per_1m: float | None = None
+    batch_cache_write_input_12h_per_1m: float | None = None
+    batch_long_context_input_per_1m: float | None = None
+    batch_long_context_output_per_1m: float | None = None
+    batch_long_context_cached_input_per_1m: float | None = None
+    batch_long_context_cache_write_input_per_1m: float | None = None
+    batch_long_context_cache_write_input_12h_per_1m: float | None = None
 
 
 # Anthropic bills a prompt-cache write at 2x the base input rate for the 1-hour
@@ -272,6 +288,79 @@ DEFAULT_PRICING_MODELS: dict[str, ModelPrice] = {
         long_context_cache_write_input_per_1m=5,
         long_context_cached_input_per_1m=0.20,
         long_context_output_per_1m=15.0,
+    ),
+    # GPT-6.2 list rates, USD per 1M tokens, checked 2026-11-17:
+    # https://developers.openai.com/api/docs/pricing
+    # https://developers.openai.com/api/docs/models/gpt-6.2-sol
+    # https://developers.openai.com/api/docs/models/gpt-6.2-astra
+    # The default write retains for 30 minutes, not Claude's 1-hour TTL.
+    # >272K input doubles input/cache rates and multiplies output by 1.5.
+    # Fast is 2x and Batch is 0.5x at either context length. No Flex rate is listed.
+    "gpt-6.2-sol": ModelPrice(
+        input_per_1m=2.0,
+        cached_input_per_1m=0.10,
+        cache_write_input_per_1m=2.5,
+        cache_write_input_12h_per_1m=5.0,
+        output_per_1m=10.0,
+        long_context_threshold_tokens=272_000,
+        long_context_input_per_1m=4.0,
+        long_context_cached_input_per_1m=0.20,
+        long_context_cache_write_input_per_1m=5.0,
+        long_context_cache_write_input_12h_per_1m=10.0,
+        long_context_output_per_1m=15.0,
+        priority_input_per_1m=4.0,
+        priority_cached_input_per_1m=0.20,
+        priority_cache_write_input_per_1m=5.0,
+        priority_cache_write_input_12h_per_1m=10.0,
+        priority_output_per_1m=20.0,
+        priority_long_context_input_per_1m=8.0,
+        priority_long_context_cached_input_per_1m=0.40,
+        priority_long_context_cache_write_input_per_1m=10.0,
+        priority_long_context_cache_write_input_12h_per_1m=20.0,
+        priority_long_context_output_per_1m=30.0,
+        batch_input_per_1m=1.0,
+        batch_cached_input_per_1m=0.05,
+        batch_cache_write_input_per_1m=1.25,
+        batch_cache_write_input_12h_per_1m=2.5,
+        batch_output_per_1m=5.0,
+        batch_long_context_input_per_1m=2.0,
+        batch_long_context_cached_input_per_1m=0.10,
+        batch_long_context_cache_write_input_per_1m=2.5,
+        batch_long_context_cache_write_input_12h_per_1m=5.0,
+        batch_long_context_output_per_1m=7.5,
+    ),
+    "gpt-6.2-astra": ModelPrice(
+        input_per_1m=8.0,
+        cached_input_per_1m=0.40,
+        cache_write_input_per_1m=10.0,
+        cache_write_input_12h_per_1m=20.0,
+        output_per_1m=40.0,
+        long_context_threshold_tokens=272_000,
+        long_context_input_per_1m=16.0,
+        long_context_cached_input_per_1m=0.80,
+        long_context_cache_write_input_per_1m=20.0,
+        long_context_cache_write_input_12h_per_1m=40.0,
+        long_context_output_per_1m=60.0,
+        priority_input_per_1m=16.0,
+        priority_cached_input_per_1m=0.80,
+        priority_cache_write_input_per_1m=20.0,
+        priority_cache_write_input_12h_per_1m=40.0,
+        priority_output_per_1m=80.0,
+        priority_long_context_input_per_1m=32.0,
+        priority_long_context_cached_input_per_1m=1.60,
+        priority_long_context_cache_write_input_per_1m=40.0,
+        priority_long_context_cache_write_input_12h_per_1m=80.0,
+        priority_long_context_output_per_1m=120.0,
+        batch_input_per_1m=4.0,
+        batch_cached_input_per_1m=0.20,
+        batch_cache_write_input_per_1m=5.0,
+        batch_cache_write_input_12h_per_1m=10.0,
+        batch_output_per_1m=20.0,
+        batch_long_context_input_per_1m=8.0,
+        batch_long_context_cached_input_per_1m=0.40,
+        batch_long_context_cache_write_input_per_1m=10.0,
+        batch_long_context_cache_write_input_12h_per_1m=20.0,
+        batch_long_context_output_per_1m=30.0,
     ),
     # https://developers.openai.com/api/docs/pricing — Standard, USD per 1M tokens.
     "gpt-6.1-terra": ModelPrice(
@@ -859,6 +948,15 @@ def get_pricing_for_model(
     if is_known_free_model(normalized):
         return "free", FREE_MODEL_PRICE
 
+    versioned = resolve_versioned_model_id(normalized)
+    # Pricing alone can peel one logging prefix. The shared identity matcher
+    # stays prefix-neutral because authorization already resolved the wire id.
+    gpt62 = resolve_versioned_model_id(strip_known_sidecar_prefix(normalized))
+    # All supported 6.2 spellings share the pinned official entry, even if a
+    # refreshed catalog also includes a stale dated/provider-prefixed price.
+    if gpt62 is not None and gpt62.startswith("gpt-6.2-") and gpt62 in pricing:
+        return gpt62, pricing[gpt62]
+
     for key, value in pricing.items():
         if key.lower() == normalized:
             return key, value
@@ -873,7 +971,7 @@ def get_pricing_for_model(
     # Versioned identity, then a non-Claude alias. A Claude id matches a key
     # only as that exact string, or after one leading cc/, cp-, or cp_ prefix.
     # A longer, dotted, dated, or effort-suffixed id does not inherit a shorter key.
-    for alias in (resolve_versioned_model_id(normalized), resolve_model_alias(normalized, aliases)):
+    for alias in (versioned, resolve_model_alias(normalized, aliases)):
         if not alias or (alias == "gpt-5" and normalized.startswith("gpt-5.")):
             continue
         for key, value in pricing.items():
@@ -926,6 +1024,25 @@ def effective_rates(
     cached_rate = price.cached_input_per_1m if price.cached_input_per_1m is not None else input_rate
     output_rate = price.output_per_1m
 
+    if (
+        _normalize_service_tier(service_tier) == "batch"
+        and price.batch_input_per_1m is not None
+        and price.batch_output_per_1m is not None
+    ):
+        prefix = "batch_long_context_" if is_long_context else "batch_"
+        batch_input = getattr(price, prefix + "input_per_1m")
+        batch_output = getattr(price, prefix + "output_per_1m")
+        batch_cached = getattr(price, prefix + "cached_input_per_1m")
+        if batch_input is not None and batch_output is not None:
+            return batch_input, batch_cached if batch_cached is not None else batch_input, batch_output
+        return (
+            price.batch_input_per_1m,
+            price.batch_cached_input_per_1m
+            if price.batch_cached_input_per_1m is not None
+            else price.batch_input_per_1m,
+            price.batch_output_per_1m,
+        )
+
     if is_long_context:
         tier = "priority" if _uses_priority_tier(service_tier) else "flex" if _uses_flex_tier(service_tier) else None
         if tier is not None:
@@ -972,7 +1089,12 @@ def effective_rates(
 
 
 def effective_cache_write_rate(
-    usage: UsageTokens, price: ModelPrice, *, service_tier: str | None, input_rate: float
+    usage: UsageTokens,
+    price: ModelPrice,
+    *,
+    service_tier: str | None,
+    input_rate: float,
+    retention_12h: bool = False,
 ) -> float:
     """Write rate for the same context and service tier as ``effective_rates``."""
     is_long_context = (
@@ -980,7 +1102,15 @@ def effective_cache_write_rate(
         and price.long_context_threshold_tokens > 0
         and usage.input_tokens > price.long_context_threshold_tokens
     )
-    tier = "priority" if _uses_priority_tier(service_tier) else "flex" if _uses_flex_tier(service_tier) else None
+    tier = (
+        "priority"
+        if _uses_priority_tier(service_tier)
+        else "flex"
+        if _uses_flex_tier(service_tier)
+        else "batch"
+        if _normalize_service_tier(service_tier) == "batch"
+        else None
+    )
     if tier is not None and not (
         (getattr(price, f"{tier}_input_per_1m") is not None and getattr(price, f"{tier}_output_per_1m") is not None)
         or (
@@ -991,6 +1121,14 @@ def effective_cache_write_rate(
         or (tier == "priority" and price.priority_multiplier is not None)
     ):
         tier = None
+    if retention_12h:
+        prefix = f"{tier}_" if tier is not None else ""
+        if is_long_context:
+            prefix += "long_context_"
+        rate = getattr(price, prefix + "cache_write_input_12h_per_1m")
+        if rate is None:
+            raise ValueError("No published 12-hour cache-write rate for this context and service tier")
+        return rate
     if tier is not None:
         tier_has_long_rates = (
             getattr(price, f"{tier}_long_context_input_per_1m") is not None

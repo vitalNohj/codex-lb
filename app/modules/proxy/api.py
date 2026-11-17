@@ -148,7 +148,12 @@ from app.core.openai.images import (
     V1ImagesEditsForm,
     V1ImagesGenerationsRequest,
 )
-from app.core.openai.model_registry import UpstreamModel, get_model_registry, is_public_model
+from app.core.openai.model_registry import (
+    MODEL_SOURCE_KIND_SUBSCRIPTION,
+    UpstreamModel,
+    get_model_registry,
+    is_public_model,
+)
 from app.core.openai.models import (
     CompactResponsePayload,
     CompactResponseResult,
@@ -806,7 +811,17 @@ _HTTP_BRIDGE_STARTUP_ERROR_PROBE_SECONDS = 2.0
 _CAPACITY_STARTUP_SIGNAL_DISCOVERY_SECONDS = _HTTP_BRIDGE_STARTUP_ERROR_PROBE_SECONDS
 _CHAT_COMPLETIONS_STARTUP_ERROR_PROBE_SECONDS = 2.0
 _CURSOR_CHAT_COMPLETIONS_STARTUP_ERROR_PROBE_SECONDS = 15.0
+# openai/codex 6c0cee502d215e5df2dd9a303cf2e252229c9e12 declares an
+# 872K ceiling for both GPT-6.2 models. Live subscription probes on 2026-11-17
+# accepted exactly 872000 input tokens each; ~1M was rejected with
+# context_length_exceeded. Operator overrides still win, with the same clamp.
+_VERIFIED_SUBSCRIPTION_CONTEXT_WINDOWS: Final[dict[str, int]] = {
+    "gpt-6.2-sol": 872_000,
+    "gpt-6.2-astra": 872_000,
+}
 _V1_MAX_OUTPUT_TOKEN_OVERRIDES: Final[dict[str, int]] = {
+    "gpt-6.2-sol": 128_000,
+    "gpt-6.2-astra": 128_000,
     "gpt-6-astra": 128_000,
     "gpt-6-sol": 128_000,
     "gpt-6-luna": 128_000,
@@ -5528,7 +5543,7 @@ async def _effective_context_window_overrides() -> Mapping[str, int]:
     # M4 model catalogue: resolved once per catalog build, outside the per-model
     # loops. Dashboard rows (cached snapshot, settings-namespace invalidation)
     # win per slug over the deprecated CODEX_LB_MODEL_CONTEXT_WINDOW_OVERRIDES
-    # entry; a slug with neither has no override.
+    # entry; verified subscription defaults are applied in the shared resolver.
     dashboard = await get_model_context_window_overrides_cache().get()
     return effective_context_window_overrides(dashboard, get_settings().model_context_window_overrides)
 
@@ -5555,6 +5570,8 @@ def _resolved_context_window(model: UpstreamModel, overrides: Mapping[str, int])
     # every input-budget field all share this one value, so an override above the
     # backend ceiling can never split one model into two contradictory budgets.
     override = overrides.get(model.slug)
+    if override is None and model.source_kind == MODEL_SOURCE_KIND_SUBSCRIPTION:
+        override = _VERIFIED_SUBSCRIPTION_CONTEXT_WINDOWS.get(model.slug)
     if override is None:
         return model.context_window
     max_context_window = model.raw.get("max_context_window")

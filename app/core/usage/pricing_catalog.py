@@ -51,7 +51,15 @@ def _rates(data: dict[str, JsonValue], names: dict[str, str], scale: float = 1.0
 def _price(values: dict[str, float]) -> ModelPrice:
     if not {"input_per_1m", "output_per_1m"} <= values.keys():
         raise ValueError("Incomplete base prices")
-    for prefix in ("priority_", "flex_", "long_context_", "priority_long_context_", "flex_long_context_"):
+    for prefix in (
+        "priority_",
+        "flex_",
+        "batch_",
+        "long_context_",
+        "priority_long_context_",
+        "flex_long_context_",
+        "batch_long_context_",
+    ):
         group = {prefix + part + "_per_1m" for part in ("input", "output")}
         present = (group | {prefix + "cached_input_per_1m"}) & values.keys()
         if present and not group <= values.keys():
@@ -272,6 +280,11 @@ def get_active_prices() -> dict[str, ModelPrice]:
     global _prices
     if _prices is None:
         _prices = merge_catalogs(decode_snapshot(json.loads(BUNDLE_PATH.read_text())), DEFAULT_PRICING_MODELS)
+    # These official entries are the single source for both discovery and
+    # settlement. Do not let a stale bundled/live catalog drop their write,
+    # Batch, or long-context fields, or invent an unlisted Flex tier.
+    for model in ("gpt-6.2-sol", "gpt-6.2-astra"):
+        _prices[model] = DEFAULT_PRICING_MODELS[model]
     return _prices
 
 
