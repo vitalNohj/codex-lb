@@ -58,10 +58,13 @@ from app.core.clients.proxy import codex_control_request as core_codex_control_r
 from app.core.clients.proxy import compact_responses as core_compact_responses  # noqa: F401
 from app.core.clients.proxy import transcribe_audio as core_transcribe_audio  # noqa: F401
 from app.core.clients.proxy_websocket import (
+    UPSTREAM_WEBSOCKET_MESSAGE_TOO_BIG_CLOSE_CODE,
+    UPSTREAM_WEBSOCKET_PAYLOAD_TOO_LARGE_CODE,
     UpstreamWebSocket,
     UpstreamWebSocketTransportError,
     filter_inbound_websocket_headers,
     is_account_neutral_websocket_error_code,
+    upstream_websocket_payload_too_large_message,
 )
 from app.core.clock import Clock, Scheduler, clock_for, scheduler_for
 from app.core.errors import (
@@ -1293,7 +1296,9 @@ async def _process_upstream_websocket_transport_end(
     # already-sent response.create was accepted. Keep it account-neutral and
     # terminal: replay here could duplicate work, billing, or tool side effects.
     account_neutral = is_account_neutral_websocket_error_code(message_error_code)
-    if account_neutral:
+    # A local receive-limit close can occur after upstream starts work, even
+    # when no response events reached this relay. It is terminal, not replayable.
+    if account_neutral or message.close_code == UPSTREAM_WEBSOCKET_MESSAGE_TOO_BIG_CLOSE_CODE:
         if any(state.last_downstream_sequence_number is not None for state in reader_owned):
             replay_refusal_reasons.append("sequenced_downstream_frame")
     else:
@@ -1334,7 +1339,11 @@ async def _process_upstream_websocket_transport_end(
         pending_requests=reader_owned,
         pending_lock=anyio.Lock(),
         error_code=message_error_code or "stream_incomplete",
-        error_message=_upstream_websocket_disconnect_message(message),
+        error_message=(
+            upstream_websocket_payload_too_large_message()
+            if message_error_code == UPSTREAM_WEBSOCKET_PAYLOAD_TOO_LARGE_CODE
+            else _upstream_websocket_disconnect_message(message)
+        ),
         api_key=api_key,
         websocket=websocket,
         client_send_lock=client_send_lock,
@@ -7051,6 +7060,13 @@ class _WebSocketMixin:
             request_error_message = request_state.error_message_override or error_message
             request_error_type = request_state.error_type_override or "server_error"
             request_error_param = request_state.error_param_override
+            if request_error_code == UPSTREAM_WEBSOCKET_PAYLOAD_TOO_LARGE_CODE:
+                if request_state.error_http_status_override is None:
+                    request_state.error_http_status_override = 400
+                if request_state.error_type_override is None:
+                    request_error_type = "invalid_request_error"
+                if request_error_param is None:
+                    request_error_param = "input"
             (
                 request_error_code,
                 request_error_message,

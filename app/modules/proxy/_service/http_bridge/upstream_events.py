@@ -36,6 +36,7 @@ from app.core.clients.proxy_websocket import (
     UpstreamWebSocketMessage,
     UpstreamWebSocketTransportError,
     is_account_neutral_websocket_error_code,
+    upstream_websocket_payload_too_large_message,
 )
 from app.core.clock import REAL_CLOCK, REAL_SCHEDULER, Clock, Scheduler, clock_for, scheduler_for
 from app.core.errors import response_failed_event
@@ -1894,7 +1895,11 @@ class _HTTPBridgeUpstreamEventsMixin:
             response_events_seen if response_events_seen is not None else observed_response_events
         )
         close_classification = (
-            _classify_upstream_close(observed_close_code, response_events_seen=observed_response_events)
+            _classify_upstream_close(
+                observed_close_code,
+                response_events_seen=observed_response_events,
+                error_code=error_code,
+            )
             if observed_close_code is not None
             else None
         )
@@ -2465,25 +2470,28 @@ class _HTTPBridgeUpstreamEventsMixin:
                 _archive_http_bridge_upstream_message(session, message, archive_request_state)
                 session.last_upstream_close_generation += 1
                 session.last_upstream_close_code = message.close_code
-                retried = False
-                # Account-neutral transport failures do not prove that the
-                # upstream rejected response.create. The request may still be
-                # executing, so replay could duplicate work, billing, or tool
-                # side effects. Clean closes remain eligible for the bounded
-                # pre-created retry circuit maintained by the session.
-                account_neutral = is_account_neutral_websocket_error_code(message.error_code)
-                # Only a terminal transport message (close or error) may replay
-                # an accepted turn: a protocol-invalid binary frame did not end
-                # the socket, so it keeps the pre-created retry semantics only.
-                if not account_neutral and (message.kind in {"close", "error"} or not accepted_response_pending):
-                    retried = await self._retry_http_bridge_precreated_request(session)
-                if retried:
-                    continue
                 close_classification = (
-                    _classify_upstream_close(message.close_code, response_events_seen=response_events_seen)
+                    _classify_upstream_close(
+                        message.close_code,
+                        response_events_seen=response_events_seen,
+                        error_code=message.error_code,
+                    )
                     if message.close_code is not None
                     else None
                 )
+                # Do not replay a proven size rejection or an ambiguous size
+                # close. The latter can happen while the request is running.
+                # Other account-neutral transport failures also lack proof that
+                # the peer rejected the create. Keep the existing bounded retry
+                # rules for other closes and protocol-invalid binary frames.
+                account_neutral = is_account_neutral_websocket_error_code(message.error_code)
+                if (
+                    not account_neutral
+                    and close_classification != "ambiguous_size_limit"
+                    and (message.kind in {"close", "error"} or not accepted_response_pending)
+                    and await self._retry_http_bridge_precreated_request(session)
+                ):
+                    continue
                 # An abrupt drop with no close frame and no response events is
                 # weaker account-health evidence than a graceful pre-created
                 # close, which is already exempted below. Keep the individual
@@ -2513,7 +2521,11 @@ class _HTTPBridgeUpstreamEventsMixin:
                     await self._fail_http_bridge_reader_and_maybe_retire(
                         session,
                         error_code=message.error_code or "stream_incomplete",
-                        error_message=_upstream_websocket_disconnect_message(message),
+                        error_message=(
+                            upstream_websocket_payload_too_large_message()
+                            if close_classification == "payload_too_large"
+                            else _upstream_websocket_disconnect_message(message)
+                        ),
                         upstream_close_code=message.close_code,
                         response_events_seen=response_events_seen,
                         transport_classification=(

@@ -53102,12 +53102,24 @@ async def test_submit_http_bridge_network_send_failure_is_neutral_and_not_replay
 
 
 @pytest.mark.asyncio
-async def test_submit_http_bridge_marks_ambiguous_operation_before_releasing_owner(monkeypatch):
+@pytest.mark.parametrize(
+    ("send_error_code", "marked_unknown", "status", "public_error_code"),
+    [
+        ("proxy_network_unavailable", True, 502, "proxy_network_unavailable"),
+        ("proxy_network_unavailable", False, 502, "bridge_continuity_persistence_failed"),
+        ("payload_too_large", False, 400, "payload_too_large"),
+    ],
+)
+async def test_submit_http_bridge_marks_ambiguous_operation_before_releasing_owner(
+    monkeypatch, send_error_code, marked_unknown, status, public_error_code
+):
     service = proxy_service.ProxyService.__new__(proxy_service.ProxyService)
     events: list[str] = []
     service._durable_bridge = SimpleNamespace(
-        mark_operation_unknown=AsyncMock(side_effect=lambda **_kwargs: events.append("mark") or True),
+        lookup_retry_circuit=AsyncMock(return_value=None),
+        mark_operation_unknown=AsyncMock(side_effect=lambda **_kwargs: events.append("mark") or marked_unknown),
     )
+    monkeypatch.setattr(service, "_rotate_idle_http_bridge_upstream", AsyncMock())
     proxy_service._initialize_http_bridge_retry_circuit(service)
     request_state = proxy_service._WebSocketRequestState(
         request_id="req-submit-owner-fence-order",
@@ -53124,7 +53136,7 @@ async def test_submit_http_bridge_marks_ambiguous_operation_before_releasing_own
     )
     send_error = UpstreamWebSocketTransportError(
         "upstream websocket closed after dispatch",
-        error_code="proxy_network_unavailable",
+        error_code=send_error_code,
     )
     session = proxy_service._HTTPBridgeSession(
         key=proxy_service._HTTPBridgeSessionKey("session_header", "sid-owner-fence-order", None),
@@ -53157,7 +53169,7 @@ async def test_submit_http_bridge_marks_ambiguous_operation_before_releasing_own
     monkeypatch.setattr(service, "_cleanup_http_bridge_submit_interruption", cleanup)
     monkeypatch.setattr(service, "_fail_pending_websocket_requests", AsyncMock())
 
-    with pytest.raises(proxy_module.ProxyResponseError):
+    with pytest.raises(proxy_module.ProxyResponseError) as error:
         await service._submit_http_bridge_request(
             session,
             request_state=request_state,
@@ -53165,6 +53177,8 @@ async def test_submit_http_bridge_marks_ambiguous_operation_before_releasing_own
             queue_limit=1,
         )
 
+    assert error.value.status_code == status
+    assert _proxy_error_code(error.value) == public_error_code
     assert events == ["mark", "cleanup"]
     service._durable_bridge.mark_operation_unknown.assert_awaited_once()
 
