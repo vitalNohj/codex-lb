@@ -54,7 +54,10 @@ def test_apply_custom_alias_catalog_entry_patches_context_fields() -> None:
     assert patched["metadata"] == {
         "context_window": 1_000_000,
         "input_context_window": 1_000_000,
+        "catalog_provenance": {"context_window": "operator"},
     }
+    assert patched["catalog_provenance"] == {"context_window": "operator"}
+    assert "catalog_provenance" not in entry
 
 
 def test_apply_custom_alias_catalog_overrides_matches_case_insensitively() -> None:

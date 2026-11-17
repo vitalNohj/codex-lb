@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import math
 
+from app.core.models.catalog import resolve_model
 from app.core.openai.model_registry import (
     MODEL_SOURCE_KIND_OPENAI_COMPATIBLE,
     ReasoningLevel,
@@ -251,11 +252,12 @@ def source_model_price(source: ModelSource, model: str) -> ModelPrice | None:
         return None
     if entry.input_per_1m is None and entry.cached_input_per_1m is None and entry.output_per_1m is None:
         return None
-    return ModelPrice(
+    price = ModelPrice(
         input_per_1m=entry.input_per_1m or 0.0,
         cached_input_per_1m=entry.cached_input_per_1m,
         output_per_1m=entry.output_per_1m or 0.0,
     )
+    return resolve_model(model, provider="source", price=price, isolated_price=True).price
 
 
 def source_model_cost_usd(

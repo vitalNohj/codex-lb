@@ -179,6 +179,7 @@ class CodexModelEntry(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     slug: str
+    catalog_provenance: dict[str, str] = Field(default_factory=dict, exclude_if=lambda value: not value)
     pricing: ModelPricing | None = Field(default=None, exclude_if=lambda value: value is None)
     display_name: str
     description: str
@@ -204,6 +205,7 @@ class CodexModelEntry(BaseModel):
 class ModelMetadata(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    catalog_provenance: dict[str, str] = Field(default_factory=dict, exclude_if=lambda value: not value)
     display_name: str
     description: str
     context_window: int
@@ -233,6 +235,7 @@ class ModelListItem(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     id: str
+    catalog_provenance: dict[str, str] = Field(default_factory=dict, exclude_if=lambda value: not value)
     pricing: ModelPricing | None = Field(default=None, exclude_if=lambda value: value is None)
     object: str = "model"
     created: int

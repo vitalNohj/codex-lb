@@ -29,6 +29,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 
+from app.core.models.catalog import resolve_model
 from app.core.usage.external_pricing.catalogs import (
     OPENROUTER_REFERENCE_SOURCE,
     ORCAROUTER_REFERENCE_SOURCE,
@@ -410,6 +411,13 @@ async def calculated_cost_for_request(
     if not model_key:
         return None, None
 
+    local = resolve_model(model, provider=provider_key, isolated_price=True)
+    if local.price is not None:
+        return (
+            _cost_at_price(usage, local.price, service_tier, local.canonical_id, "local"),
+            ExternalPriceStatus.RESOLVED,
+        )
+
     record = await _read_record(provider_key, model_key)
     if isinstance(record, _StorageResult):
         return None, ExternalPriceStatus.PENDING
@@ -452,18 +460,42 @@ async def calculated_cost_for_request(
         return None, record.status
 
     assert record.price is not None
-    breakdown = calculate_cost_breakdown_from_usage(usage, record.price, service_tier=service_tier)
-    cost = breakdown.total_usd if breakdown is not None else None
-    if breakdown is None or cost is None or not math.isfinite(cost) or cost < 0:
-        return None, record.status
+    price = resolve_model(model, provider=provider_key, price=record.price, isolated_price=True).price
+    assert price is not None
     return (
-        CalculatedCost(
-            cost_usd=cost,
-            catalog_model=record.catalog_model or record.incoming_model,
-            catalog_source=record.catalog_source or "",
-            cache_write_input_cost_usd=breakdown.cache_write_input_usd,
+        _cost_at_price(
+            usage, price, service_tier, record.catalog_model or record.incoming_model, record.catalog_source or ""
         ),
         record.status,
+    )
+
+
+def _cost_at_price(
+    usage: UsageTokens | None,
+    price: ModelPrice,
+    service_tier: str | None,
+    catalog_model: str,
+    catalog_source: str,
+) -> CalculatedCost | None:
+    if usage is None or any(
+        not math.isfinite(value) or value < 0
+        for value in (
+            usage.input_tokens,
+            usage.output_tokens,
+            usage.cached_input_tokens,
+            usage.cache_write_input_tokens,
+        )
+    ):
+        return None
+    breakdown = calculate_cost_breakdown_from_usage(usage, price, service_tier=service_tier)
+    cost = breakdown.total_usd if breakdown is not None else None
+    if breakdown is None or cost is None or not math.isfinite(cost) or cost < 0:
+        return None
+    return CalculatedCost(
+        cost_usd=cost,
+        catalog_model=catalog_model,
+        catalog_source=catalog_source,
+        cache_write_input_cost_usd=breakdown.cache_write_input_usd,
     )
 
 
@@ -547,7 +579,12 @@ async def known_price_snapshot(
 
     def known_price(provider: str, model: str) -> ModelPrice | None:
         record = records.get(normalize_lookup_key(provider, model))
-        return record.price if record is not None and record.is_priced else None
+        return resolve_model(
+            model,
+            provider=provider,
+            price=record.price if record is not None and record.is_priced else None,
+            isolated_price=True,
+        ).price
 
     return known_price
 
@@ -560,6 +597,9 @@ async def _known_price(*, provider: str, model: str) -> ModelPrice | None:
     provider_key, model_key = normalize_lookup_key(provider, model)
     if not model_key:
         return None
+    local = resolve_model(model, provider=provider_key, isolated_price=True).price
+    if local is not None:
+        return local
     record = await _read_record(provider_key, model_key)
     if isinstance(record, _StorageResult):
         return None
@@ -568,9 +608,12 @@ async def _known_price(*, provider: str, model: str) -> ModelPrice | None:
             (provider_key, model_key),
             lambda: _run_lookup(provider_key, model_key, raw_incoming_model=model),
         )
-    if record is None or not record.is_priced:
-        return None
-    return record.price
+    return resolve_model(
+        model,
+        provider=provider_key,
+        price=record.price if record is not None and record.is_priced else None,
+        isolated_price=True,
+    ).price
 
 
 async def _read_record(provider_key: str, model_key: str) -> PriceRecord | None | _StorageResult:

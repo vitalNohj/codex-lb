@@ -19,15 +19,16 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
+from app.core.models.catalog import resolve_model
 from app.core.usage.external_pricing import (
     is_external_priced_provider,
     known_price_snapshot,
     model_has_billable_price,
 )
 from app.core.usage.external_pricing.providers import PROVIDER_CLIPROXY
-from app.core.usage.pricing import get_pricing_for_model, model_price_is_billable
+from app.core.usage.pricing import model_price_is_billable
 from app.db.models import ModelSource
 from app.modules.api_keys.service import ModelPricedCheck, static_model_is_priced
 from app.modules.model_sources.catalog import source_model_has_price, source_model_price
@@ -147,6 +148,7 @@ def _listed_targets(
 class ListedModelPrices:
     billable: frozenset[str]
     pricing: Mapping[str, ModelPricing]
+    provenance: Mapping[str, dict[str, str]] = field(default_factory=dict)
 
 
 async def listed_model_prices(
@@ -188,7 +190,7 @@ async def listed_model_prices(
         logger.warning("shared_api_key_listing_price_check_failed count=%d", len(models), exc_info=True)
         return ListedModelPrices(billable=frozenset(), pricing={})
 
-    def target_price(target: _ListedTarget) -> tuple[ModelPricing | None, bool]:
+    def target_price(target: _ListedTarget) -> tuple[ModelPricing | None, bool, dict[str, str]]:
         source_rates = target.pricing_provider is None and target.source is not None
         if target.pricing_provider is not None and is_external_priced_provider(target.pricing_provider):
             price = external_prices(target.pricing_provider, target.model) if external_prices is not None else None
@@ -197,26 +199,36 @@ async def listed_model_prices(
         else:
             # Ollama and OmniRoute settle from the static table, as does every
             # model no sidecar or source owns.
-            resolved = get_pricing_for_model(target.model)
-            price = resolved[1] if resolved is not None else None
+            price = None
+        isolated = source_rates or is_external_priced_provider(target.pricing_provider)
+        record = resolve_model(
+            target.model,
+            provider="source" if source_rates else target.pricing_provider,
+            price=price,
+            isolated_price=isolated,
+        )
+        price = record.price
         return (
             model_pricing(price, source_rates=source_rates) if price is not None else None,
             model_price_is_billable(price),
+            {key: value for key, value in record.provenance.items() if key.startswith("price.")},
         )
 
     priced: set[str] = set()
     prices: dict[str, ModelPricing] = {}
+    provenance: dict[str, dict[str, str]] = {}
     for model, targets in targets_by_model.items():
         try:
             resolved = [target_price(target) for target in targets]
-            if resolved and all(billable for _, billable in resolved):
+            if resolved and all(billable for _, billable, _ in resolved):
                 priced.add(model)
             first = resolved[0][0] if resolved else None
-            if first is not None and all(price == first for price, _ in resolved):
+            if first is not None and all(price == first for price, _, _ in resolved):
                 prices[model] = first
+                provenance[model] = resolved[0][2]
         except Exception:
             logger.warning("shared_api_key_listing_price_check_failed model=%s", model, exc_info=True)
-    return ListedModelPrices(billable=frozenset(priced), pricing=prices)
+    return ListedModelPrices(billable=frozenset(priced), pricing=prices, provenance=provenance)
 
 
 async def priced_listed_models(

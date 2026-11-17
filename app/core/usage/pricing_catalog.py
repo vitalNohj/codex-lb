@@ -11,6 +11,7 @@ from pathlib import Path
 
 import aiohttp
 
+from app.core.models.types import ModelPrice
 from app.core.types import JsonValue
 from app.core.usage.model_capabilities import (
     ModelCapabilities,
@@ -18,8 +19,6 @@ from app.core.usage.model_capabilities import (
     merge_model_capabilities,
     parse_models_dev_capabilities,
 )
-from app.core.usage.model_ids import strip_known_sidecar_prefix
-from app.core.usage.pricing import DEFAULT_PRICING_MODELS, ModelPrice
 
 logger = logging.getLogger(__name__)
 MODELS_DEV_URL = "https://models.dev/api.json"
@@ -98,7 +97,7 @@ def parse_models_dev(payload: JsonValue) -> dict[str, ModelPrice]:
             for raw_mode in modes.values():
                 mode = _object(raw_mode)
                 tier_name = _object(_object(mode.get("provider")).get("body")).get("service_tier")
-                if tier_name in ("priority", "flex"):
+                if tier_name in ("priority", "flex", "batch"):
                     values.update(_rates(_object(mode.get("cost")), {k: f"{tier_name}_{v}" for k, v in names.items()}))
             result[model.lower()] = _price(values)
         except (ValueError, OverflowError):
@@ -123,7 +122,7 @@ def parse_litellm(payload: JsonValue) -> dict[str, ModelPrice]:
             continue
         try:
             values = _rates(entry, base, 1_000_000)
-            for tier in ("priority", "flex"):
+            for tier in ("priority", "flex", "batch"):
                 values.update(_rates(entry, {f"{k}_{tier}": f"{tier}_{v}" for k, v in base.items()}, 1_000_000))
             thresholds = {
                 int(key.split("_above_")[1].split("k_tokens")[0]) * 1000
@@ -135,7 +134,7 @@ def parse_litellm(payload: JsonValue) -> dict[str, ModelPrice]:
             if thresholds:
                 threshold = thresholds.pop()
                 values["long_context_threshold_tokens"] = float(threshold)
-                for tier in ("", "priority", "flex"):
+                for tier in ("", "priority", "flex", "batch"):
                     suffix = f"_above_{threshold // 1000}k_tokens" + (f"_{tier}" if tier else "")
                     prefix = f"{tier}_long_context_" if tier else "long_context_"
                     values.update(_rates(entry, {k + suffix: prefix + v for k, v in base.items()}, 1_000_000))
@@ -267,8 +266,13 @@ def get_active_model_capabilities() -> dict[str, ModelCapabilities]:
 
 
 def get_model_capabilities(model: str) -> ModelCapabilities | None:
-    """One routing prefix, then an exact id; never a pricing/family alias."""
-    return get_active_model_capabilities().get(strip_known_sidecar_prefix(model.strip()))
+    """Compatibility facade: capabilities and billing share model resolution."""
+    from app.core.models.catalog import resolve_model
+
+    record = resolve_model(model)
+    if record.context_window is None and record.max_output_tokens is None and record.input_modalities is None:
+        return None
+    return ModelCapabilities(record.input_modalities, record.context_window, record.max_output_tokens)
 
 
 def install_model_capabilities(capabilities: dict[str, ModelCapabilities]) -> None:
@@ -276,18 +280,20 @@ def install_model_capabilities(capabilities: dict[str, ModelCapabilities]) -> No
     _capabilities = merge_model_capabilities(capabilities, get_active_model_capabilities())
 
 
-def get_active_prices() -> dict[str, ModelPrice]:
+def get_source_prices() -> dict[str, ModelPrice]:
+    """The external layer only; the unified catalog owns local precedence."""
     global _prices
     if _prices is None:
-        _prices = merge_catalogs(decode_snapshot(json.loads(BUNDLE_PATH.read_text())), DEFAULT_PRICING_MODELS)
-    # These official entries are the single source for both discovery and
-    # settlement. Do not let a stale bundled/live catalog drop their write,
-    # Batch, or long-context fields, or invent an unlisted Flex tier.
-    for model in ("gpt-6.2-sol", "gpt-6.2-astra"):
-        _prices[model] = DEFAULT_PRICING_MODELS[model]
+        _prices = decode_snapshot(json.loads(BUNDLE_PATH.read_text()))
     return _prices
+
+
+def get_active_prices() -> dict[str, ModelPrice]:
+    from app.core.models.catalog import catalog_prices
+
+    return catalog_prices()
 
 
 def install_prices(prices: dict[str, ModelPrice]) -> None:
     global _prices
-    _prices = merge_catalogs(prices, get_active_prices())
+    _prices = merge_catalogs(prices, get_source_prices())

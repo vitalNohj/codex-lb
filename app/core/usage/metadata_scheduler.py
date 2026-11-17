@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from app.core.clients.codex_version import get_codex_version_cache
 from app.core.config.settings import get_settings
 from app.core.metadata_store import write_metadata
+from app.core.models.router import refresh_router_models, restore_router_models
 from app.core.scheduling.leader_election_handle import get_leader_election
 from app.core.usage.model_capabilities import decode_model_capabilities, merge_model_capabilities
 from app.core.usage.pricing_catalog import (
@@ -21,6 +22,7 @@ from app.core.usage.pricing_catalog import (
     fetch_catalogs,
     get_active_model_capabilities,
     get_active_prices,
+    get_source_prices,
     install_model_capabilities,
     install_prices,
     merge_catalogs,
@@ -60,6 +62,7 @@ class MetadataRefreshScheduler:
         except (OSError, ValueError):
             get_active_prices()
             get_active_model_capabilities()
+        await asyncio.to_thread(restore_router_models, get_settings().data_dir / "cliproxy-models-cache.json")
         await get_codex_version_cache().restore(get_settings().data_dir / "codex-version-cache.json")
         self._stop.clear()
         self._task = asyncio.create_task(self._run_loop())
@@ -75,6 +78,11 @@ class MetadataRefreshScheduler:
     async def _refresh(self) -> None:
         await get_codex_version_cache().get_version()
         try:
+            await refresh_router_models(get_settings().data_dir / "cliproxy-models-cache.json")
+        except Exception:
+            # A metadata source cannot stop startup or the other refreshes.
+            logger.warning("CLIProxyAPI model refresh failed; retaining last-good catalog", exc_info=True)
+        try:
             metadata = await fetch_catalogs()
             previous = get_active_prices()
             install_prices(metadata.prices)
@@ -85,7 +93,7 @@ class MetadataRefreshScheduler:
             await asyncio.to_thread(
                 write_metadata,
                 get_settings().data_dir / "pricing-cache.json",
-                encode_snapshot(get_active_prices(), capabilities=get_active_model_capabilities()),
+                encode_snapshot(get_source_prices(), capabilities=get_active_model_capabilities()),
             )
             logger.info(
                 "Refreshed pricing metadata: prices=%d capabilities=%d",
