@@ -34,9 +34,13 @@ _KNOWN_SIDECAR_PREFIXES = ("cc/", "cp-", "cp_")
 
 
 def resolve_versioned_model_id(model: str) -> str | None:
-    """Recognize supported native versions without swallowing other ids."""
+    """Recognize native versions without removing a sidecar routing prefix.
+
+    Authorization calls this after dispatch has resolved the wire model. A
+    remaining routing prefix belongs to that id and must not be removed again.
+    """
     text = model.strip()
-    gpt62 = _GPT62_NATIVE_ID.fullmatch(strip_known_sidecar_prefix(text))
+    gpt62 = _GPT62_NATIVE_ID.fullmatch(text)
     if gpt62 is not None:
         return f"gpt-6.2-{gpt62.group(1).lower()}"
     if _GPT61_SOL_ID.fullmatch(text) is not None:

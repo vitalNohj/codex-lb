@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 
+from app.core.clients.claude_sidecar import SidecarPrefix
+from app.core.exceptions import ProxyModelNotAllowed
 from app.core.usage import pricing_catalog
 from app.core.usage.logs import calculated_cost_from_log
 from app.core.usage.model_ids import resolve_versioned_model_id
@@ -17,6 +20,8 @@ from app.core.usage.pricing import (
     get_pricing_for_model,
 )
 from app.modules.proxy.model_pricing import model_pricing
+from app.modules.proxy.request_policy import validate_model_access
+from app.modules.proxy.sidecar_routing import SidecarRoutingEntry, resolve_sidecar_route
 
 pytestmark = pytest.mark.unit
 
@@ -89,7 +94,7 @@ def test_gpt62_rates_have_one_authority_even_after_catalog_refresh(monkeypatch, 
 def test_gpt62_names_resolve_only_to_their_own_price(family, prefix, suffix):
     canonical = f"gpt-6.2-{family}"
     requested = (prefix + canonical + suffix).upper()
-    assert resolve_versioned_model_id(requested) == canonical
+    assert resolve_versioned_model_id(requested) == (canonical if prefix in ("", "codex/", "openai/") else None)
     resolved = get_pricing_for_model(requested)
     assert resolved is not None
     assert resolved[0] == canonical
@@ -114,3 +119,27 @@ def test_gpt62_names_resolve_only_to_their_own_price(family, prefix, suffix):
 def test_gpt62_names_do_not_swallow_other_models(requested):
     assert resolve_versioned_model_id(requested) is None
     assert get_pricing_for_model(requested, DEFAULT_PRICING_MODELS) is None
+
+
+@pytest.mark.parametrize("family", ["sol", "astra"])
+@pytest.mark.parametrize("outer", ["cc/", "cp-", "cp_"])
+@pytest.mark.parametrize("inner", ["cc/", "cp-", "cp_"])
+def test_gpt62_authorization_never_strips_a_second_routing_prefix(family, outer, inner):
+    canonical = f"gpt-6.2-{family}"
+    entries = (
+        SidecarRoutingEntry(
+            provider="claude",
+            prefixes=tuple(SidecarPrefix(prefix=p, strip=True) for p in ("cc/", "cp-", "cp_")),
+            full_models=(canonical,),
+        ),
+    )
+    key = SimpleNamespace(allowed_models=[canonical], allowed_reasoning_efforts=None)
+    # Both the grant and the legitimate prefix route to the same provider and
+    # the same wire model. A second prefix is part of a different wire id.
+    validate_model_access(cast(Any, key), outer + canonical, routing_entries=entries)
+    requested = outer + inner + canonical
+    route = resolve_sidecar_route(requested, entries)
+    assert route is not None
+    assert route.wire_model == inner + canonical
+    with pytest.raises(ProxyModelNotAllowed):
+        validate_model_access(cast(Any, key), requested, routing_entries=entries)

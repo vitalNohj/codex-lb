@@ -949,10 +949,13 @@ def get_pricing_for_model(
         return "free", FREE_MODEL_PRICE
 
     versioned = resolve_versioned_model_id(normalized)
+    # Pricing alone can peel one logging prefix. The shared identity matcher
+    # stays prefix-neutral because authorization already resolved the wire id.
+    gpt62 = resolve_versioned_model_id(strip_known_sidecar_prefix(normalized))
     # All supported 6.2 spellings share the pinned official entry, even if a
     # refreshed catalog also includes a stale dated/provider-prefixed price.
-    if versioned is not None and versioned.startswith("gpt-6.2-") and versioned in pricing:
-        return versioned, pricing[versioned]
+    if gpt62 is not None and gpt62.startswith("gpt-6.2-") and gpt62 in pricing:
+        return gpt62, pricing[gpt62]
 
     for key, value in pricing.items():
         if key.lower() == normalized:
