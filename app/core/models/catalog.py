@@ -280,6 +280,16 @@ def resolve_model(
         ):
             output = entry.fallback_max_output_tokens
             provenance["max_output_tokens"] = "local:fallback"
+        if entry.respect_upstream_ceiling and upstream is not None:
+            upstream_ceiling = _positive_int(upstream.raw.get("max_context_window"))
+            live = snapshot is not None and upstream.slug in snapshot.models
+            if upstream_ceiling is not None and (live or upstream_ceiling > upstream.context_window):
+                if maximum is None or upstream_ceiling < maximum:
+                    maximum = upstream_ceiling
+                    provenance["max_context_window"] = "codex" if live else "local:bootstrap"
+                if context is not None and maximum is not None and context > maximum:
+                    context = maximum
+                    provenance["context_window"] = provenance["max_context_window"]
     if entry is not None and isolated_price and provider in entry.provider_prices:
         price = entry.provider_prices[provider]
         provenance = {key: value for key, value in provenance.items() if not key.startswith("price.")}

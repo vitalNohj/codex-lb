@@ -2439,7 +2439,8 @@ async def test_gpt62_catalog_windows_and_prices_share_settlement(async_client, m
         assert {"gpt-6.2-sol", "gpt-6.2-astra"} <= {entry["id"] for entry in body["data"]}
         for entry in body["data"]:
             if entry["id"] == "gpt-6.1-sol":
-                assert entry["context_length"] == 500_000  # No other model changes.
+                # The shared catalog also uses the verified 6.1 usable ceiling.
+                assert entry["context_length"] == 872_000
             if entry["id"] not in ("gpt-6.2-sol", "gpt-6.2-astra"):
                 continue
             assert entry["context_length"] == expected

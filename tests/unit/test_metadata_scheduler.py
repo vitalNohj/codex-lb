@@ -208,9 +208,21 @@ async def test_capabilities_obey_bundle_and_cache_freshness(setup, monkeypatch, 
 async def test_router_outage_does_not_stop_price_refresh_or_persist_local_overrides(setup, monkeypatch):
     monkeypatch.setattr(module, "refresh_router_models", AsyncMock(side_effect=OSError("offline")))
     monkeypatch.setattr(
-        module, "fetch_catalogs", AsyncMock(return_value=catalog.CatalogMetadata({"gpt-6-astra": ModelPrice(1, 2)}))
+        module,
+        "fetch_catalogs",
+        AsyncMock(
+            return_value=catalog.CatalogMetadata(
+                {
+                    "gpt-6-astra": ModelPrice(1, 2),
+                    "gpt-6.2-sol": ModelPrice(3, 4),
+                }
+            )
+        ),
     )
     scheduler = module.MetadataRefreshScheduler()
     await scheduler._refresh()
-    assert get_pricing_for_model("gpt-6-astra")[1] == DEFAULT_PRICING_MODELS["gpt-6-astra"]
-    assert json.loads((setup / "pricing-cache.json").read_text())["models"]["gpt-6-astra"]["input_per_1m"] == 1
+    assert get_pricing_for_model("gpt-6-astra")[1] == ModelPrice(1, 2)
+    assert get_pricing_for_model("gpt-6.2-sol")[1] == DEFAULT_PRICING_MODELS["gpt-6.2-sol"]
+    snapshot = json.loads((setup / "pricing-cache.json").read_text())["models"]
+    assert snapshot["gpt-6-astra"]["input_per_1m"] == 1
+    assert snapshot["gpt-6.2-sol"]["input_per_1m"] == 3

@@ -26,6 +26,7 @@ class LocalModel(BaseModel):
     prefer_canonical_price: bool = False
     provider: str | None = None
     capability_providers: tuple[str, ...] = ()
+    respect_upstream_ceiling: bool = False
     context_window: int | None = Field(default=None, strict=True, gt=0)
     max_context_window: int | None = Field(default=None, strict=True, gt=0)
     max_output_tokens: int | None = Field(default=None, strict=True, gt=0)

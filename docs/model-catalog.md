@@ -76,6 +76,8 @@ contains bootstrap presentation/entitlement metadata, not a second price table.
 Use `capability_providers` to restrict a capability correction to named serving
 integrations, for example `["subscription", "cliproxy"]`. An OpenAI API model
 served by another provider must not inherit a subscription-only input ceiling.
+`respect_upstream_ceiling` keeps a lower real account ceiling when a verified
+local default supplies a larger general window.
 Migrated `legacy_sidecar_bounds` apply only to CLIProxyAPI/native fallback paths;
 other providers keep their own published limits. Remove that legacy flag when
 replacing a fallback with an explicit correction. Restart the application after

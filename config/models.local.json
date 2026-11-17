@@ -472,6 +472,7 @@
       }
     },
     "gpt-6.2-sol": {
+      "respect_upstream_ceiling": true,
       "native_aliases": true,
       "native_suffixes": [
         "low",
@@ -526,6 +527,7 @@
       }
     },
     "gpt-6.2-astra": {
+      "respect_upstream_ceiling": true,
       "native_aliases": true,
       "native_suffixes": [
         "low",
@@ -580,6 +582,7 @@
       }
     },
     "gpt-6.1-sol": {
+      "respect_upstream_ceiling": true,
       "capability_providers": [
         "subscription",
         "cliproxy"

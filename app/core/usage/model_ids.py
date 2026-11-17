@@ -1,8 +1,9 @@
 """Bounded model identities shared by native pricing and sidecar routing.
 
 Routing prefixes are not model ids. ``cc/``, ``cp-``, and ``cp_`` peel off so
-a logged client id can find the same price key the router forwarded. A dotted
-spelling, a release date, and an effort suffix are different ids. Do not add
+a logged client id can find the same price key the router forwarded. Dotted
+spellings, release dates, and effort suffixes remain distinct Claude ids.
+Configured native spellings are bounded by the model catalog. Do not add
 substring globs for Claude model families. External integration prices remain
 owned by external_pricing catalogs.
 """
