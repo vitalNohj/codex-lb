@@ -11,6 +11,7 @@ from typing import Any, cast
 
 import anyio
 
+from app.core.balancer.logic import freeze_reset_deadline
 from app.core.balancer.types import UpstreamError
 from app.core.clients.files import create_file as core_create_file  # noqa: F401
 from app.core.clients.files import finalize_file as core_finalize_file  # noqa: F401
@@ -704,6 +705,7 @@ def _retire_websocket_continuity_anchor(continuity_state: _WebSocketContinuitySt
     continuity_state.last_completed_response_id = None
     continuity_state.last_completed_input_count = 0
     continuity_state.last_completed_input_prefix_fingerprint = None
+    continuity_state.last_completed_input_covers_context = False
     continuity_state.last_pending_function_call_ids = []
     continuity_state.last_pending_tool_call_types = {}
 
@@ -789,20 +791,31 @@ def _websocket_client_previous_response_full_resend_is_retry_safe(
         return False
     if not _websocket_input_items_are_self_contained_fresh_replay(input_items):
         return False
+    # Only a client input proven to restate the stored context of the anchor
+    # this connection completed may be replayed without the anchor. Codex sends
+    # ``previous_response_id`` with only the incremental delta, so an anchor the
+    # proxy does not know (after an interrupted response, a prewarm or a new
+    # downstream connection) leaves a delta indistinguishable from a full
+    # history; replaying it anchorless would silently drop earlier context.
+    # Failing closed surfaces ``previous_response_not_found`` to the client,
+    # which retries with its complete history.
     if (
-        continuity_state is not None
-        and continuity_state.last_completed_response_id == previous_response_id
-        and (
-            continuity_state.last_completed_input_count > 0
-            or continuity_state.last_completed_input_prefix_fingerprint is not None
+        continuity_state is None
+        or continuity_state.last_completed_response_id != previous_response_id
+        # A completion recorded from a client-anchored delta stores only that
+        # delta, which does not restate the anchor's earlier context.
+        or not continuity_state.last_completed_input_covers_context
+        or (
+            continuity_state.last_completed_input_count <= 0
+            and continuity_state.last_completed_input_prefix_fingerprint is None
         )
     ):
-        return _facade()._input_prefix_matches_stored_context(
-            input_value,
-            stored_count=continuity_state.last_completed_input_count,
-            stored_fingerprint=continuity_state.last_completed_input_prefix_fingerprint,
-        )
-    return True
+        return False
+    return _facade()._input_prefix_matches_stored_context(
+        input_value,
+        stored_count=continuity_state.last_completed_input_count,
+        stored_fingerprint=continuity_state.last_completed_input_prefix_fingerprint,
+    )
 
 
 def _record_websocket_continuity_completion(
@@ -823,6 +836,7 @@ def _record_websocket_continuity_completion(
     # is cleared rather than left stale when the completed turn cannot
     # provide one.
     continuity_state.last_completed_response_id = response_id
+    continuity_state.last_completed_input_covers_context = request_state.input_covers_anchor_context
     if request_state.input_item_count > 0 and request_state.input_full_fingerprint is not None:
         continuity_state.last_completed_input_count = request_state.input_item_count
         continuity_state.last_completed_input_prefix_fingerprint = request_state.input_full_fingerprint
@@ -970,6 +984,31 @@ def _websocket_event_error_message(event_type: str | None, payload: dict[str, Js
         return None
     stripped = message_value.strip()
     return stripped or None
+
+
+def _websocket_event_health_error(
+    event_type: str | None,
+    payload: dict[str, JsonValue] | None,
+    message: str | None,
+    now: float,
+) -> UpstreamError:
+    # Normalize an upstream error frame into an account-health penalty payload
+    # anchored at the observation time now. The deferred keyed-health path
+    # applies the penalty only after reservation settlement, so the payload must
+    # carry an absolute deadline: a relative resets_in_seconds would be
+    # re-anchored at application time and stretch the hold by the whole
+    # settlement delay, and a stale relative hint could resurrect an elapsed
+    # hold. freeze_reset_deadline owns the metadata rules (strict raw absolute,
+    # relative frozen and clamped into the horizon); invalid metadata leaves
+    # the message-only payload, which falls back to the balancer
+    # no-metadata cooldown.
+    error: UpstreamError = {"message": message or "Upstream error"}
+    details = _websocket_event_error_payload(event_type, payload)
+    if isinstance(details, dict):
+        deadline = freeze_reset_deadline(cast(UpstreamError, details), now=now)
+        if deadline is not None:
+            error["resets_at"] = deadline
+    return error
 
 
 def _websocket_precreated_retry_error_code(
