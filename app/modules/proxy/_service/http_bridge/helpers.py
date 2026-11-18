@@ -207,6 +207,8 @@ from app.modules.proxy.ring_membership import (
     RingMembershipService,
 )
 from app.modules.proxy.selection_errors import (
+    CONTINUITY_OWNER_HOLD_RETRY_AFTER_SECONDS,
+    USAGE_LIMIT_REACHED,
     previous_response_owner_unavailable_error,
     selection_failure_response,
 )
@@ -3453,11 +3455,49 @@ def _http_bridge_previous_response_owner_unavailable_error(
     )
 
 
+_HTTP_BRIDGE_OWNER_CAPACITY_LIMITED_MESSAGE: Final = (
+    "The account that owns this conversation hit its rate or usage limit. Retry after the reset, "
+    "or resend the full conversation without previous_response_id to continue on another account."
+)
+
+
+def _http_bridge_owner_capacity_limited_error(selection: Any) -> ProxyResponseError | None:
+    """The honest error for a required owner that is out of rate or quota capacity.
+
+    The owner is not overloaded: it cannot serve until its window resets,
+    which can take hours. Say so, and give the reset as the retry hint, so a
+    client neither retries a 502 as an overload nor gives up for good.
+    ``None`` when the selection failed for another reason.
+    """
+    error_code = getattr(selection, "error_code", None)
+    error_message = getattr(selection, "error_message", None)
+    if error_code != USAGE_LIMIT_REACHED and not (
+        isinstance(error_message, str) and error_message.startswith("Rate limit exceeded")
+    ):
+        return None
+    now = int(time.time())
+    resets_at = getattr(selection, "resets_at", None)
+    if not isinstance(resets_at, int | float) or isinstance(resets_at, bool) or resets_at <= now:
+        resets_at = now + CONTINUITY_OWNER_HOLD_RETRY_AFTER_SECONDS
+    return ProxyResponseError(
+        503,
+        openai_error(
+            "previous_response_owner_unavailable",
+            _HTTP_BRIDGE_OWNER_CAPACITY_LIMITED_MESSAGE,
+            error_type="server_error",
+            resets_at=int(resets_at),
+        ),
+    )
+
+
 def _http_bridge_reconnect_selection_failure(
     selection: Any,
     required_preferred_account_id: str | None,
 ) -> ProxyResponseError:
     if required_preferred_account_id is not None:
+        capacity_error = _http_bridge_owner_capacity_limited_error(selection)
+        if capacity_error is not None:
+            return capacity_error
         return _http_bridge_previous_response_owner_unavailable_error(
             hold_expired=bool(getattr(selection, "owner_hold_expired", False)),
         )
@@ -3558,15 +3598,19 @@ def _http_bridge_error_is_previous_response_not_found(exc: ProxyResponseError) -
 
 
 def _http_bridge_is_previous_response_owner_unavailable(exc: ProxyResponseError) -> bool:
-    if exc.status_code != 502:
-        return False
     payload = exc.payload
     if not isinstance(payload, dict):
         return False
     error = payload.get("error")
     if not isinstance(error, dict):
         return False
-    return error.get("code") == "previous_response_owner_unavailable"
+    if error.get("code") != "previous_response_owner_unavailable":
+        return False
+    if exc.status_code == 502:
+        return True
+    # The capacity-limited owner error is a retryable 503, but it is the same
+    # owner outage: every owner-recovery path must still see it.
+    return exc.status_code == 503 and error.get("message") == _HTTP_BRIDGE_OWNER_CAPACITY_LIMITED_MESSAGE
 
 
 def _http_bridge_should_attempt_soft_affinity_reroute(

@@ -9664,6 +9664,175 @@ async def test_backend_responses_verified_full_resend_fails_over_to_new_account_
     assert degraded_reasons == []
 
 
+class _UsageLimitAfterFirstTurnUpstreamWebSocket(_FakeBridgeUpstreamWebSocket):
+    """Serves the first turn, then rejects later turns as the account's spent 5h window does."""
+
+    async def send_text(self, text: str) -> None:
+        if not self.sent_text:
+            await super().send_text(text)
+            return
+        self.sent_text.append(text)
+        await self._messages.put(
+            _FakeUpstreamMessage(
+                "text",
+                text=json.dumps(
+                    {
+                        "type": "response.failed",
+                        "response": {
+                            "object": "response",
+                            "status": "failed",
+                            "id": "ws_usage_limit_owner",
+                            "error": {
+                                "message": "The usage limit has been reached",
+                                "type": "usage_limit_reached",
+                                "code": "usage_limit_reached",
+                                "plan_type": "plus",
+                                "resets_in_seconds": 3180,
+                            },
+                        },
+                    },
+                    separators=(",", ":"),
+                ),
+            )
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [True, False], ids=["stream", "non_stream"])
+async def test_v1_responses_http_bridge_full_resend_moves_off_usage_limited_session_owner(
+    async_client, monkeypatch, stream
+):
+    """A Pi-style session (``session-id`` header, full input, no anchor) whose
+    owner hits its usage limit mid-conversation must continue on another account.
+
+    Production evidence: the owner's 5h window filled up, every later turn got
+    ``usage_limit_reached`` on the owner, and the pre-created retry stayed
+    pinned to the owner, so each retry failed with a 502
+    ``previous_response_owner_unavailable`` for 53 minutes until the window
+    reset. The request carries the whole conversation, so replaying it on a
+    healthy account keeps the context and is safe.
+    """
+    _install_bridge_settings(monkeypatch, enabled=True)
+    owner_account_id = await _import_account(
+        async_client,
+        "acc_http_bridge_usage_limited_owner",
+        "http-bridge-usage-limited-owner@example.com",
+    )
+    alternate_account_id = await _import_account(
+        async_client,
+        "acc_http_bridge_usage_limited_alternate",
+        "http-bridge-usage-limited-alternate@example.com",
+    )
+    owner_account = await _get_account(owner_account_id)
+    alternate_account = await _get_account(alternate_account_id)
+    owner_chatgpt_account_id = cast(str, owner_account.chatgpt_account_id)
+    alternate_chatgpt_account_id = cast(str, alternate_account.chatgpt_account_id)
+    owner_upstream = _UsageLimitAfterFirstTurnUpstreamWebSocket("resp_usage_owner")
+    alternate_upstream = _FakeBridgeUpstreamWebSocket("resp_usage_alternate")
+    owner_limited = False
+    connected_account_ids: list[str] = []
+
+    async def fake_select_account_with_budget(self, deadline, **kwargs):
+        del self, deadline
+        preferred_account_id = cast(str | None, kwargs.get("preferred_account_id"))
+        excluded_account_ids = cast(set[str], kwargs.get("exclude_account_ids") or set())
+        fallback_enabled = bool(kwargs.get("fallback_on_preferred_account_unavailable", True))
+        owner_selectable = not owner_limited and owner_account.id not in excluded_account_ids
+        if preferred_account_id == owner_account.id and not fallback_enabled and not owner_selectable:
+            # What the production selector answered for the spent owner.
+            return AccountSelection(account=None, error_message="Rate limit exceeded. Try again in 0s", error_code=None)
+        if owner_selectable:
+            return AccountSelection(account=owner_account, error_message=None, error_code=None)
+        return AccountSelection(account=alternate_account, error_message=None, error_code=None)
+
+    async def fake_ensure_fresh_with_budget(self, target, *, force=False, timeout_seconds):
+        del self, force, timeout_seconds
+        return target
+
+    async def fake_connect_responses_websocket(
+        headers,
+        access_token,
+        account_id_header,
+        *,
+        base_url=None,
+        session=None,
+    ):
+        del headers, access_token, base_url, session
+        connected_account_ids.append(account_id_header)
+        if account_id_header == owner_chatgpt_account_id:
+            return owner_upstream
+        assert account_id_header == alternate_chatgpt_account_id
+        return alternate_upstream
+
+    async def fake_handle_stream_error(self, account, error, code):
+        nonlocal owner_limited
+        del self, error
+        if account.id == owner_account.id and code == "usage_limit_reached":
+            owner_limited = True
+
+    monkeypatch.setattr(proxy_module.ProxyService, "_select_account_with_budget", fake_select_account_with_budget)
+    monkeypatch.setattr(proxy_module.ProxyService, "_ensure_fresh_with_budget", fake_ensure_fresh_with_budget)
+    monkeypatch.setattr(proxy_module.ProxyService, "_handle_stream_error", fake_handle_stream_error)
+    monkeypatch.setattr(proxy_module, "connect_responses_websocket", fake_connect_responses_websocket)
+
+    session_headers = {
+        "session_id": "pi-session-usage-limited-owner",
+        "x-client-request-id": "pi-session-usage-limited-owner",
+    }
+    historical_input: list[dict[str, Any]] = [
+        {"role": "user", "content": [{"type": "input_text", "text": "first question"}]},
+    ]
+
+    async def send(input_items: list[dict[str, Any]]) -> dict[str, Any]:
+        body = {
+            "model": "gpt-5.1",
+            "instructions": "Return exactly OK.",
+            "input": input_items,
+            "prompt_cache_key": "pi-session-usage-limited-owner",
+            "store": False,
+            "reasoning": {"effort": "high", "summary": "auto"},
+            "include": ["reasoning.encrypted_content"],
+            "stream": stream,
+        }
+        if stream:
+            events = await _collect_sse_events(async_client, "/v1/responses", json_body=body, headers=session_headers)
+            assert events[-1]["type"] == "response.completed", events[-1]
+            return cast(dict[str, Any], events[-1]["response"])
+        response = await asyncio.wait_for(
+            async_client.post("/v1/responses", json=body, headers=session_headers),
+            timeout=_TEST_SYNC_TIMEOUT_SECONDS,
+        )
+        assert response.status_code == 200, response.text
+        return cast(dict[str, Any], response.json())
+
+    first = await send(historical_input)
+    assert first["id"] == "resp_usage_owner_1"
+
+    full_resend = [
+        *historical_input,
+        {
+            "type": "reasoning",
+            "id": "rs_usage_owner_1",
+            "summary": [],
+            "encrypted_content": "gAAAA-owner-encrypted-reasoning",
+        },
+        {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "OK"}]},
+        {"role": "user", "content": [{"type": "input_text", "text": "second question"}]},
+    ]
+    second = await send(full_resend)
+
+    assert second["id"] == "resp_usage_alternate_1"
+    assert connected_account_ids[0] == owner_chatgpt_account_id
+    assert connected_account_ids[-1] == alternate_chatgpt_account_id
+    assert len(owner_upstream.sent_text) == 2
+    assert len(alternate_upstream.sent_text) == 1
+    replay_payload = json.loads(alternate_upstream.sent_text[0])
+    assert "previous_response_id" not in replay_payload
+    # Every conversation item reaches the new account; only the owner's
+    # encrypted reasoning, which no other account can decrypt, is dropped.
+    assert replay_payload["input"] == [item for item in full_resend if item.get("type") != "reasoning"]
+
+
 @pytest.mark.asyncio
 async def test_backend_responses_http_bridge_real_selector_recovers_full_resend_without_degrading_pool(
     async_client, monkeypatch

@@ -251,6 +251,7 @@ from app.modules.proxy.load_balancer import (
     effective_account_concurrency_caps,
     effective_routing_tunables,
 )
+from app.modules.proxy.replay_safety import project_responses_payload_for_account_neutral_replay
 from app.modules.proxy.tool_call_dedupe import (
     dedupe_replayed_side_effect_input_items,
 )
@@ -661,6 +662,39 @@ def _request_kind_from_headers(headers: Mapping[str, str] | None) -> str:
 
 
 _GENERIC_PRECREATED_RETRY_ERROR_CODES = frozenset({"upstream_unavailable", "stream_incomplete"})
+# Upstream rejections that mean the account itself is out of capacity (a rate
+# or quota window), not that the service is overloaded. The owner stays out
+# until its window resets, so an owner-bound retry cannot succeed sooner.
+_OWNER_CAPACITY_EXHAUSTED_ERROR_CODES = frozenset(
+    {
+        "insufficient_quota",
+        "quota_exceeded",
+        "rate_limit_exceeded",
+        "usage_limit_reached",
+        "usage_not_included",
+    }
+)
+
+
+def _http_bridge_owner_free_full_resend_text(request_text: str | None) -> str | None:
+    """Return the ``response.create`` text a different account can serve, or ``None``."""
+    if not isinstance(request_text, str):
+        return None
+    try:
+        payload = json.loads(request_text)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    event_type = payload.pop("type", None)
+    if event_type is not None and event_type != "response.create":
+        return None
+    projected = project_responses_payload_for_account_neutral_replay(cast(dict[str, JsonValue], payload))
+    if projected is None:
+        return None
+    if event_type is not None:
+        projected = {"type": event_type, **projected}
+    return json.dumps(projected, ensure_ascii=True, separators=(",", ":"))
 
 
 def _http_bridge_session_unowned_locked(
@@ -3840,7 +3874,12 @@ class _HTTPBridgeRequestSubmitMixin:
         retried = False
         try:
             retried = await self._attempt_http_bridge_precreated_request_replay(
-                session, request_state=request_state, restart_reader=restart_reader
+                session,
+                request_state=request_state,
+                restart_reader=restart_reader,
+                owner_capacity_exhausted=(
+                    triggering_error is not None and triggering_error[0] in _OWNER_CAPACITY_EXHAUSTED_ERROR_CODES
+                ),
             )
             return retried
         finally:
@@ -3863,6 +3902,7 @@ class _HTTPBridgeRequestSubmitMixin:
         *,
         request_state: _WebSocketRequestState | None = None,
         restart_reader: bool = False,
+        owner_capacity_exhausted: bool = False,
     ) -> bool:
         # The admitted body's admission gate can claim the half-open probe;
         # any exit that never advances a send attempt past its baseline must
@@ -3878,6 +3918,7 @@ class _HTTPBridgeRequestSubmitMixin:
                 restart_reader=restart_reader,
                 admission_claimed_leases=admission_claimed_leases,
                 retry_send_baselines=retry_send_baselines,
+                owner_capacity_exhausted=owner_capacity_exhausted,
             )
         finally:
             retry_claimed_half_open_until = admission_claimed_leases[-1] if admission_claimed_leases else 0.0
@@ -3903,6 +3944,7 @@ class _HTTPBridgeRequestSubmitMixin:
         restart_reader: bool = False,
         admission_claimed_leases: list[float] | None = None,
         retry_send_baselines: list[tuple[_WebSocketRequestState, int]] | None = None,
+        owner_capacity_exhausted: bool = False,
     ) -> bool:
         clock = clock_for(self)
         clean_close_retry_max_count = self._http_bridge_clean_close_retry_max_count()
@@ -4108,6 +4150,34 @@ class _HTTPBridgeRequestSubmitMixin:
                     if request_state.fresh_upstream_request_is_retry_safe and request_state.fresh_upstream_request_text
                     else request_state.request_text
                 )
+                if (
+                    owner_capacity_exhausted
+                    and request_state.operation_id is None
+                    and not request_state.file_required_preferred_account
+                    and not _websocket_request_text_is_account_neutral_fresh_replay(candidate_text)
+                ):
+                    # The owner cannot serve this turn until its quota
+                    # window resets, which can take hours. The client sent
+                    # the whole conversation without an anchor, so drop only
+                    # the owner's encrypted reasoning and item ids and let a
+                    # healthy account answer with the full context instead
+                    # of failing every retry until the reset.
+                    projected_text = _http_bridge_owner_free_full_resend_text(candidate_text)
+                    if projected_text is not None:
+                        request_state.fresh_upstream_request_is_retry_safe = False
+                        request_state.request_text = projected_text
+                        candidate_text = projected_text
+                        _log_http_bridge_event(
+                            "owner_capacity_full_resend_projected",
+                            session.key,
+                            account_id=session.account.id,
+                            model=session.request_model,
+                            detail="outcome=replay_without_owner_reasoning",
+                            cache_key_family=session.key.affinity_kind,
+                            model_class=(
+                                _extract_model_class(session.request_model) if session.request_model else None
+                            ),
+                        )
                 # The send boundary decorates durable operations with
                 # codex_lb_operation_id after selection. Keep that operation
                 # identity on its owner unless a dedicated rebind path has
