@@ -211,6 +211,22 @@ class UpstreamWebSocketTransportError(RuntimeError):
         self.error_code = error_code
 
 
+UPSTREAM_WEBSOCKET_MESSAGE_TOO_BIG_CLOSE_CODE = 1009
+UPSTREAM_WEBSOCKET_PAYLOAD_TOO_LARGE_CODE = "payload_too_large"
+
+
+def upstream_websocket_payload_too_large_message() -> str:
+    return "Upstream websocket rejected a message (close code 1009); reduce the request size"
+
+
+def _is_peer_websocket_size_close(exc: ConnectionClosedError) -> bool:
+    return (
+        exc.rcvd is not None
+        and exc.rcvd.code == UPSTREAM_WEBSOCKET_MESSAGE_TOO_BIG_CLOSE_CODE
+        and (exc.sent is None or exc.rcvd_then_sent is True)
+    )
+
+
 def _websocket_transport_error_code(exc: BaseException, *, uses_proxy: bool) -> str:
     if _is_websocket_liveness_timeout(exc):
         return UPSTREAM_WEBSOCKET_LIVENESS_TIMEOUT_CODE
@@ -224,11 +240,11 @@ def _websocket_transport_error_code(exc: BaseException, *, uses_proxy: bool) -> 
 def is_account_neutral_websocket_error_code(error_code: str | None) -> bool:
     """Return whether transport provenance rules out an account-health penalty."""
 
-    # These failures occur below the selected account's application protocol.
-    # They follow an ambiguous send, so relay owners must fail rather than
-    # replay while leaving the account eligible for unrelated requests. Keep
-    # the compatibility keepalive code here as long as adapters can emit it.
+    # These failures do not establish an account problem. Fail the turn
+    # without replaying it, even if the application has not acknowledged it.
+    # Keep the compatibility keepalive code as long as adapters can emit it.
     return error_code in {
+        UPSTREAM_WEBSOCKET_PAYLOAD_TOO_LARGE_CODE,
         PROCESS_NETWORK_UNAVAILABLE_CODE,
         UPSTREAM_WEBSOCKET_LIVENESS_TIMEOUT_CODE,
         "upstream_keepalive_timeout",
@@ -300,6 +316,12 @@ async def _raise_websocket_send_error(
     endpoint_id: str | None = None,
     uses_proxy: bool,
 ) -> NoReturn:
+    # A 1009 acknowledgement of our own close is not a rejection by the peer.
+    if isinstance(exc, ConnectionClosedError) and _is_peer_websocket_size_close(exc):
+        raise UpstreamWebSocketTransportError(
+            upstream_websocket_payload_too_large_message(),
+            error_code=UPSTREAM_WEBSOCKET_PAYLOAD_TOO_LARGE_CODE,
+        ) from None
     error_code = _websocket_transport_error_code(exc, uses_proxy=uses_proxy)
     await _rotate_after_websocket_network_failure(error_code)
     # A send exception does not prove whether the peer received the complete
@@ -359,11 +381,20 @@ class WebsocketsUpstreamWebSocket:
                 close_reason=_close_reason_from_exception(exc),
             )
         except ConnectionClosedError as exc:
+            peer_size_close = _is_peer_websocket_size_close(exc)
             if self._preserve_close_semantics and exc.rcvd is not None:
                 return UpstreamWebSocketMessage(
                     kind="close",
                     close_code=_close_code_from_exception(exc),
                     close_reason=_close_reason_from_exception(exc),
+                    error_code=UPSTREAM_WEBSOCKET_PAYLOAD_TOO_LARGE_CODE if peer_size_close else None,
+                )
+            if peer_size_close:
+                return UpstreamWebSocketMessage(
+                    kind="error",
+                    close_code=UPSTREAM_WEBSOCKET_MESSAGE_TOO_BIG_CLOSE_CODE,
+                    error=upstream_websocket_payload_too_large_message(),
+                    error_code=UPSTREAM_WEBSOCKET_PAYLOAD_TOO_LARGE_CODE,
                 )
             error_code = _websocket_transport_error_code(exc, uses_proxy=self._uses_proxy)
             await _rotate_after_websocket_network_failure(error_code)
@@ -378,7 +409,11 @@ class WebsocketsUpstreamWebSocket:
             # it to stream_incomplete while live relays preserve received closes.
             return UpstreamWebSocketMessage(
                 kind="error",
-                close_code=_close_code_from_exception(exc),
+                close_code=(
+                    UPSTREAM_WEBSOCKET_MESSAGE_TOO_BIG_CLOSE_CODE
+                    if exc.sent is not None and exc.sent.code == UPSTREAM_WEBSOCKET_MESSAGE_TOO_BIG_CLOSE_CODE
+                    else _close_code_from_exception(exc)
+                ),
                 error=(
                     "Upstream websocket closed without a complete handshake"
                     if self._preserve_close_semantics
@@ -549,6 +584,13 @@ class CodexUpstreamWebSocket:
                 kind="close",
                 close_code=_aiohttp_ws_close_code(self._websocket, msg),
                 close_reason=_aiohttp_ws_close_reason(msg),
+                # CLOSE is a received frame. CLOSED can instead carry a
+                # stored local receive-limit code; that is not peer evidence.
+                error_code=(
+                    UPSTREAM_WEBSOCKET_PAYLOAD_TOO_LARGE_CODE
+                    if msg.type == aiohttp.WSMsgType.CLOSE and msg.data == UPSTREAM_WEBSOCKET_MESSAGE_TOO_BIG_CLOSE_CODE
+                    else None
+                ),
             )
         if msg.type == aiohttp.WSMsgType.ERROR:
             exception = (
@@ -562,6 +604,12 @@ class CodexUpstreamWebSocket:
             await _rotate_after_websocket_network_failure(error_code)
             return UpstreamWebSocketMessage(
                 kind="error",
+                close_code=(
+                    UPSTREAM_WEBSOCKET_MESSAGE_TOO_BIG_CLOSE_CODE
+                    if isinstance(exception, aiohttp.WebSocketError)
+                    and exception.code == UPSTREAM_WEBSOCKET_MESSAGE_TOO_BIG_CLOSE_CODE
+                    else None
+                ),
                 error=(
                     codex_transport_error_message("websocket receive", self._endpoint_id, exception)
                     if exception is not None
