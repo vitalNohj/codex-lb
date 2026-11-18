@@ -12881,9 +12881,14 @@ async def test_reconnect_http_bridge_session_preserves_owner_error_for_owner_usa
             require_preferred_account=True,
         )
 
-    assert exc_info.value.status_code == 502
+    # The owner is out of quota, not overloaded: a retryable 503 that names
+    # the limit and carries the reset, not a 502 a client reads as overload.
+    assert exc_info.value.status_code == 503
     assert exc_info.value.payload["error"]["code"] == "previous_response_owner_unavailable"
     assert exc_info.value.payload["error"]["type"] == "server_error"
+    # The fixture's reset is already in the past, so a short retry hint is used.
+    assert exc_info.value.retry_after_seconds is not None and exc_info.value.retry_after_seconds > 0
+    assert http_bridge_helpers_module._http_bridge_is_previous_response_owner_unavailable(exc_info.value)
 
 
 @pytest.mark.asyncio

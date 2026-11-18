@@ -212,6 +212,41 @@ def project_responses_input_for_account_neutral_fresh_replay(
     )
 
 
+def project_responses_payload_for_account_neutral_replay(
+    payload: Mapping[str, JsonValue],
+) -> dict[str, JsonValue] | None:
+    """Project a full, unanchored request so another account can serve it.
+
+    The request must already carry the whole conversation: no
+    ``previous_response_id``, ``conversation`` or stored ``prompt``. Only
+    response-owned bookkeeping is removed (encrypted ``reasoning`` items,
+    completed hosted-search items, and item ``id`` fields), the same
+    projection the durable full-resend replay uses. Every user, assistant,
+    developer and tool item stays, so the replay keeps the conversation
+    context. ``None`` when the projected request still carries
+    account-scoped state (files, hosted tools, unknown fields).
+    """
+
+    for anchor_field in ("previous_response_id", "conversation", "prompt"):
+        if payload.get(anchor_field) not in (None, ""):
+            return None
+    input_value = payload.get("input")
+    if not isinstance(input_value, list):
+        return None
+    projected_items: list[JsonValue] = []
+    for item in input_value:
+        projected_item = _project_account_neutral_replay_item(item, preserve_developer_message_ids=False)
+        if projected_item is not None:
+            projected_items.append(projected_item)
+    if not any(isinstance(item, dict) and item.get("role") == "user" for item in projected_items):
+        return None
+    projected_payload = dict(payload)
+    projected_payload["input"] = projected_items
+    if not responses_payload_is_account_neutral_fresh_replay(projected_payload):
+        return None
+    return projected_payload
+
+
 def _is_canonical_lite_tool_bundle(item: JsonValue) -> bool:
     return (
         isinstance(item, dict)

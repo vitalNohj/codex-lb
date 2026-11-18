@@ -91,6 +91,7 @@ from app.modules.proxy._service.http_bridge.helpers import (
     _http_bridge_key_strength,
     _http_bridge_locally_owned_fork_key,
     _http_bridge_models_compatible,
+    _http_bridge_owner_capacity_limited_error,
     _http_bridge_owner_check_required,
     _http_bridge_owner_instance,
     _http_bridge_owner_lookup_unavailable_error_envelope,
@@ -1718,7 +1719,9 @@ class _HTTPBridgeMixin(
                     and preferred_account_is_continuity_owner
                     and selection.error_code in (CONTINUITY_OWNER_UNAVAILABLE, "hard_affinity_saturated")
                 ):
-                    raise _http_bridge_previous_response_owner_unavailable_error(
+                    raise _http_bridge_owner_capacity_limited_error(
+                        selection
+                    ) or _http_bridge_previous_response_owner_unavailable_error(
                         hold_expired=bool(selection.owner_hold_expired)
                     )
                 status_code, error_payload = selection_failure_response(selection)
@@ -2167,7 +2170,10 @@ class _HTTPBridgeMixin(
                     required_preferred_account_id is not None or hard_close_account_bound
                 ):
                     complete_failed_handoff()
-                    raise _http_bridge_previous_response_owner_unavailable_error()
+                    raise (
+                        _http_bridge_owner_capacity_limited_error(selection)
+                        or _http_bridge_previous_response_owner_unavailable_error()
+                    )
                 if selection.error_code == USAGE_LIMIT_REACHED:
                     record_selected_account_takeover(None)
                     status_code, error_payload = selection_failure_response(selection)
