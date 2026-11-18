@@ -99,11 +99,16 @@ def _set_advertised_context_length(entry: MutableMapping[str, JsonValue], contex
         capabilities_dict = {}
     capabilities_dict["context_length"] = context_length
     entry["capabilities"] = capabilities_dict
+    previous_provenance = entry.get("catalog_provenance")
+    provenance: dict[str, JsonValue] = dict(previous_provenance) if is_json_mapping(previous_provenance) else {}
+    provenance["context_window"] = "operator"
+    entry["catalog_provenance"] = provenance
     metadata = entry.get("metadata")
     if is_json_mapping(metadata):
         metadata_dict = dict(cast(dict[str, JsonValue], metadata))
         metadata_dict["context_window"] = context_length
         metadata_dict["input_context_window"] = context_length
+        metadata_dict["catalog_provenance"] = dict(provenance)
         entry["metadata"] = metadata_dict
 
 

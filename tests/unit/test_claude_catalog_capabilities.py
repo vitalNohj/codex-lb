@@ -16,6 +16,20 @@ from app.modules.proxy.sidecar_model_capabilities import sidecar_input_modalitie
 pytestmark = pytest.mark.unit
 
 
+@pytest.fixture(autouse=True)
+def isolate_legacy_capability_source(monkeypatch):
+    # These controls exercise models.dev and local fallbacks in isolation.
+    # The CLIProxyAPI layer has its own exact-id and offline tests.
+    from app.core.models import router
+
+    monkeypatch.setattr(router, "_models", {})
+
+
+BOUNDS = json.loads((Path(__file__).parents[1] / "fixtures/model_catalog_compatibility.json").read_text())[
+    "sidecar_bounds"
+]
+
+
 @pytest.fixture
 def capabilities(monkeypatch):
     payload = json.loads((Path(__file__).parents[1] / "fixtures" / "claude_models_dev.json").read_text())
@@ -28,7 +42,7 @@ def capabilities(monkeypatch):
 @pytest.mark.parametrize("field", ["max_tokens", "max_completion_tokens"])
 @pytest.mark.parametrize("requested,expected", [(4096, 32_768), (200_000, 128_000), (1, 1), (16, 16)])
 def test_catalog_model_without_fixed_row_uses_output_bounds(capabilities, prefix, field, requested, expected):
-    assert "claude-fable-5-2" not in dispatch._SIDECAR_MAX_TOKENS_BOUNDS
+    assert dispatch.has_fixed_claude_sidecar_bounds("claude-fable-5-2") is False
     body: dict[str, JsonValue] = {field: requested}
     dispatch.apply_sidecar_max_tokens_bounds(body, wire_model=prefix + "claude-fable-5-2")
     assert body == {field: expected}
@@ -62,13 +76,13 @@ def test_catalog_context_guard_only_lowers_the_raise(capabilities, requested, ex
     assert body["max_tokens"] == expected
 
 
-@pytest.mark.parametrize("model,bounds", dispatch._SIDECAR_MAX_TOKENS_BOUNDS.items())
+@pytest.mark.parametrize("model,bounds", BOUNDS.items())
 def test_fixed_bounds_win_over_conflicting_catalog(capabilities, model, bounds):
     catalog.install_model_capabilities({model: ModelCapabilities(("text",), 2_000, 1_000)})
     body: dict[str, JsonValue] = {"max_tokens": 4096, "max_completion_tokens": 999_999}
     dispatch.apply_sidecar_max_tokens_bounds(body, wire_model="cc/" + model)
-    assert body == {"max_tokens": min(bounds.floor, bounds.cap), "max_completion_tokens": bounds.cap}
-    assert dispatch.claude_sidecar_context_window(model) == bounds.context_window
+    assert body == {"max_tokens": min(bounds["floor"], bounds["cap"]), "max_completion_tokens": bounds["cap"]}
+    assert dispatch.claude_sidecar_context_window(model) == bounds["context_window"]
 
 
 @pytest.mark.parametrize(

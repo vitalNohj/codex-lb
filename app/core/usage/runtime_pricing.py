@@ -34,13 +34,12 @@ from collections.abc import Collection, Iterable, Mapping
 from dataclasses import astuple
 from math import isfinite
 
+from app.core.models.catalog import resolve_model
 from app.core.usage.external_pricing.providers import is_external_priced_provider
 from app.core.usage.pricing import (
-    DEFAULT_PRICING_MODELS,
     ModelPrice,
     UsageTokens,
     calculate_cost_from_usage,
-    get_pricing_for_model,
     is_known_free_model,
 )
 
@@ -239,13 +238,8 @@ def _reference_pricing_direct(model: str, provider: str | None = None) -> ModelP
     """
     runtime = _REGISTRY.runtime_pricing_for_model(model, provider=provider)
     if runtime is not None:
-        return runtime
-    if is_external_priced_provider(provider):
-        return None
-    resolved = get_pricing_for_model(model, DEFAULT_PRICING_MODELS, None)
-    if resolved is None:
-        return None
-    return resolved[1]
+        return resolve_model(model, provider=provider, price=runtime, isolated_price=True).price
+    return resolve_model(model, provider=provider, isolated_price=is_external_priced_provider(provider)).price
 
 
 def _paid_equivalent_candidates(model: str) -> list[str]:

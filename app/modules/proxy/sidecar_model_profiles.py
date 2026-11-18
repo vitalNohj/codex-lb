@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from app.core.clients.claude_sidecar import ClaudeSidecarConfig
+from app.core.models.catalog import resolve_model
 from app.core.types import JsonValue
 from app.core.usage.model_ids import resolve_versioned_model_id, strip_known_sidecar_prefix
-from app.core.usage.pricing import DEFAULT_MODEL_ALIASES, DEFAULT_PRICING_MODELS
+from app.core.usage.pricing import DEFAULT_MODEL_ALIASES
 from app.core.usage.pricing import resolve_model_alias as resolve_pricing_model_alias
 from app.modules.proxy.sidecar_routing import prefix_variants
 
@@ -14,10 +15,8 @@ def _matching_claude_price_key(model_id: str) -> str | None:
     target = model_id.lower()
     if not target.startswith(_CLAUDE_MODEL_FAMILY_PREFIX):
         return None
-    for key in DEFAULT_PRICING_MODELS:
-        if key.lower() == target:
-            return key
-    return None
+    record = resolve_model(target)
+    return record.canonical_id if record.canonical_id == target and record.price is not None else None
 
 
 def canonical_sidecar_model(model: str | None, *, strip_prefix: bool = True) -> str | None:

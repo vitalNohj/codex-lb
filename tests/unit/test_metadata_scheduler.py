@@ -18,6 +18,7 @@ from app.core.usage.pricing import DEFAULT_PRICING_MODELS, ModelPrice, get_prici
 def setup(monkeypatch, tmp_path):
     monkeypatch.setattr(catalog, "_prices", None)
     monkeypatch.setattr(catalog, "_capabilities", None)
+    monkeypatch.setattr(module, "refresh_router_models", AsyncMock())
     monkeypatch.setattr(module, "get_settings", lambda: SimpleNamespace(data_dir=tmp_path))
     cache = CodexVersionCache()
     monkeypatch.setattr(cache, "_fetch_latest_version", AsyncMock(return_value=None))
@@ -202,3 +203,26 @@ async def test_capabilities_obey_bundle_and_cache_freshness(setup, monkeypatch, 
         == module.decode_model_capabilities(expected)["claude-fable-5-2"]
     )
     await scheduler.stop()
+
+
+async def test_router_outage_does_not_stop_price_refresh_or_persist_local_overrides(setup, monkeypatch):
+    monkeypatch.setattr(module, "refresh_router_models", AsyncMock(side_effect=OSError("offline")))
+    monkeypatch.setattr(
+        module,
+        "fetch_catalogs",
+        AsyncMock(
+            return_value=catalog.CatalogMetadata(
+                {
+                    "gpt-6-astra": ModelPrice(1, 2),
+                    "gpt-6.2-sol": ModelPrice(3, 4),
+                }
+            )
+        ),
+    )
+    scheduler = module.MetadataRefreshScheduler()
+    await scheduler._refresh()
+    assert get_pricing_for_model("gpt-6-astra")[1] == ModelPrice(1, 2)
+    assert get_pricing_for_model("gpt-6.2-sol")[1] == DEFAULT_PRICING_MODELS["gpt-6.2-sol"]
+    snapshot = json.loads((setup / "pricing-cache.json").read_text())["models"]
+    assert snapshot["gpt-6-astra"]["input_per_1m"] == 1
+    assert snapshot["gpt-6.2-sol"]["input_per_1m"] == 3

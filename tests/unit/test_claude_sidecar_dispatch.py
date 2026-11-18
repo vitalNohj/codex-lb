@@ -405,7 +405,7 @@ def test_build_sidecar_chat_payload_forwards_haiku_5_5_wire_model() -> None:
     assert payload.body["max_tokens"] == 32_768
 
 
-def test_build_sidecar_chat_payload_leaves_opus_5_max_tokens_unchanged() -> None:
+def test_build_sidecar_chat_payload_uses_published_opus_5_bounds() -> None:
     request = ChatCompletionsRequest.model_validate(
         {
             "model": "cc/claude-opus-5",
@@ -417,7 +417,8 @@ def test_build_sidecar_chat_payload_leaves_opus_5_max_tokens_unchanged() -> None
     payload = build_sidecar_chat_payload(request, "claude-opus-5", _config())
 
     assert payload.body["model"] == "claude-opus-5"
-    assert payload.body["max_tokens"] == 4096
+    # The CLIProxyAPI snapshot now supplies this exact id's output/context bounds.
+    assert payload.body["max_tokens"] == 32_768
 
 
 def test_build_sidecar_chat_payload_forwards_fable_5_1_wire_model() -> None:
