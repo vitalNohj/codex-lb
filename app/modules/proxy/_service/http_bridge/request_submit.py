@@ -42,6 +42,7 @@ from app.core.clients.proxy import compact_responses as core_compact_responses  
 from app.core.clients.proxy import transcribe_audio as core_transcribe_audio  # noqa: F401
 from app.core.clients.proxy_websocket import (
     UPSTREAM_WEBSOCKET_LIVENESS_TIMEOUT_CODE,
+    UPSTREAM_WEBSOCKET_PAYLOAD_TOO_LARGE_CODE,
     UpstreamWebSocketTransportError,
     is_account_neutral_websocket_error_code,
 )
@@ -2344,12 +2345,9 @@ class _HTTPBridgeRequestSubmitMixin:
                 if settlement_cancellation is not None:
                     raise settlement_cancellation
             else:
-                # Once the operation-tagged frame has been handed to the
-                # socket, the transport exception is ambiguous: upstream may
-                # have accepted it even though this worker saw no
-                # acknowledgement. Persist UNKNOWN under the owner fence
-                # before cleanup can retire the closed session and release
-                # that fence.
+                # Keep operation state conservative for transport failures.
+                # A close frame does not identify which response.create
+                # caused it. Persist UNKNOWN before releasing the owner fence.
                 if (
                     request_state.operation_dispatched
                     and request_state.operation_registered
@@ -2375,17 +2373,20 @@ class _HTTPBridgeRequestSubmitMixin:
                             )
                     if not marked_unknown:
                         request_state.operation_registered = False
-                        error_code = "bridge_continuity_persistence_failed"
-                        failure_error_message = (
-                            "Ambiguous response operation could not be persisted; retry the request."
-                        )
                         _record_continuity_fail_closed(
                             surface="http_bridge",
                             reason="ambiguous_operation_unknown_persistence_failed",
                             previous_response_id=request_state.previous_response_id,
                             session_id=request_state.session_id,
-                            upstream_error_code=error_code,
+                            upstream_error_code="bridge_continuity_persistence_failed",
                         )
+                        # A failed health/journal write cannot turn a proven
+                        # peer size rejection into a retryable server error.
+                        if error_code != UPSTREAM_WEBSOCKET_PAYLOAD_TOO_LARGE_CODE:
+                            error_code = "bridge_continuity_persistence_failed"
+                            failure_error_message = (
+                                "Ambiguous response operation could not be persisted; retry the request."
+                            )
                 await self._cleanup_http_bridge_submit_interruption(
                     session,
                     request_state=request_state,
@@ -2410,7 +2411,11 @@ class _HTTPBridgeRequestSubmitMixin:
                     await session.upstream.close()
                 except Exception:
                     logger.debug("Failed to close HTTP bridge upstream websocket after send failure", exc_info=True)
-            # Always raise 502 so the client can retry with
+            if error_code == UPSTREAM_WEBSOCKET_PAYLOAD_TOO_LARGE_CODE:
+                payload = openai_error(error_code, failure_error_message, "invalid_request_error")
+                payload["error"]["param"] = "input"
+                raise ProxyResponseError(400, payload) from exc
+            # Raise 502 for an ambiguous send so the client can retry with
             # previous_response_id intact.  Returning 400
             # previous_response_not_found causes the client to drop
             # previous_response_id and resend the full conversation
