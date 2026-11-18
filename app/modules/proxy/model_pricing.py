@@ -16,6 +16,7 @@ class TokenPrices(BaseModel):
     output: float
     cache_read: float
     cache_write: float
+    cache_write_1h: float | None = Field(default=None, exclude_if=lambda value: value is None)
     cache_write_12h: float | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
@@ -46,15 +47,26 @@ def model_pricing(price: ModelPrice, *, source_rates: bool = False) -> ModelPric
         usage = UsageTokens(input_tokens=input_tokens, output_tokens=0)
         input_rate, cached_rate, output_rate = effective_rates(usage, price, service_tier=service_tier)
         write_12h = None
-        if not source_rates and price.cache_write_input_12h_per_1m is not None:
-            write_12h = effective_cache_write_rate(
-                usage, price, service_tier=service_tier, input_rate=input_rate, retention_12h=True
-            )
+        if not source_rates:
+            try:
+                write_12h = effective_cache_write_rate(
+                    usage, price, service_tier=service_tier, input_rate=input_rate, retention_12h=True
+                )
+            except ValueError:
+                pass  # Unknown is omitted, not an invented retention price.
         return TokenPrices(
             cache_write_12h=write_12h,
             input=input_rate,
             output=output_rate,
             cache_read=cached_rate,
+            cache_write_1h=(
+                price.long_context_cache_write_input_1h_per_1m
+                if price.long_context_threshold_tokens is not None
+                and input_tokens > price.long_context_threshold_tokens
+                else price.cache_write_input_1h_per_1m
+            )
+            if service_tier is None and not source_rates
+            else None,
             cache_write=(
                 0.0
                 if source_rates
@@ -88,9 +100,7 @@ def model_pricing(price: ModelPrice, *, source_rates: bool = False) -> ModelPric
         **standard.model_dump(),
         priority=tier("priority") if has_priority and not source_rates else None,
         flex=tier("flex") if has_flex and not source_rates else None,
-        batch=(
-            tier("batch")
-            if price.batch_input_per_1m is not None and price.batch_output_per_1m is not None and not source_rates
-            else None
-        ),
+        batch=tier("batch")
+        if price.batch_input_per_1m is not None and price.batch_output_per_1m is not None and not source_rates
+        else None,
     )

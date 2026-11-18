@@ -1769,13 +1769,15 @@ async def test_v1_models_reports_backend_context_window(async_client):
         "gpt-5.4-mini",
         "gpt-5.3-codex",
     ):
+        expected_window = next(model.raw["max_context_window"] for model in models if model.slug == slug)
         metadata = metadata_by_id[slug]
-        assert metadata["context_window"] == 272_000
-        assert metadata["input_context_window"] == 272_000
+        assert metadata["catalog_provenance"]["context_window"] == "codex"
+        assert metadata["context_window"] == expected_window
+        assert metadata["input_context_window"] == expected_window
         assert metadata["max_output_tokens"] == 128_000
         entry = next(item for item in resp_v1.json()["data"] if item["id"] == slug)
         assert entry["api_types"] == ["chat_completions"]
-        assert entry["capabilities"]["context_length"] == 272_000
+        assert entry["capabilities"]["context_length"] == expected_window
         assert entry["capabilities"]["max_output_tokens"] == 128_000
         assert entry["capabilities"]["supports_reasoning"] is True
         assert entry["capabilities"]["supportsImages"] is True
@@ -1784,15 +1786,15 @@ async def test_v1_models_reports_backend_context_window(async_client):
         assert entry["capabilities"]["supports_tool_use"] is True
         assert entry["capabilities"]["supports_streaming"] is True
         assert entry["capabilities"]["output_modalities"] == ["text"]
-        assert entry["contextLength"] == 272_000
-        assert entry["context_length"] == 272_000
+        assert entry["contextLength"] == expected_window
+        assert entry["context_length"] == expected_window
         assert entry["maxOutputTokens"] == 128_000
         assert entry["max_output_tokens"] == 128_000
 
     resp_codex = await async_client.get("/backend-api/codex/models")
     assert resp_codex.status_code == 200
     codex_by_slug = {item["slug"]: item for item in resp_codex.json()["models"]}
-    assert codex_by_slug["gpt-5.4"]["context_window"] == 272_000
+    assert codex_by_slug["gpt-5.4"]["context_window"] == 1_000_000
     assert codex_by_slug["gpt-5.4"]["max_context_window"] == 1_000_000
     assert codex_by_slug["gpt-5.5"]["context_window"] == 272_000
     assert codex_by_slug["gpt-5.5"]["max_context_window"] == 272_000
@@ -1869,7 +1871,7 @@ async def test_v1_models_omits_speed_tier_metadata_when_upstream_omits_it(async_
 
 
 @pytest.mark.asyncio
-async def test_v1_models_does_not_promote_raw_max_context_window(async_client):
+async def test_v1_models_uses_live_codex_max_context_window(async_client):
     registry = get_model_registry()
     models = [_make_upstream_model("gpt-custom", raw=_raw_with_max_context_window(900_000))]
     await registry.update({"pro": models})
@@ -1878,8 +1880,8 @@ async def test_v1_models_does_not_promote_raw_max_context_window(async_client):
     assert resp.status_code == 200
     entry = next(item for item in resp.json()["data"] if item["id"] == "gpt-custom")
 
-    assert entry["metadata"]["context_window"] == 272_000
-    assert entry["metadata"]["input_context_window"] == 272_000
+    assert entry["metadata"]["context_window"] == 900_000
+    assert entry["metadata"]["input_context_window"] == 900_000
     assert entry["metadata"].get("max_output_tokens") is None
 
 
@@ -2437,7 +2439,8 @@ async def test_gpt62_catalog_windows_and_prices_share_settlement(async_client, m
         assert {"gpt-6.2-sol", "gpt-6.2-astra"} <= {entry["id"] for entry in body["data"]}
         for entry in body["data"]:
             if entry["id"] == "gpt-6.1-sol":
-                assert entry["context_length"] == 500_000  # No other model changes.
+                # The shared catalog also uses the verified 6.1 usable ceiling.
+                assert entry["context_length"] == 872_000
             if entry["id"] not in ("gpt-6.2-sol", "gpt-6.2-astra"):
                 continue
             assert entry["context_length"] == expected

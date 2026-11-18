@@ -35,7 +35,10 @@ from app.core.clients.proxy import (  # noqa: F401
 from app.core.clients.proxy import codex_control_request as core_codex_control_request  # noqa: F401
 from app.core.clients.proxy import compact_responses as core_compact_responses  # noqa: F401
 from app.core.clients.proxy import transcribe_audio as core_transcribe_audio  # noqa: F401
-from app.core.clients.proxy_websocket import UpstreamWebSocketTransportError
+from app.core.clients.proxy_websocket import (
+    UPSTREAM_WEBSOCKET_PAYLOAD_TOO_LARGE_CODE,
+    UpstreamWebSocketTransportError,
+)
 from app.core.clock import Clock, Scheduler, clock_for, scheduler_for
 from app.core.errors import (
     PREVIOUS_RESPONSE_STREAM_INCOMPLETE_MESSAGE,
@@ -4569,6 +4572,26 @@ class _HTTPBridgeStreamingMixin:
                     None,
                 )
             except UpstreamWebSocketTransportError as exc:
+                if exc.error_code == UPSTREAM_WEBSOCKET_PAYLOAD_TOO_LARGE_CODE:
+                    # The retry send got a terminal peer rejection, not an
+                    # eventless timeout. Keep its error and do not strike the
+                    # retry circuit or abandon continuity.
+                    if not yielded_any and propagate_http_errors:
+                        payload = openai_error(exc.error_code, str(exc), "invalid_request_error")
+                        payload["error"]["param"] = "input"
+                        raise ProxyResponseError(400, payload) from exc
+                    return False, format_sse_event(
+                        cast(
+                            Mapping[str, JsonValue],
+                            response_failed_event(
+                                exc.error_code,
+                                str(exc),
+                                "invalid_request_error",
+                                response_id=downstream_response_id,
+                                error_param="input",
+                            ),
+                        )
+                    )
                 if PROMETHEUS_AVAILABLE and stream_idle_timeout_total is not None:
                     stream_idle_timeout_total.labels(surface="http_bridge_eventless").inc()
                 logger.info(

@@ -526,10 +526,12 @@ def test_calculate_cost_from_usage_flex_service_tier():
 @pytest.mark.parametrize(
     ("model", "service_tier", "expected_cost"),
     [
-        ("gpt-5.6-sol", None, 30.55),
-        ("gpt-5.6-sol", "flex", 15.275),
-        ("gpt-5.6-sol", "priority", 61.1),
-        ("gpt-5.6-sol", "fast", 61.1),
+        # The unified local rates preserve the formerly active snapshot (4/20),
+        # not the separate hardcoded fallback (5/30).
+        ("gpt-5.6-sol", None, 20.44),
+        ("gpt-5.6-sol", "flex", 10.22),
+        ("gpt-5.6-sol", "priority", 40.88),
+        ("gpt-5.6-sol", "fast", 40.88),
         ("gpt-5.6-terra", None, 12.22),
         ("gpt-5.6-terra", "flex", 6.11),
         ("gpt-5.6-terra", "priority", 24.44),
@@ -576,8 +578,8 @@ def test_calculate_cost_from_usage_gpt_5_6_service_tiers(
 @pytest.mark.parametrize(
     ("model", "service_tier", "expected_cost"),
     [
-        ("gpt-5.6-sol", None, 7.05),
-        ("gpt-5.6-sol", "flex", 3.525),
+        ("gpt-5.6-sol", None, 5.04),
+        ("gpt-5.6-sol", "flex", 2.52),
         ("gpt-5.6-terra", None, 2.82),
         ("gpt-5.6-terra", "flex", 1.41),
         ("gpt-5.6-luna", None, 0.282),
@@ -611,7 +613,7 @@ def test_calculate_cost_from_usage_gpt_5_6_long_context(
 @pytest.mark.parametrize(
     ("model", "standard_input_rate", "long_context_input_rate"),
     [
-        ("gpt-5.6-sol", 5.0, 10.0),
+        ("gpt-5.6-sol", 4.0, 8.0),
         ("gpt-5.6-terra", 2.0, 4.0),
         ("gpt-5.6-luna", 0.2, 0.4),
         ("gpt-6-astra", 10.0, 20.0),
@@ -662,9 +664,11 @@ def test_calculate_cost_from_usage_legacy_gpt_5_service_tiers() -> None:
 
 def test_calculate_cost_from_usage_unsupported_tiers_fall_back_to_standard():
     usage = UsageTokens(input_tokens=1_000_000.0, output_tokens=1_000_000.0)
-    codex_mini = DEFAULT_PRICING_MODELS["gpt-5.1-codex-mini"]
-    gpt_5_3_chat = DEFAULT_PRICING_MODELS["gpt-5.3-chat-latest"]
-    gpt_5_2_chat = DEFAULT_PRICING_MODELS["gpt-5.2-chat-latest"]
+    # Exercise absent tiers independently of catalog updates. The real active
+    # snapshot now supplies Priority for these chat models.
+    codex_mini = ModelPrice(0.25, 2.0)
+    gpt_5_3_chat = ModelPrice(1.75, 14.0)
+    gpt_5_2_chat = ModelPrice(1.75, 14.0)
 
     codex_mini_priority = calculate_cost_from_usage(usage, codex_mini, service_tier="priority")
     codex_mini_flex = calculate_cost_from_usage(usage, codex_mini, service_tier="flex")
@@ -688,13 +692,14 @@ def test_calculate_cost_from_usage_gpt_5_2_codex_priority():
     assert cost == pytest.approx(31.5)
 
 
-def test_calculate_cost_from_usage_gpt_5_4_pro_flex():
+def test_calculate_cost_from_usage_gpt_5_4_pro_unpublished_flex_falls_back():
     usage = UsageTokens(input_tokens=200_000.0, output_tokens=1_000_000.0)
     price = DEFAULT_PRICING_MODELS["gpt-5.4-pro"]
 
     cost = calculate_cost_from_usage(usage, price, service_tier="flex")
 
-    assert cost == pytest.approx(93.0)
+    # The pre-migration active snapshot has no Flex rate for Pro.
+    assert cost == pytest.approx(186.0)
 
 
 def test_calculate_cost_from_usage_gpt_5_4_long_context():

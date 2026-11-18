@@ -1,9 +1,9 @@
 """Bounded model identities shared by native pricing and sidecar routing.
 
 Routing prefixes are not model ids. ``cc/``, ``cp-``, and ``cp_`` peel off so
-a logged client id can find the same price key the router forwarded. A dotted
-spelling, a release date, and an effort suffix are different Claude ids. GPT-6.2
-recognizes only the bounded date, effort and speed suffixes below. Do not add
+a logged client id can find the same price key the router forwarded. Dotted
+spellings, release dates, and effort suffixes remain distinct Claude ids.
+Configured native spellings are bounded by the model catalog. Do not add
 substring globs for Claude model families. External integration prices remain
 owned by external_pricing catalogs.
 """
@@ -12,43 +12,34 @@ from __future__ import annotations
 
 import re
 
-_GPT6_NATIVE_ID = re.compile(
-    r"(?:(?:codex|openai)/)?gpt-6-(astra|sol|luna)(?:-\d{4}-\d{2}-\d{2}|-\d{8})?",
-    re.IGNORECASE,
-)
-# ``gpt-6.1-sol`` is a different model from ``gpt-6-sol``. The dot keeps the
-# older matcher from treating 6.1 as a dated or suffixed 6 Sol id.
-_GPT61_SOL_ID = re.compile(
-    r"(?:(?:codex|openai)/)?gpt-6\.1-sol(?:-\d{4}-\d{2}-\d{2}|-\d{8})?",
-    re.IGNORECASE,
-)
+from app.core.models.local import load_local_catalog
 
-_GPT62_NATIVE_ID = re.compile(
-    r"(?:(?:codex|openai)/)?gpt-6\.2-(sol|astra)"
-    r"(?:-\d{4}-\d{2}-\d{2}|-\d{8})?"
-    r"(?:-(?:low|medium|high|xhigh|max|ultra|fast|priority))?",
-    re.IGNORECASE,
-)
+_NATIVE_PREFIX_RE = re.compile(r"^(?:codex|openai)/", re.IGNORECASE)
+_RELEASE_RE = re.compile(r"(?:-\d{4}-\d{2}-\d{2}|-\d{8})$")
 
 _KNOWN_SIDECAR_PREFIXES = ("cc/", "cp-", "cp_")
 
 
 def resolve_versioned_model_id(model: str) -> str | None:
-    """Recognize native versions without removing a sidecar routing prefix.
+    """Recognize configured native spellings without peeling a routing prefix.
 
-    Authorization calls this after dispatch has resolved the wire model. A
-    remaining routing prefix belongs to that id and must not be removed again.
+    Authorization has already resolved its wire id. A remaining sidecar prefix
+    belongs to that id and must not be removed for a second time.
     """
-    text = model.strip()
-    gpt62 = _GPT62_NATIVE_ID.fullmatch(text)
-    if gpt62 is not None:
-        return f"gpt-6.2-{gpt62.group(1).lower()}"
-    if _GPT61_SOL_ID.fullmatch(text) is not None:
-        return "gpt-6.1-sol"
-    native = _GPT6_NATIVE_ID.fullmatch(text)
-    if native is None:
-        return None
-    return f"gpt-6-{native.group(1).lower()}"
+    text = _NATIVE_PREFIX_RE.sub("", model.strip()).lower()
+    models = load_local_catalog().models
+    base = _RELEASE_RE.sub("", text)
+    entry = models.get(base)
+    if entry is not None and entry.native_aliases:
+        return base
+    for canonical, entry in models.items():
+        if not entry.native_aliases:
+            continue
+        for suffix in entry.native_suffixes:
+            ending = "-" + suffix
+            if text.endswith(ending) and _RELEASE_RE.sub("", text[: -len(ending)]) == canonical:
+                return canonical
+    return None
 
 
 def strip_known_sidecar_prefix(model: str) -> str:

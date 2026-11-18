@@ -25,6 +25,7 @@ from app.core.config.settings_cache import get_settings_cache
 from app.core.crypto import TokenEncryptor
 from app.core.errors import OpenAIErrorEnvelope, openai_error
 from app.core.exceptions import ProxyReasoningEffortNotAllowed
+from app.core.models.local import load_local_catalog
 from app.core.openai.chat_requests import ChatCompletionsRequest
 from app.core.openai.message_coercion import chat_tool_content_parts
 from app.core.types import JsonValue
@@ -585,25 +586,6 @@ class _OutputBounds:
     context_window: int
 
 
-_SIDECAR_MAX_TOKENS_BOUNDS: dict[str, _OutputBounds] = {
-    # 1M context, 128k max output.
-    "claude-fable-5": _OutputBounds(_SIDECAR_OUTPUT_FLOOR, 128_000, 1_000_000),
-    "claude-fable-5-1": _OutputBounds(_SIDECAR_OUTPUT_FLOOR, 128_000, 1_000_000),
-    "claude-opus-5-5": _OutputBounds(_SIDECAR_OUTPUT_FLOOR, 128_000, 1_000_000),
-    "claude-mythos-5": _OutputBounds(_SIDECAR_OUTPUT_FLOOR, 128_000, 1_000_000),
-    "claude-opus-4-8": _OutputBounds(_SIDECAR_OUTPUT_FLOOR, 128_000, 1_000_000),
-    "claude-opus-4-7": _OutputBounds(_SIDECAR_OUTPUT_FLOOR, 128_000, 1_000_000),
-    "claude-opus-4-6": _OutputBounds(_SIDECAR_OUTPUT_FLOOR, 128_000, 1_000_000),
-    "claude-sonnet-5": _OutputBounds(_SIDECAR_OUTPUT_FLOOR, 128_000, 1_000_000),
-    "claude-sonnet-5-5": _OutputBounds(_SIDECAR_OUTPUT_FLOOR, 128_000, 1_000_000),
-    "claude-haiku-5-5": _OutputBounds(_SIDECAR_OUTPUT_FLOOR, 128_000, 1_000_000),
-    # 1M context, 64k max output.
-    "claude-sonnet-4-6": _OutputBounds(_SIDECAR_OUTPUT_FLOOR, 64_000, 1_000_000),
-    # 200k context.
-    "claude-sonnet-4-5": _OutputBounds(_SIDECAR_OUTPUT_FLOOR, 64_000, 200_000),
-    "claude-haiku-4-5": _OutputBounds(_SIDECAR_OUTPUT_FLOOR, 64_000, 200_000),
-    "claude-opus-4-5": _OutputBounds(_SIDECAR_OUTPUT_FLOOR, 32_768, 200_000),
-}
 _SIDECAR_MAX_TOKENS_FIELDS = ("max_tokens", "max_completion_tokens")
 
 
@@ -1133,7 +1115,13 @@ def sanitize_sidecar_forward_payload(body: dict[str, JsonValue]) -> None:
 
 def _fixed_sidecar_output_bounds(model: str) -> _OutputBounds | None:
     canonical = canonical_sidecar_model(model)
-    return _SIDECAR_MAX_TOKENS_BOUNDS.get(canonical) if canonical is not None else None
+    entry = load_local_catalog().models.get(canonical) if canonical is not None else None
+    if entry is None or not entry.legacy_sidecar_bounds:
+        return None
+    metadata = get_model_capabilities(model)
+    if metadata is None or metadata.context_window is None or metadata.max_output_tokens is None:
+        return None
+    return _OutputBounds(_SIDECAR_OUTPUT_FLOOR, metadata.max_output_tokens, metadata.context_window)
 
 
 def has_fixed_claude_sidecar_bounds(model: str) -> bool:

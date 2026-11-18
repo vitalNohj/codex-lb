@@ -10,6 +10,15 @@ from app.modules.proxy.sidecar_model_capabilities import (
 pytestmark = pytest.mark.unit
 
 
+@pytest.fixture(autouse=True)
+def isolate_legacy_capability_source(monkeypatch):
+    # These controls exercise models.dev and local fallbacks in isolation.
+    # The CLIProxyAPI layer has its own exact-id and offline tests.
+    from app.core.models import router
+
+    monkeypatch.setattr(router, "_models", {})
+
+
 def test_catalog_input_modalities_reads_direct_and_architecture_fields() -> None:
     assert catalog_input_modalities(None) is None
     assert catalog_input_modalities({}) is None

@@ -118,6 +118,7 @@ from app.core.metrics.prometheus import (
     stream_keepalive_sent_total,
 )
 from app.core.middleware.multipart_content_encoding import raise_for_unsupported_multipart_content_encoding
+from app.core.models.catalog import resolve_model
 from app.core.multipart import (
     IMAGE_EDITS_MULTIPART_POLICY,
     TRANSCRIPTION_MULTIPART_POLICY,
@@ -148,12 +149,7 @@ from app.core.openai.images import (
     V1ImagesEditsForm,
     V1ImagesGenerationsRequest,
 )
-from app.core.openai.model_registry import (
-    MODEL_SOURCE_KIND_SUBSCRIPTION,
-    UpstreamModel,
-    get_model_registry,
-    is_public_model,
-)
+from app.core.openai.model_registry import UpstreamModel, get_model_registry, is_public_model
 from app.core.openai.models import (
     CompactResponsePayload,
     CompactResponseResult,
@@ -321,7 +317,6 @@ from app.modules.proxy.api_key_usage import estimate_api_key_request_usage
 from app.modules.proxy.capability_routing import required_capability_metadata_values
 from app.modules.proxy.claude_sidecar_dispatch import (
     claude_routing_entry,
-    claude_sidecar_context_window,
     load_sidecar_config,
     proxy_chat_to_sidecar,
 )
@@ -468,7 +463,6 @@ from app.modules.proxy.schemas import (
     WarmupSubmittedAccount,
 )
 from app.modules.proxy.selection_errors import USAGE_LIMIT_REACHED
-from app.modules.proxy.sidecar_model_capabilities import sidecar_input_modalities
 from app.modules.proxy.sidecar_model_profiles import apply_sidecar_model_profile_with_suffix_effort
 from app.modules.proxy.sidecar_routing import (
     SidecarRoutingEntry,
@@ -811,25 +805,6 @@ _HTTP_BRIDGE_STARTUP_ERROR_PROBE_SECONDS = 2.0
 _CAPACITY_STARTUP_SIGNAL_DISCOVERY_SECONDS = _HTTP_BRIDGE_STARTUP_ERROR_PROBE_SECONDS
 _CHAT_COMPLETIONS_STARTUP_ERROR_PROBE_SECONDS = 2.0
 _CURSOR_CHAT_COMPLETIONS_STARTUP_ERROR_PROBE_SECONDS = 15.0
-# openai/codex 6c0cee502d215e5df2dd9a303cf2e252229c9e12 declares an
-# 872K ceiling for both GPT-6.2 models. Live subscription probes on 2026-11-17
-# accepted exactly 872000 input tokens each; ~1M was rejected with
-# context_length_exceeded. Operator overrides still win, with the same clamp.
-_VERIFIED_SUBSCRIPTION_CONTEXT_WINDOWS: Final[dict[str, int]] = {
-    "gpt-6.2-sol": 872_000,
-    "gpt-6.2-astra": 872_000,
-}
-_V1_MAX_OUTPUT_TOKEN_OVERRIDES: Final[dict[str, int]] = {
-    "gpt-6.2-sol": 128_000,
-    "gpt-6.2-astra": 128_000,
-    "gpt-6-astra": 128_000,
-    "gpt-6-sol": 128_000,
-    "gpt-6-luna": 128_000,
-    "gpt-5.4": 128_000,
-    "gpt-5.5": 128_000,
-    "gpt-5.4-mini": 128_000,
-    "gpt-5.3-codex": 128_000,
-}
 # Context window advertised on ``/v1/models`` for a sidecar model whose real
 # window is unknown (see ``_sidecar_context_window``). Cursor's local-provider
 # discovery reads the advertised window to decide when to auto-summarize/compact
@@ -4615,8 +4590,12 @@ async def _add_model_prices(
     )
     for entry in entries:
         entry.pricing = prices.pricing.get(entry.slug)
+        entry.catalog_provenance.update(prices.provenance.get(entry.slug, {}))
     for item in data:
         item.pricing = prices.pricing.get(item.id)
+        item.catalog_provenance.update(prices.provenance.get(item.id, {}))
+        if item.metadata is not None:
+            item.metadata.catalog_provenance.update(item.catalog_provenance)
     if api_key is not None and api_key_is_shared(api_key):
         entries = [entry for entry in entries if entry.slug in prices.billable]
         data = [item for item in data if item.id in prices.billable]
@@ -4961,17 +4940,14 @@ async def _build_models_response_body(
                         "created": created_by_model.get(slug) or created,
                         "owned_by": owner_by_model.get(slug) or "anthropic",
                         "api_types": ["chat_completions"],
-                        **_advertised_sidecar_fields(
-                            _sidecar_context_window(
-                                slug,
-                                overrides=context_window_overrides,
-                                raw=raw_by_model.get(slug),
-                                claude_model=decision.wire_model,
-                                published=published_window_by_model.get(slug),
-                            ),
+                        **_sidecar_catalog_fields(
+                            slug,
+                            overrides=context_window_overrides,
                             raw=raw_by_model.get(slug),
                             claude_model=decision.wire_model,
+                            published=published_window_by_model.get(slug),
                             max_output_tokens=published_max_output_by_model.get(slug),
+                            provider="cliproxy" if decision.provider == "claude" else decision.provider,
                         ),
                     }
                 )
@@ -5003,17 +4979,14 @@ async def _build_models_response_body(
                         "created": created_by_model.get(base) or created,
                         "owned_by": owner_by_model.get(base) or "anthropic",
                         "api_types": ["chat_completions"],
-                        **_advertised_sidecar_fields(
-                            _sidecar_context_window(
-                                alias,
-                                overrides=context_window_overrides,
-                                raw=raw_by_model.get(base),
-                                claude_model=base,
-                                published=published_window_by_model.get(base),
-                            ),
+                        **_sidecar_catalog_fields(
+                            alias,
+                            overrides=context_window_overrides,
                             raw=raw_by_model.get(base),
                             claude_model=base,
+                            published=published_window_by_model.get(base),
                             max_output_tokens=published_max_output_by_model.get(base),
+                            provider="cliproxy",
                         ),
                     }
                 )
@@ -5044,11 +5017,11 @@ async def _build_models_response_body(
                         "created": created_by_model.get(slug) or created,
                         "owned_by": owner_by_model.get(slug) or "openrouter",
                         "api_types": ["chat_completions"],
-                        **_advertised_sidecar_fields(
-                            _sidecar_context_window(
-                                slug, overrides=context_window_overrides, raw=raw_by_model.get(slug)
-                            ),
+                        **_sidecar_catalog_fields(
+                            slug,
+                            overrides=context_window_overrides,
                             raw=raw_by_model.get(slug),
+                            provider="cliproxy" if decision.provider == "claude" else decision.provider,
                         ),
                     }
                 )
@@ -5118,11 +5091,11 @@ async def _build_models_response_body(
                         "created": created_by_model.get(slug) or created,
                         "owned_by": owner_by_model.get(slug) or "openai_compat",
                         "api_types": ["chat_completions"],
-                        **_advertised_sidecar_fields(
-                            _sidecar_context_window(
-                                slug, overrides=context_window_overrides, raw=raw_by_model.get(slug)
-                            ),
+                        **_sidecar_catalog_fields(
+                            slug,
+                            overrides=context_window_overrides,
                             raw=raw_by_model.get(slug),
+                            provider="cliproxy" if decision.provider == "claude" else decision.provider,
                         ),
                     }
                 )
@@ -5151,11 +5124,11 @@ async def _build_models_response_body(
                         "created": created_by_model.get(slug) or created,
                         "owned_by": owner_by_model.get(slug) or "orcarouter",
                         "api_types": ["chat_completions"],
-                        **_advertised_sidecar_fields(
-                            _sidecar_context_window(
-                                slug, overrides=context_window_overrides, raw=raw_by_model.get(slug)
-                            ),
+                        **_sidecar_catalog_fields(
+                            slug,
+                            overrides=context_window_overrides,
                             raw=raw_by_model.get(slug),
+                            provider="cliproxy" if decision.provider == "claude" else decision.provider,
                         ),
                     }
                 )
@@ -5195,11 +5168,11 @@ async def _build_models_response_body(
                         "created": created_by_model.get(slug) or created,
                         "owned_by": owner_by_model.get(slug) or "opencode",
                         "api_types": ["chat_completions"],
-                        **_advertised_sidecar_fields(
-                            _sidecar_context_window(
-                                slug, overrides=context_window_overrides, raw=raw_by_model.get(slug)
-                            ),
+                        **_sidecar_catalog_fields(
+                            slug,
+                            overrides=context_window_overrides,
                             raw=raw_by_model.get(slug),
+                            provider="cliproxy" if decision.provider == "claude" else decision.provider,
                         ),
                     }
                 )
@@ -5224,11 +5197,11 @@ async def _build_models_response_body(
                         "created": created_by_model.get(slug) or created,
                         "owned_by": "omniroute",
                         "api_types": ["chat_completions"],
-                        **_advertised_sidecar_fields(
-                            _sidecar_context_window(
-                                slug, overrides=context_window_overrides, raw=raw_by_model.get(slug)
-                            ),
+                        **_sidecar_catalog_fields(
+                            slug,
+                            overrides=context_window_overrides,
                             raw=raw_by_model.get(slug),
+                            provider="cliproxy" if decision.provider == "claude" else decision.provider,
                         ),
                     }
                 )
@@ -5254,11 +5227,11 @@ async def _build_models_response_body(
                         "created": created_by_model.get(slug) or created,
                         "owned_by": owner_by_model.get(slug) or "ollama",
                         "api_types": ["chat_completions"],
-                        **_advertised_sidecar_fields(
-                            _sidecar_context_window(
-                                slug, overrides=context_window_overrides, raw=raw_by_model.get(slug)
-                            ),
+                        **_sidecar_catalog_fields(
+                            slug,
+                            overrides=context_window_overrides,
                             raw=raw_by_model.get(slug),
+                            provider="cliproxy" if decision.provider == "claude" else decision.provider,
                         ),
                     }
                 )
@@ -5397,6 +5370,9 @@ def _to_model_list_item(
             "id": slug,
             "created": created,
             "owned_by": "codex-lb",
+            "catalog_provenance": _capability_provenance(
+                resolve_model(model.slug, upstream=model, overrides=context_window_overrides).provenance
+            ),
             "metadata": _to_model_metadata(model, context_window=context_window),
             "api_types": ["chat_completions"],
             "capabilities": _v1_model_capabilities(model, context_window=context_window),
@@ -5456,12 +5432,17 @@ def _codex_model_experimental_supported_tools(model: UpstreamModel) -> list[str]
     return [tool for tool in tools if isinstance(tool, str)]
 
 
-def _codex_wire_reasoning_levels(model: UpstreamModel) -> list[ReasoningLevelSchema]:
+def _catalog_reasoning_levels(model: UpstreamModel) -> list[ReasoningLevelSchema]:
+    record = resolve_model(model.slug, upstream=model)
+    descriptions = {level.effort: level.description for level in model.supported_reasoning_levels}
     return [
-        ReasoningLevelSchema(effort=level.effort, description=level.description)
-        for level in model.supported_reasoning_levels
-        if level.effort in _CODEX_WIRE_REASONING_EFFORTS
+        ReasoningLevelSchema(effort=level, description=descriptions.get(level, f"{level} reasoning effort"))
+        for level in record.thinking_levels or ()
     ]
+
+
+def _codex_wire_reasoning_levels(model: UpstreamModel) -> list[ReasoningLevelSchema]:
+    return [level for level in _catalog_reasoning_levels(model) if level.effort in _CODEX_WIRE_REASONING_EFFORTS]
 
 
 def _codex_wire_default_reasoning_level(model: UpstreamModel) -> str | None:
@@ -5487,6 +5468,7 @@ def _to_codex_model_entry(
         "supported_reasoning_levels",
         "supported_in_api",
         "pricing",  # Never trust upstream rates; settlement prices are attached below.
+        "catalog_provenance",
         "priority",
         "minimal_client_version",
         "supports_reasoning_summaries",
@@ -5510,7 +5492,12 @@ def _to_codex_model_entry(
     if effective_cw != model.context_window and "max_context_window" in extra:
         extra["max_context_window"] = effective_cw
 
+    record = resolve_model(model.slug, upstream=model, overrides=context_window_overrides)
+    provenance = _capability_provenance(record.provenance)
+    if "max_context_window" in extra and extra["max_context_window"] != record.max_context_window:
+        provenance["max_context_window"] = provenance["context_window"]
     return CodexModelEntry(
+        catalog_provenance=provenance,
         pricing=None,
         slug=model.slug,
         display_name=model.display_name,
@@ -5526,7 +5513,7 @@ def _to_codex_model_entry(
         default_verbosity=model.default_verbosity,
         supports_parallel_tool_calls=model.supports_parallel_tool_calls,
         context_window=effective_cw,
-        input_modalities=list(model.input_modalities),
+        input_modalities=list(record.input_modalities or ()),
         available_in_plans=sorted(model.available_in_plans),
         prefer_websockets=model.prefer_websockets,
         visibility=visibility or _model_visibility(model),
@@ -5543,55 +5530,22 @@ async def _effective_context_window_overrides() -> Mapping[str, int]:
     # M4 model catalogue: resolved once per catalog build, outside the per-model
     # loops. Dashboard rows (cached snapshot, settings-namespace invalidation)
     # win per slug over the deprecated CODEX_LB_MODEL_CONTEXT_WINDOW_OVERRIDES
-    # entry; verified subscription defaults are applied in the shared resolver.
+    # entry; a slug with neither has no override.
     dashboard = await get_model_context_window_overrides_cache().get()
     return effective_context_window_overrides(dashboard, get_settings().model_context_window_overrides)
 
 
 def _resolved_context_window(model: UpstreamModel, overrides: Mapping[str, int]) -> int:
-    # An explicit operator context-window override is an assertion about the usable
-    # input budget, so it must also reach the generic OpenAI-compatible fields
-    # (`context_length`, `contextLength`, `capabilities.context_length`, and
-    # `metadata.input_context_window`). Generic clients read those rather than
-    # `metadata.context_window` and would otherwise cap themselves at the
-    # un-overridden upstream budget while Codex-native clients use the wider window.
-    # The override is clamped to the upstream-declared `max_context_window` so it can
-    # never advertise more input than the backend sanctions — the same clamp the Codex
-    # client applies to `model_context_window` in config.toml. The clamp only applies
-    # when upstream declares a ceiling strictly above `context_window`: bootstrap
-    # subscription models (`_bootstrap_model`) and source-catalog models
-    # (`source_models_to_upstream_models`) synthesize `max_context_window ==
-    # context_window` purely so Codex clients can parse the entry, and treating that
-    # parseability default as a real ceiling would silently disable every raise
-    # override for those models.
-    #
-    # This is the single resolution point for the reported window: the Codex-native
-    # `context_window`/`max_context_window` rewrite, `metadata.context_window`, and
-    # every input-budget field all share this one value, so an override above the
-    # backend ceiling can never split one model into two contradictory budgets.
-    override = overrides.get(model.slug)
-    if override is None and model.source_kind == MODEL_SOURCE_KIND_SUBSCRIPTION:
-        override = _VERIFIED_SUBSCRIPTION_CONTEXT_WINDOWS.get(model.slug)
-    if override is None:
-        return model.context_window
-    max_context_window = model.raw.get("max_context_window")
-    if (
-        isinstance(max_context_window, int)
-        and not isinstance(max_context_window, bool)
-        and max_context_window > model.context_window
-    ):
-        return min(override, max_context_window)
-    return override
+    record = resolve_model(model.slug, upstream=model, overrides=overrides)
+    return record.context_window if record.context_window is not None else model.context_window
 
 
 def _v1_max_output_tokens(model: UpstreamModel) -> int | None:
-    raw_value = model.raw.get("max_output_tokens")
-    if isinstance(raw_value, int):
-        return raw_value
-    return _V1_MAX_OUTPUT_TOKEN_OVERRIDES.get(model.slug)
+    return resolve_model(model.slug, upstream=model).max_output_tokens
 
 
 def _v1_model_capabilities(model: UpstreamModel, *, context_window: int) -> dict[str, JsonValue]:
+    record = resolve_model(model.slug, upstream=model)
     supports_streaming_raw = model.raw.get("supports_streaming")
     supports_streaming = supports_streaming_raw if isinstance(supports_streaming_raw, bool) else True
     return {
@@ -5603,66 +5557,9 @@ def _v1_model_capabilities(model: UpstreamModel, *, context_window: int) -> dict
         "supports_vision": _v1_supports_vision(model),
         "supports_tool_use": model.supports_parallel_tool_calls,
         "supports_streaming": supports_streaming,
-        "input_modalities": list(model.input_modalities),
-        "output_modalities": ["text"],
+        "input_modalities": list(record.input_modalities or ()),
+        "output_modalities": list(record.output_modalities or ("text",)),
     }
-
-
-def _positive_window(value: JsonValue | None) -> int | None:
-    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
-        return None
-    return value
-
-
-def _catalog_context_window(raw: Mapping[str, JsonValue] | None) -> int | None:
-    """The context window a provider's own ``/models`` entry reports, if any.
-
-    OpenRouter-style catalogs (OpenRouter, OrcaRouter and most OpenAI-compatible
-    gateways) publish ``context_length`` and ``top_provider.context_length``;
-    others use ``context_window``.
-    """
-    if raw is None:
-        return None
-    for key in ("context_length", "context_window"):
-        window = _positive_window(raw.get(key))
-        if window is not None:
-            return window
-    top_provider = raw.get("top_provider")
-    if is_json_mapping(top_provider):
-        return _positive_window(top_provider.get("context_length"))
-    return None
-
-
-def _sidecar_context_window(
-    slug: str,
-    *,
-    overrides: Mapping[str, int],
-    raw: Mapping[str, JsonValue] | None = None,
-    claude_model: str | None = None,
-    published: int | None = None,
-) -> int:
-    """The single context window ``/v1/models`` advertises for a sidecar model.
-
-    In order: the operator's context window override for the advertised id
-    (``overrides`` is ``_effective_context_window_overrides()``: the dashboard
-    row, else the ``CODEX_LB_MODEL_CONTEXT_WINDOW_OVERRIDES`` entry); the
-    window CLIProxyAPI publishes for the upstream id on its Codex-client
-    catalog (``published``); for a Claude sidecar model, the published window
-    dispatch already enforces (``claude_model`` is the upstream id a
-    strip-prefix alias names); the provider catalog's own entry; the 200k
-    default.
-    """
-    override = overrides.get(slug)
-    if override is not None:
-        return override
-    if published is not None:
-        return published
-    if claude_model is not None:
-        window = claude_sidecar_context_window(claude_model)
-        if window is not None:
-            return window
-    window = _catalog_context_window(raw)
-    return window if window is not None else _SIDECAR_DEFAULT_CONTEXT_WINDOW
 
 
 def _with_alias_context_window_overrides(
@@ -5689,31 +5586,54 @@ def _with_alias_context_window_overrides(
     return patched
 
 
-def _advertised_sidecar_fields(
-    context_window: int,
+def _capability_provenance(provenance: Mapping[str, str]) -> dict[str, str]:
+    # Prices come from the selected route in _add_model_prices, not metadata.
+    return {key: source for key, source in provenance.items() if not key.startswith("price.")}
+
+
+def _sidecar_catalog_fields(
+    slug: str,
     *,
+    overrides: Mapping[str, int],
+    provider: str | None = None,
     raw: Mapping[str, JsonValue] | None = None,
     claude_model: str | None = None,
+    published: int | None = None,
     max_output_tokens: int | None = None,
 ) -> dict[str, JsonValue]:
-    """Sidecar ``/v1/models`` fields, with vision taken from that row's catalog.
-
-    ``max_output_tokens`` is the provider-published output limit; it is
-    advertised the way registry rows advertise theirs, and omitted when unknown.
-    """
-
-    modalities = sidecar_input_modalities(raw, claude_model=claude_model)
+    record = resolve_model(
+        claude_model or slug,
+        provider=provider,
+        isolated_price=True,
+        raw=raw,
+        published_context=published,
+        published_output=max_output_tokens,
+        overrides={claude_model or slug: overrides[slug]} if slug in overrides else None,
+        fallback_context=_SIDECAR_DEFAULT_CONTEXT_WINDOW,
+    )
+    modalities = list(record.input_modalities) if record.input_modalities is not None else ["text"]
     fields = _sidecar_model_list_fields(
-        context_window,
+        record.context_window or _SIDECAR_DEFAULT_CONTEXT_WINDOW,
         supports_vision="image" in modalities,
         input_modalities=modalities,
     )
-    if max_output_tokens is not None:
-        fields["max_output_tokens"] = max_output_tokens
-        fields["maxOutputTokens"] = max_output_tokens
-        capabilities = fields["capabilities"]
-        assert isinstance(capabilities, dict)
-        capabilities["max_output_tokens"] = max_output_tokens
+    capabilities = fields["capabilities"]
+    assert isinstance(capabilities, dict)
+    if record.max_output_tokens is not None:
+        fields["max_output_tokens"] = record.max_output_tokens
+        fields["maxOutputTokens"] = record.max_output_tokens
+        capabilities["max_output_tokens"] = record.max_output_tokens
+    if record.output_modalities is not None:
+        capabilities["output_modalities"] = list(record.output_modalities)
+    if record.thinking_levels is not None:
+        levels: list[JsonValue] = list(record.thinking_levels)
+        fields["thinking_levels"] = levels
+        capabilities["supported_reasoning_levels"] = levels
+    if record.thinking_min is not None:
+        capabilities["thinking_min"] = record.thinking_min
+    if record.thinking_max is not None:
+        capabilities["thinking_max"] = record.thinking_max
+    fields["catalog_provenance"] = _capability_provenance(record.provenance)
     return fields
 
 
@@ -5727,7 +5647,7 @@ def _sidecar_model_list_fields(
     # local-provider discovery can learn the context window and trigger its own
     # compaction. Sidecar models are not in the upstream registry, so they have
     # no ``UpstreamModel`` to read these from; callers pass the window from
-    # ``_sidecar_context_window``. Vision is false unless the row's catalog, or
+    # ``_sidecar_catalog_fields``. Vision is false unless the row's catalog, or
     # a known Claude model, says otherwise. A zero-argument call is the alias
     # fallback for a target that is not already in the catalog.
     modalities: list[JsonValue] = (
@@ -5752,7 +5672,7 @@ def _sidecar_model_list_fields(
 
 
 def _v1_supports_reasoning(model: UpstreamModel) -> bool:
-    if bool(model.supported_reasoning_levels) or model.supports_reasoning_summaries:
+    if bool(resolve_model(model.slug, upstream=model).thinking_levels) or model.supports_reasoning_summaries:
         return True
     # Source models whose operator declared no levels and no summary support
     # opt in via raw metadata instead, so /v1/models reflects reality.
@@ -5760,7 +5680,7 @@ def _v1_supports_reasoning(model: UpstreamModel) -> bool:
 
 
 def _v1_supports_vision(model: UpstreamModel) -> bool:
-    return "image" in model.input_modalities
+    return "image" in (resolve_model(model.slug, upstream=model).input_modalities or ())
 
 
 def _model_visibility(model: UpstreamModel) -> str:
@@ -5787,17 +5707,16 @@ def _effective_source_codex_visibility(
 
 
 def _to_model_metadata(model: UpstreamModel, *, context_window: int) -> ModelMetadata:
+    record = resolve_model(model.slug, upstream=model)
     return ModelMetadata(
+        catalog_provenance=_capability_provenance(record.provenance),
         display_name=model.display_name,
         description=model.description,
         context_window=context_window,
         input_context_window=context_window,
         max_output_tokens=_v1_max_output_tokens(model),
-        input_modalities=list(model.input_modalities),
-        supported_reasoning_levels=[
-            ReasoningLevelSchema(effort=rl.effort, description=rl.description)
-            for rl in model.supported_reasoning_levels
-        ],
+        input_modalities=list(record.input_modalities or ()),
+        supported_reasoning_levels=_catalog_reasoning_levels(model),
         default_reasoning_level=model.default_reasoning_level,
         supports_reasoning_summaries=model.supports_reasoning_summaries,
         support_verbosity=model.support_verbosity,
