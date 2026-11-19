@@ -58,10 +58,16 @@ class GracefulDrainServer(uvicorn.Server):
         *,
         drain_timeout_seconds: float,
         post_drain_cleanup_timeout_seconds: float = POST_DRAIN_CLEANUP_TIMEOUT_SECONDS,
+        stop_accepting_on_drain: bool = False,
     ) -> None:
         super().__init__(config)
         self._drain_timeout_seconds = max(float(drain_timeout_seconds), 0.0)
         self._post_drain_cleanup_timeout_seconds = max(float(post_drain_cleanup_timeout_seconds), 0.0)
+        # True when systemd holds the listening socket across restarts. The
+        # next process then accepts the connections that queue during this
+        # drain, so this process stops accepting at once instead of answering
+        # them with "Server is draining".
+        self._stop_accepting_on_drain = stop_accepting_on_drain
 
     async def serve(self, sockets: list[socket.socket] | None = None) -> None:
         # Reset process-global state before Uvicorn installs its signal
@@ -74,9 +80,37 @@ class GracefulDrainServer(uvicorn.Server):
         shutdown_state.commit_shutdown(timeout_seconds=self._drain_timeout_seconds)
         super().handle_exit(sig, frame)
 
+    def _hand_off_listener(self) -> None:
+        """Stop accepting and release idle keep-alive HTTP connections.
+
+        Closing this process's listener leaves the socket open in systemd, so
+        new connections wait in the kernel queue for the next process. An idle
+        keep-alive HTTP connection is closed now, and a busy one closes after
+        its current response, so its client reconnects to the next process.
+        WebSocket connections are left alone: Responses sockets take part in
+        the turn-aware drain, and Uvicorn closes the others after it.
+        """
+        for server in getattr(self, "servers", ()):
+            server.close()
+        http_protocol_class = getattr(self.config, "http_protocol_class", None)
+        if not isinstance(http_protocol_class, type):
+            return
+        handed_off = 0
+        for connection in list(self.server_state.connections):
+            if isinstance(connection, http_protocol_class):
+                connection.shutdown()
+                handed_off += 1
+        logger.info(
+            "Stopped accepting on the systemd socket; queued connections go to the next process "
+            "(closing %d keep-alive HTTP connection(s))",
+            handed_off,
+        )
+
     async def shutdown(self, sockets: list[socket.socket] | None = None) -> None:
         shutdown_state.set_post_drain_cleanup_timeout_seconds(self._post_drain_cleanup_timeout_seconds)
         shutdown_state.commit_shutdown(timeout_seconds=self._drain_timeout_seconds)
+        if self._stop_accepting_on_drain:
+            self._hand_off_listener()
         remaining = shutdown_state.remaining_drain_timeout_seconds() or 0.0
         drained = await shutdown_state.wait_for_in_flight_drain(
             timeout_seconds=remaining,

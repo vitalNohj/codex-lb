@@ -3,11 +3,13 @@ from __future__ import annotations
 import builtins
 import json
 import logging
+import os
+import socket
 import sqlite3
 import sys
 from contextlib import closing
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -222,6 +224,94 @@ def test_main_forwards_server_port_boundaries(monkeypatch, source, raw_port):
     cli.main(argv)
 
     assert captured["kwargs"]["port"] == int(raw_port)
+
+
+def test_main_serves_the_systemd_socket_and_reports_its_port(monkeypatch):
+    captured: dict[str, Any] = {}
+    listener = SimpleNamespace(name="systemd-socket")
+
+    def fake_run(*args, **kwargs):
+        captured["kwargs"] = kwargs
+
+    monkeypatch.setenv("PORT", "2455")
+    monkeypatch.setattr(cli, "_load_inherited_listen_socket", lambda: listener)
+    monkeypatch.setattr(cli, "_socket_port", lambda sock: 3456 if sock is listener else -1)
+    monkeypatch.setattr(cli, "_run_server", fake_run)
+
+    cli.main(["--port", "2455"])
+
+    assert captured["kwargs"]["listen_socket"] is listener
+    # The socket unit decides the address; PORT follows the served port.
+    assert captured["kwargs"]["port"] == 3456
+    assert os.environ["PORT"] == "3456"
+
+
+def test_main_without_systemd_socket_passes_none(monkeypatch):
+    captured: dict[str, Any] = {}
+
+    def fake_run(*args, **kwargs):
+        captured["kwargs"] = kwargs
+
+    for key in ("LISTEN_PID", "LISTEN_FDS", "LISTEN_FDNAMES"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setattr(cli, "_run_server", fake_run)
+
+    cli.main(["--port", "2455"])
+
+    assert captured["kwargs"]["listen_socket"] is None
+    assert captured["kwargs"]["port"] == 2455
+
+
+def test_main_refuses_an_unusable_systemd_socket(monkeypatch):
+    monkeypatch.setenv("LISTEN_PID", str(os.getpid()))
+    monkeypatch.setenv("LISTEN_FDS", "2")
+    monkeypatch.setattr(cli, "_run_server", lambda *_a, **_k: pytest.fail("server must not start"))
+
+    with pytest.raises(SystemExit, match="cannot use the socket from systemd"):
+        cli.main([])
+
+
+def test_run_server_serves_the_systemd_socket_and_hands_it_off_on_drain(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+    listener = SimpleNamespace(name="systemd-socket")
+
+    class FakeConfig:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            captured["config_kwargs"] = kwargs
+            self.workers = 1
+
+        def load_app(self) -> None:
+            return None
+
+    class FakeServer:
+        started = True
+
+        def __init__(
+            self,
+            config: FakeConfig,
+            *,
+            drain_timeout_seconds: float,
+            stop_accepting_on_drain: bool = False,
+        ) -> None:
+            captured["drain_timeout_seconds"] = drain_timeout_seconds
+            captured["stop_accepting_on_drain"] = stop_accepting_on_drain
+
+        def run(self, sockets: list[object] | None = None) -> None:
+            captured["sockets"] = sockets
+
+    monkeypatch.setattr(logging, "captureWarnings", lambda capture: None)
+    monkeypatch.setattr(cli, "_load_uvicorn", lambda: SimpleNamespace(Config=FakeConfig))
+    monkeypatch.setattr(cli, "_load_graceful_drain_server", lambda: FakeServer)
+    monkeypatch.setattr(cli, "_load_shutdown_drain_timeout_seconds", lambda: 120)
+
+    cli._run_server("app.main:app", listen_socket=cast(socket.socket, listener), host="0.0.0.0", port=2455)
+
+    assert captured["sockets"] == [listener]
+    assert captured["stop_accepting_on_drain"] is True
+    assert captured["drain_timeout_seconds"] == 120
+    assert "listen_socket" not in captured["config_kwargs"]
 
 
 def test_run_server_uses_graceful_server_and_shared_timeout(

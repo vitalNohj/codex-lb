@@ -17,7 +17,19 @@
 #   CODEX_LB_DEPLOY_ALLOW_DIRTY    Set to 1 to allow uncommitted changes in place
 #                                  (default: stash them first — see below)
 #   CODEX_LB_DEPLOY_SWITCH_BRANCH  Set to 1 to checkout BRANCH when the clone is elsewhere
-#   CODEX_LB_HEALTH_URL            Post-restart probe (default: http://127.0.0.1:2455/health/live)
+#   CODEX_LB_HEALTH_URL            Post-restart readiness probe (default:
+#                                  http://127.0.0.1:<CODEX_LB_LISTEN port>/health/ready)
+#   CODEX_LB_SERVICE_LAYOUT        socket (default) or single; see "Service layout" below.
+#                                  Without it, the layout recorded by the last deploy is kept
+#   CODEX_LB_SERVICE_LAYOUT_FILE   Records the layout in use (default: $LOG_DIR/service-layout)
+#   CODEX_LB_SOCKET                systemd user socket unit (default: codex-lb.socket)
+#   CODEX_LB_SYSTEMD_USER_DIR      Where the managed units go (default: ~/.config/systemd/user)
+#   CODEX_LB_LISTEN                Address the socket unit holds (default: 0.0.0.0:2455)
+#   CODEX_LB_DRAIN_TIMEOUT_SECONDS Drain budget for in-flight requests at a restart in the
+#                                  socket layout (default: 120, at most 300)
+#   CODEX_LB_DEPLOY_DATA_DIR       Optional CODEX_LB_DATA_DIR for the service (for a rehearsal copy)
+#   CODEX_LB_VENV_DIR              Virtualenv the socket layout runs (default: $DEPLOY_DIR/.venv,
+#                                  the one uv sync --frozen builds)
 #   CODEX_LB_SKIP_FRONTEND         Set to 1 to skip bun install/build
 #   CODEX_LB_FORCE_FRONTEND        Set to 1 to build the frontend even when frontend/
 #                                  is unchanged since the last successful build (default:
@@ -44,7 +56,34 @@
 # keeps uncommitted changes in place instead and still refuses (loudly) to
 # leave HEAD off REMOTE/BRANCH.
 #
+# Service layout. In the socket layout, a socket unit (CODEX_LB_SOCKET) holds
+# the listening port, and a managed drop-in makes the service serve that
+# socket. At a restart, the old process stops accepting, finishes its
+# in-flight requests within CODEX_LB_DRAIN_TIMEOUT_SECONDS and exits; new
+# connections wait in the kernel queue for the new process instead of being
+# refused. The script never edits the service unit itself; it only writes
+#   <unit dir>/<socket unit>
+#   <unit dir>/<service>.d/50-socket-handoff.conf
+# The first deploy in the socket layout stops the service, starts the socket
+# and starts the service again. If that fails, or the service does not become
+# ready on the socket, the script removes both files, starts the service as
+# before, records the single layout and fails loudly.
+#
+# Rollback to the single unit (one command; restarts the service):
+#   deploy-codex-lb.sh rollback-layout
+# It needs no git access and records the single layout, so later deploys
+# keep the single unit until CODEX_LB_SERVICE_LAYOUT=socket is set again.
+#
 set -euo pipefail
+
+COMMAND="${1:-deploy}"
+case "$COMMAND" in
+  deploy | rollback-layout) ;;
+  *)
+    printf 'usage: %s [deploy|rollback-layout]\n' "$0" >&2
+    exit 2
+    ;;
+esac
 
 DEPLOY_DIR="${CODEX_LB_DEPLOY_DIR:-/home/nohj/personal/codex-lb}"
 SERVICE="${CODEX_LB_SERVICE:-codex-lb.service}"
@@ -55,7 +94,15 @@ LOCK_FILE="${CODEX_LB_DEPLOY_LOCK:-$LOG_DIR/deploy.lock}"
 LOCK_WAIT="${CODEX_LB_DEPLOY_LOCK_WAIT:-900}"
 ALLOW_DIRTY="${CODEX_LB_DEPLOY_ALLOW_DIRTY:-0}"
 SWITCH_BRANCH="${CODEX_LB_DEPLOY_SWITCH_BRANCH:-0}"
-HEALTH_URL="${CODEX_LB_HEALTH_URL:-http://127.0.0.1:2455/health/live}"
+LISTEN="${CODEX_LB_LISTEN:-0.0.0.0:2455}"
+LISTEN_PORT="${LISTEN##*:}"
+HEALTH_URL="${CODEX_LB_HEALTH_URL:-http://127.0.0.1:${LISTEN_PORT}/health/ready}"
+LAYOUT_REQUEST="${CODEX_LB_SERVICE_LAYOUT:-}"
+SOCKET="${CODEX_LB_SOCKET:-codex-lb.socket}"
+UNIT_DIR="${CODEX_LB_SYSTEMD_USER_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user}"
+DRAIN_SECS="${CODEX_LB_DRAIN_TIMEOUT_SECONDS:-120}"
+SERVICE_DATA_DIR="${CODEX_LB_DEPLOY_DATA_DIR:-}"
+VENV_DIR="${CODEX_LB_VENV_DIR:-$DEPLOY_DIR/.venv}"
 SKIP_FRONTEND="${CODEX_LB_SKIP_FRONTEND:-0}"
 FORCE_FRONTEND="${CODEX_LB_FORCE_FRONTEND:-0}"
 STAMP_FILE="${CODEX_LB_FRONTEND_STAMP:-$LOG_DIR/frontend-built.sha}"
@@ -71,6 +118,9 @@ BUN_BIN="${BUN_BIN:-$HOME/.bun/bin/bun}"
 export PATH="$(dirname -- "$BUN_BIN"):$PATH"
 TS="$(date -u +%Y%m%dT%H%M%SZ)"
 LOG_FILE="$LOG_DIR/deploy-$TS.log"
+LAYOUT_FILE="${CODEX_LB_SERVICE_LAYOUT_FILE:-$LOG_DIR/service-layout}"
+SOCKET_FILE="$UNIT_DIR/$SOCKET"
+DROPIN_FILE="$UNIT_DIR/$SERVICE.d/50-socket-handoff.conf"
 LATEST_LINK="$LOG_DIR/latest.log"
 DUMPED=0
 
@@ -101,6 +151,7 @@ dump_diagnostics() {
   log "SWITCH_BRANCH=$SWITCH_BRANCH SKIP_FRONTEND=$SKIP_FRONTEND FORCE_FRONTEND=$FORCE_FRONTEND SKIP_RESTART=$SKIP_RESTART"
   log "STAMP_FILE=$STAMP_FILE"
   log "HEALTH_URL=$HEALTH_URL"
+  log "SOCKET=$SOCKET LISTEN=$LISTEN UNIT_DIR=$UNIT_DIR layout=$(recorded_layout)"
   log "LOG_FILE=$LOG_FILE"
   log "user=$(id -un) uid=$(id -u) HOME=$HOME"
   log "XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-unset}"
@@ -252,6 +303,229 @@ wait_healthy() {
     sleep "$HEALTH_SLEEP_SECS"
   done
   die "service did not become healthy at $HEALTH_URL after $HEALTH_RETRIES attempts"
+}
+
+# --- service layout (see "Service layout" in the header) ---------------------
+
+recorded_layout() {
+  if [[ -f "$LAYOUT_FILE" ]]; then
+    tr -d '[:space:]' <"$LAYOUT_FILE"
+  fi
+}
+
+record_layout() {
+  mkdir -p "$(dirname "$LAYOUT_FILE")"
+  printf '%s\n' "$1" >"$LAYOUT_FILE.tmp"
+  mv -f "$LAYOUT_FILE.tmp" "$LAYOUT_FILE"
+  log "recorded service layout '$1' -> $LAYOUT_FILE"
+}
+
+# Set LAYOUT from CODEX_LB_SERVICE_LAYOUT, else the recorded layout, else socket.
+resolve_layout() {
+  LAYOUT=$LAYOUT_REQUEST
+  if [[ -z "$LAYOUT" ]]; then
+    LAYOUT="$(recorded_layout)"
+  fi
+  LAYOUT="${LAYOUT:-socket}"
+  case "$LAYOUT" in
+    socket | single) ;;
+    *) die "service layout must be 'socket' or 'single' (got ${LAYOUT@Q})" ;;
+  esac
+}
+
+unit_safe_path() {
+  local name=$1
+  local value=$2
+  # Unit files treat whitespace, quotes, backslashes and % specially.
+  if [[ "$value" != /* || "$value" =~ [[:space:]\"\'\\%] ]]; then
+    die "$name must be an absolute path without spaces, quotes, backslashes or % for the socket layout (got ${value@Q})"
+  fi
+}
+
+socket_unit_text() {
+  cat <<EOF
+# Managed by scripts/deploy-codex-lb.sh (socket layout). Do not edit by hand.
+# Rollback to the single unit: deploy-codex-lb.sh rollback-layout
+[Unit]
+Description=codex-lb listening socket (held across $SERVICE restarts)
+
+[Socket]
+ListenStream=$LISTEN
+Service=$SERVICE
+Backlog=4096
+NoDelay=true
+
+[Install]
+WantedBy=sockets.target
+EOF
+}
+
+service_dropin_text() {
+  local manager_path
+  manager_path="$(systemctl --user show-environment 2>/dev/null | sed -n 's/^PATH=//p')"
+  manager_path="${manager_path:-/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin}"
+  cat <<EOF
+# Managed by scripts/deploy-codex-lb.sh (socket layout). Do not edit by hand.
+# Rollback to the single unit: deploy-codex-lb.sh rollback-layout
+[Unit]
+Requires=$SOCKET
+After=$SOCKET
+
+[Service]
+# Run the console script directly: \`uv run\` forks a child process, and
+# systemd passes the socket only to the main process (LISTEN_PID).
+ExecStart=
+ExecStart=$VENV_DIR/bin/codex-lb --host ${LISTEN%:*} --port $LISTEN_PORT
+Environment=VIRTUAL_ENV=$VENV_DIR
+Environment=PATH=$VENV_DIR/bin:$manager_path
+Environment=CODEX_LB_SHUTDOWN_DRAIN_TIMEOUT_SECONDS=$DRAIN_SECS
+TimeoutStopSec=$((DRAIN_SECS + 60))
+EOF
+  if [[ -n "$SERVICE_DATA_DIR" ]]; then
+    printf 'Environment=CODEX_LB_DATA_DIR=%s\n' "$SERVICE_DATA_DIR"
+  fi
+}
+
+# Write $2 to $1 only when it differs; return 0 when the file changed.
+write_if_changed() {
+  local path=$1
+  local text=$2
+  if [[ -f "$path" ]] && [[ "$(cat "$path")" == "$text" ]]; then
+    return 1
+  fi
+  mkdir -p "$(dirname "$path")"
+  printf '%s\n' "$text" >"$path.tmp"
+  mv -f "$path.tmp" "$path"
+  log "wrote $path"
+  return 0
+}
+
+unit_is_active() {
+  [[ "$(systemctl --user is-active "$1" 2>/dev/null || true)" == "active" ]]
+}
+
+# Return to the single unit: drain and stop the service, release the port,
+# remove the managed files and start the service on its own again.
+remove_socket_layout() {
+  log "stopping $SERVICE and $SOCKET to leave the socket layout"
+  systemctl --user stop "$SOCKET" "$SERVICE" || true
+  systemctl --user disable "$SOCKET" >/dev/null 2>&1 || true
+  rm -f "$SOCKET_FILE" "$DROPIN_FILE"
+  rmdir "$(dirname "$DROPIN_FILE")" 2>/dev/null || true
+  log "removed $SOCKET_FILE and $DROPIN_FILE"
+  systemctl --user daemon-reload
+  systemctl --user reset-failed "$SOCKET" "$SERVICE" >/dev/null 2>&1 || true
+  log "starting $SERVICE as a single unit"
+  systemctl --user start "$SERVICE"
+}
+
+socket_layout_present() {
+  [[ -e "$SOCKET_FILE" || -e "$DROPIN_FILE" ]] || unit_is_active "$SOCKET"
+}
+
+# The socket layout failed to come up: go back to the single unit so the
+# service keeps running the deployed code, then fail the deploy loudly.
+fall_back_to_single() {
+  local reason=$1
+  log "ERROR: socket layout failed: $reason"
+  log "falling back to the single unit"
+  remove_socket_layout
+  record_layout single
+  if wait_service_active && wait_healthy; then
+    die "socket layout failed ($reason); $SERVICE runs as a single unit again. Fix the cause, then deploy with CODEX_LB_SERVICE_LAYOUT=socket"
+  fi
+  die "socket layout failed ($reason) and $SERVICE did not come back as a single unit"
+}
+
+restart_single_layout() {
+  if socket_layout_present; then
+    log "service layout 'single' requested; removing the socket layout"
+    remove_socket_layout
+  else
+    log "restarting systemd user unit: $SERVICE"
+    systemctl --user daemon-reload
+    systemctl --user restart "$SERVICE"
+  fi
+  record_layout single
+  wait_service_active
+  wait_healthy
+}
+
+restart_socket_layout() {
+  local socket_text dropin_text socket_changed=0
+  unit_safe_path CODEX_LB_VENV_DIR "$VENV_DIR"
+  [[ -z "$SERVICE_DATA_DIR" ]] || unit_safe_path CODEX_LB_DEPLOY_DATA_DIR "$SERVICE_DATA_DIR"
+  [[ -x "$VENV_DIR/bin/codex-lb" ]] || die "socket layout needs $VENV_DIR/bin/codex-lb (run uv sync --frozen); $SERVICE was not touched"
+  "$VENV_DIR/bin/codex-lb" --help >/dev/null 2>&1 || die "$VENV_DIR/bin/codex-lb --help failed; $SERVICE was not touched"
+
+  socket_text="$(socket_unit_text)"
+  dropin_text="$(service_dropin_text)"
+  if write_if_changed "$SOCKET_FILE" "$socket_text"; then
+    socket_changed=1
+  fi
+  write_if_changed "$DROPIN_FILE" "$dropin_text" || true
+  systemctl --user daemon-reload
+
+  if [[ "$socket_changed" == "0" ]] && unit_is_active "$SOCKET"; then
+    # Steady state: the socket keeps the port. The old process stops
+    # accepting, finishes in-flight requests, and the new one takes the queue.
+    log "restarting $SERVICE; $SOCKET holds the port during the drain (up to ${DRAIN_SECS}s)"
+    systemctl --user restart "$SERVICE"
+    record_layout socket
+    wait_service_active
+    wait_healthy
+    return 0
+  fi
+
+  # Move to the socket layout (or apply a changed socket unit). The running
+  # process owns the port, so it must stop before the socket can bind it.
+  log "moving $SERVICE to the socket layout: stop $SERVICE, start $SOCKET, start $SERVICE"
+  systemctl --user stop "$SERVICE" || fall_back_to_single "could not stop $SERVICE"
+  if unit_is_active "$SOCKET"; then
+    systemctl --user stop "$SOCKET" || fall_back_to_single "could not stop $SOCKET"
+  fi
+  systemctl --user start "$SOCKET" || fall_back_to_single "could not start $SOCKET on $LISTEN"
+  systemctl --user enable "$SOCKET" >/dev/null 2>&1 || fall_back_to_single "could not enable $SOCKET"
+  systemctl --user start "$SERVICE" || fall_back_to_single "could not start $SERVICE on $SOCKET"
+  local i state ready=0
+  for ((i = 1; i <= HEALTH_RETRIES; i++)); do
+    state="$(systemctl --user is-active "$SERVICE" 2>/dev/null || true)"
+    if [[ "$state" == "failed" ]]; then
+      break
+    fi
+    if [[ "$state" == "active" ]] && curl -fsS --max-time 3 "$HEALTH_URL" >/dev/null 2>&1; then
+      ready=1
+      break
+    fi
+    log "waiting for $SERVICE to become ready on $SOCKET ($i/$HEALTH_RETRIES, state=$state) $HEALTH_URL"
+    sleep "$HEALTH_SLEEP_SECS"
+  done
+  if [[ "$ready" != "1" ]]; then
+    fall_back_to_single "$SERVICE did not become ready at $HEALTH_URL on $SOCKET"
+  fi
+  log "health check OK ($HEALTH_URL); $SERVICE serves $SOCKET"
+  record_layout socket
+}
+
+rollback_layout() {
+  log "=== codex-lb service layout rollback start ==="
+  acquire_lock
+  require_cmd systemctl
+  require_cmd curl
+  require_cmd flock
+  ensure_user_systemd
+  if socket_layout_present; then
+    remove_socket_layout
+  else
+    log "no socket layout found ($SOCKET_FILE, $DROPIN_FILE); $SERVICE already runs as a single unit"
+  fi
+  record_layout single
+  wait_service_active
+  wait_healthy
+  systemctl --user reset-failed "$SERVICE" >/dev/null 2>&1 || true
+  log "=== codex-lb service layout rollback success ==="
+  log "later deploys keep the single unit; set CODEX_LB_SERVICE_LAYOUT=socket to go back"
+  log "log: $LOG_FILE"
 }
 
 stash_dirty_tree() {
@@ -453,15 +727,24 @@ build_frontend() {
   log "recorded frontend build stamp $AFTER_SHA -> $STAMP_FILE"
 }
 
+require_int HEALTH_RETRIES "$HEALTH_RETRIES"
+require_int HEALTH_SLEEP_SECS "$HEALTH_SLEEP_SECS"
+require_int ACTIVE_RETRIES "$ACTIVE_RETRIES"
+require_int CODEX_LB_DRAIN_TIMEOUT_SECONDS "$DRAIN_SECS"
+((DRAIN_SECS <= 300)) || die "CODEX_LB_DRAIN_TIMEOUT_SECONDS must be at most 300 (got $DRAIN_SECS)"
+[[ "$LISTEN" =~ ^[^[:space:]]+:[1-9][0-9]*$ ]] || die "CODEX_LB_LISTEN must be <host>:<port> (got ${LISTEN@Q})"
+
+if [[ "$COMMAND" == "rollback-layout" ]]; then
+  rollback_layout
+  exit 0
+fi
+
 log "=== codex-lb deploy start ==="
 log "host=$(hostname) user=$(id -un) pid=$$"
 log "DEPLOY_DIR=$DEPLOY_DIR"
 log "SERVICE=$SERVICE BRANCH=$BRANCH REMOTE=$REMOTE"
 log "LOG_FILE=$LOG_FILE"
 
-require_int HEALTH_RETRIES "$HEALTH_RETRIES"
-require_int HEALTH_SLEEP_SECS "$HEALTH_SLEEP_SECS"
-require_int ACTIVE_RETRIES "$ACTIVE_RETRIES"
 require_int LOG_KEEP "$LOG_KEEP"
 [[ "$LOCK_WAIT" =~ ^[0-9]+$ ]] || die "CODEX_LB_DEPLOY_LOCK_WAIT must be a non-negative integer (got ${LOCK_WAIT@Q})"
 
@@ -509,12 +792,13 @@ refresh_launcher
 if [[ "$SKIP_RESTART" == "1" ]]; then
   log "skipping restart (CODEX_LB_SKIP_RESTART=1)"
 else
-  log "reloading user systemd units"
-  systemctl --user daemon-reload
-  log "restarting systemd user unit: $SERVICE"
-  systemctl --user restart "$SERVICE"
-  wait_service_active
-  wait_healthy
+  resolve_layout
+  log "service layout: $LAYOUT"
+  if [[ "$LAYOUT" == "socket" ]]; then
+    restart_socket_layout
+  else
+    restart_single_layout
+  fi
   systemctl --user reset-failed "$SERVICE" >/dev/null 2>&1 || true
 fi
 
