@@ -607,6 +607,7 @@ def test_first_deploy_moves_the_service_to_the_socket_layout(tmp_path: Path) -> 
         ("/usr/bin/uv run codex-lb --host 127.0.0.1 --port 2455", "127.0.0.1:2455"),
         ("/usr/bin/uv run codex-lb --host=127.0.0.1 --port=3000", "127.0.0.1:3000"),
         ("/usr/bin/uv run codex-lb --host localhost", "127.0.0.1:2455"),
+        ("/usr/bin/uv run codex-lb --port 3000", "127.0.0.1:3000"),
         (None, "127.0.0.1:2455"),
     ],
 )
@@ -652,6 +653,29 @@ def test_later_deploy_restarts_only_the_service_and_keeps_the_socket(tmp_path: P
     assert not [call for call in calls if call.startswith(("stop", "start"))]
     assert _state(tmp_path, "codex-lb.socket") == "active"
     assert _layout_record(tmp_path) == "socket"
+
+
+def test_steady_state_restart_not_ready_falls_back_to_the_single_unit(tmp_path: Path) -> None:
+    _origin, _seed, deploy = _make_deploy_fixture(tmp_path)
+    bin_dir = _stub_bin(tmp_path)
+    env = _layout_env(tmp_path, bin_dir)
+    assert _run_deploy(tmp_path, deploy, bin_dir, extra_env=env).returncode == 0
+    # The next build does not become ready on the socket.
+    (tmp_path / "systemd-state" / "not-ready-on-socket").touch()
+    _clear_calls(tmp_path)
+
+    result = _run_deploy(tmp_path, deploy, bin_dir, extra_env=env)
+
+    assert result.returncode != 0
+    assert "restart codex-lb.service" in _calls(tmp_path)
+    assert not _socket_file(tmp_path).exists()
+    assert not _dropin_file(tmp_path).exists()
+    assert _state(tmp_path, "codex-lb.socket") == "inactive"
+    assert _state(tmp_path, "codex-lb.service") == "active"
+    assert _layout_record(tmp_path) == "single"
+    log = _read_latest_log(tmp_path)
+    assert "socket layout failed: codex-lb.service did not become ready" in log
+    assert "runs as a single unit again" in log
 
 
 def test_socket_that_cannot_start_falls_back_to_the_single_unit(tmp_path: Path) -> None:

@@ -340,7 +340,7 @@ resolve_layout() {
 }
 
 # Print the --host and --port values of the service's current ExecStart
-# ("<host> <port>", either may be empty). With the managed drop-in in place,
+# ("<host>|<port>", either may be empty). With the managed drop-in in place,
 # that ExecStart is the drop-in's, which carries the same address.
 service_exec_listen() {
   local exec_start argv host="" port="" prev=""
@@ -360,17 +360,20 @@ service_exec_listen() {
     esac
     prev=$word
   done
-  printf '%s %s\n' "$host" "$port"
+  printf '%s|%s\n' "$host" "$port"
 }
 
 # Set LISTEN, LISTEN_PORT and HEALTH_URL. Without CODEX_LB_LISTEN, keep the
 # address the service binds today, so the move never widens or narrows it.
 resolve_listen() {
-  local host port
+  local fields host port
   if [[ -n "$LISTEN_REQUEST" ]]; then
     LISTEN=$LISTEN_REQUEST
   else
-    read -r host port <<<"$(service_exec_listen)"
+    # Split on "|" so an empty host (only --port given) stays empty.
+    fields="$(service_exec_listen)"
+    host="${fields%%|*}"
+    port="${fields#*|}"
     # ListenStream= takes a numeric address, not a host name.
     [[ "$host" == "localhost" ]] && host=127.0.0.1
     LISTEN="${host:-127.0.0.1}:${port:-2455}"
@@ -499,6 +502,25 @@ restart_single_layout() {
   wait_healthy
 }
 
+# Wait until the service is active and ready on the socket. Return 1 on
+# failure instead of exiting, so the caller can fall back to the single unit.
+socket_service_ready() {
+  local i state
+  for ((i = 1; i <= HEALTH_RETRIES; i++)); do
+    state="$(systemctl --user is-active "$SERVICE" 2>/dev/null || true)"
+    if [[ "$state" == "failed" ]]; then
+      return 1
+    fi
+    if [[ "$state" == "active" ]] && curl -fsS --max-time 3 "$HEALTH_URL" >/dev/null 2>&1; then
+      log "health check OK ($HEALTH_URL); $SERVICE serves $SOCKET"
+      return 0
+    fi
+    log "waiting for $SERVICE to become ready on $SOCKET ($i/$HEALTH_RETRIES, state=$state) $HEALTH_URL"
+    sleep "$HEALTH_SLEEP_SECS"
+  done
+  return 1
+}
+
 restart_socket_layout() {
   local socket_text dropin_text socket_changed=0
   unit_safe_path CODEX_LB_VENV_DIR "$VENV_DIR"
@@ -518,10 +540,9 @@ restart_socket_layout() {
     # Steady state: the socket keeps the port. The old process stops
     # accepting, finishes in-flight requests, and the new one takes the queue.
     log "restarting $SERVICE; $SOCKET holds the port during the drain (up to ${DRAIN_SECS}s)"
-    systemctl --user restart "$SERVICE"
+    systemctl --user restart "$SERVICE" || fall_back_to_single "could not restart $SERVICE on $SOCKET"
+    socket_service_ready || fall_back_to_single "$SERVICE did not become ready at $HEALTH_URL on $SOCKET"
     record_layout socket
-    wait_service_active
-    wait_healthy
     return 0
   fi
 
@@ -535,23 +556,7 @@ restart_socket_layout() {
   systemctl --user start "$SOCKET" || fall_back_to_single "could not start $SOCKET on $LISTEN"
   systemctl --user enable "$SOCKET" >/dev/null 2>&1 || fall_back_to_single "could not enable $SOCKET"
   systemctl --user start "$SERVICE" || fall_back_to_single "could not start $SERVICE on $SOCKET"
-  local i state ready=0
-  for ((i = 1; i <= HEALTH_RETRIES; i++)); do
-    state="$(systemctl --user is-active "$SERVICE" 2>/dev/null || true)"
-    if [[ "$state" == "failed" ]]; then
-      break
-    fi
-    if [[ "$state" == "active" ]] && curl -fsS --max-time 3 "$HEALTH_URL" >/dev/null 2>&1; then
-      ready=1
-      break
-    fi
-    log "waiting for $SERVICE to become ready on $SOCKET ($i/$HEALTH_RETRIES, state=$state) $HEALTH_URL"
-    sleep "$HEALTH_SLEEP_SECS"
-  done
-  if [[ "$ready" != "1" ]]; then
-    fall_back_to_single "$SERVICE did not become ready at $HEALTH_URL on $SOCKET"
-  fi
-  log "health check OK ($HEALTH_URL); $SERVICE serves $SOCKET"
+  socket_service_ready || fall_back_to_single "$SERVICE did not become ready at $HEALTH_URL on $SOCKET"
   record_layout socket
 }
 
