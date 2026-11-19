@@ -117,6 +117,9 @@ class InFlightMiddleware:
                             "message": _DRAIN_MESSAGE,
                         }
                     },
+                    # Same retryable signal as the WebSocket drain denial:
+                    # the next process serves the retry.
+                    headers=merge_retry_after_headers(),
                 )
                 await response(scope, receive, send)
                 return

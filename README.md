@@ -217,7 +217,7 @@ systemctl --user enable --now codex-lb.service
 loginctl enable-linger "$USER"   # keep user services running after logout
 ```
 
-[`scripts/deploy-codex-lb.sh`](scripts/deploy-codex-lb.sh) updates such a host: it fetches `main`, preserves any local changes on a backup branch or stash, runs `uv sync --frozen`, rebuilds the dashboard only when `frontend/` changed, restarts the service and waits for `/health/live`. Set `CODEX_LB_DEPLOY_DIR` to the checkout and `CODEX_LB_SERVICE` to the unit name; the other overrides are listed at the top of the script. Run it by hand or from a push webhook.
+[`scripts/deploy-codex-lb.sh`](scripts/deploy-codex-lb.sh) updates such a host: it fetches `main`, preserves any local changes on a backup branch or stash, runs `uv sync --frozen`, rebuilds the dashboard only when `frontend/` changed, restarts the service and waits for `/health/ready`. By default a `codex-lb.socket` unit holds the port across restarts, so new connections wait for the next process instead of being refused while the old one drains; `deploy-codex-lb.sh rollback-layout` returns to a single unit. Set `CODEX_LB_DEPLOY_DIR` to the checkout and `CODEX_LB_SERVICE` to the unit name; the other overrides are listed at the top of the script. Run it by hand or from a push webhook.
 
 ### First remote login
 

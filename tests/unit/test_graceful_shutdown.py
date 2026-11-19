@@ -810,6 +810,8 @@ async def test_in_flight_middleware_checks_http_drain_after_registration(
     assert app_called is False
     assert sent_messages[0]["type"] == "http.response.start"
     assert sent_messages[0]["status"] == 503
+    # The drain refusal is retryable on HTTP too, like the WebSocket denial.
+    assert dict(cast(list[tuple[bytes, bytes]], sent_messages[0]["headers"]))[b"retry-after"] == b"5"
     assert shutdown_state.get_in_flight() == 0
 
 

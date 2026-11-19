@@ -440,3 +440,324 @@ def test_allow_dirty_keeps_uncommitted_changes_and_fails_loudly_when_ahead(tmp_p
     assert "ERROR: local main is ahead of origin/main" in log
     assert "the deploy cannot converge" in log
     assert "=== codex-lb deploy failed ===" in log
+
+
+# --- service layout (socket unit holds the port across restarts) -------------
+
+_SYSTEMCTL_STUB = r"""#!/usr/bin/env bash
+# Stateful systemctl stub: unit states live in $STUB_STATE/<unit>.state.
+set -u
+[[ "${1:-}" == "--user" ]] && shift
+cmd=${1:-}
+shift || true
+printf '%s %s\n' "$cmd" "$*" >>"$STUB_STATE/calls.log"
+state_of() { cat "$STUB_STATE/$1.state" 2>/dev/null || echo inactive; }
+fail_for() { [[ -e "$STUB_STATE/fail-$cmd-$1" ]]; }
+case "$cmd" in
+  show-environment) echo "PATH=/usr/bin:/bin" ;;
+  show)
+    # Only `show -p ExecStart --value <unit>` is used: print the unit's argv.
+    unit="${*: -1}"
+    if [[ -e "$STUB_STATE/$unit.execstart" ]]; then
+      printf '{ path=/x ; argv[]=%s ; ignore_errors=no ; start_time=[n/a] }\n' "$(cat "$STUB_STATE/$unit.execstart")"
+    fi ;;
+  is-active) s="$(state_of "$1")"; echo "$s"; [[ "$s" == active ]] ;;
+  start | restart)
+    for unit in "$@"; do
+      if fail_for "$unit"; then echo failed >"$STUB_STATE/$unit.state"; exit 1; fi
+      echo active >"$STUB_STATE/$unit.state"
+    done ;;
+  stop)
+    for unit in "$@"; do echo inactive >"$STUB_STATE/$unit.state"; done ;;
+  enable | disable | daemon-reload | reset-failed | status) ;;
+  *) echo "unexpected systemctl $cmd" >&2; exit 2 ;;
+esac
+"""
+
+# Ready only when the service is active, and not ready on the socket layout
+# when the test asks for that failure.
+_CURL_STUB = r"""#!/usr/bin/env bash
+[[ "$(cat "$STUB_STATE/codex-lb.service.state" 2>/dev/null)" == active ]] || exit 7
+if [[ -e "$STUB_STATE/not-ready-on-socket" && -e "$STUB_UNIT_DIR/codex-lb.service.d/50-socket-handoff.conf" ]]; then
+  exit 22
+fi
+exit 0
+"""
+
+
+_PRODUCTION_EXEC_START = "/home/nohj/.local/bin/uv run codex-lb --host 0.0.0.0 --port 2455"
+
+
+def _layout_env(
+    tmp_path: Path,
+    bin_dir: Path,
+    *,
+    entrypoint_ok: bool = True,
+    exec_start: str | None = _PRODUCTION_EXEC_START,
+) -> dict[str, str]:
+    state = tmp_path / "systemd-state"
+    state.mkdir(exist_ok=True)
+    unit_dir = tmp_path / "units"
+    (bin_dir / "systemctl").write_text(_SYSTEMCTL_STUB, encoding="utf-8")
+    (bin_dir / "curl").write_text(_CURL_STUB, encoding="utf-8")
+    (bin_dir / "journalctl").write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+    for name in ("systemctl", "curl", "journalctl"):
+        (bin_dir / name).chmod(0o755)
+    venv_bin = tmp_path / "venv" / "bin"
+    venv_bin.mkdir(parents=True, exist_ok=True)
+    entrypoint = venv_bin / "codex-lb"
+    entrypoint.write_text(f"#!/usr/bin/env bash\nexit {0 if entrypoint_ok else 1}\n", encoding="utf-8")
+    entrypoint.chmod(0o755)
+    # The service runs before the deploy, as a single unit.
+    (state / "codex-lb.service.state").write_text("active\n", encoding="utf-8")
+    if exec_start is not None:
+        (state / "codex-lb.service.execstart").write_text(exec_start, encoding="utf-8")
+    return {
+        "CODEX_LB_SKIP_RESTART": "0",
+        "CODEX_LB_SYSTEMD_USER_DIR": str(unit_dir),
+        "CODEX_LB_VENV_DIR": str(tmp_path / "venv"),
+        "CODEX_LB_HEALTH_RETRIES": "2",
+        "CODEX_LB_HEALTH_SLEEP_SECS": "1",
+        "CODEX_LB_ACTIVE_RETRIES": "2",
+        "STUB_STATE": str(state),
+        "STUB_UNIT_DIR": str(unit_dir),
+    }
+
+
+def _calls(tmp_path: Path) -> list[str]:
+    path = tmp_path / "systemd-state" / "calls.log"
+    if not path.exists():
+        return []
+    return [line.strip() for line in path.read_text(encoding="utf-8").splitlines()]
+
+
+def _clear_calls(tmp_path: Path) -> None:
+    (tmp_path / "systemd-state" / "calls.log").unlink(missing_ok=True)
+
+
+def _state(tmp_path: Path, unit: str) -> str:
+    path = tmp_path / "systemd-state" / f"{unit}.state"
+    return path.read_text(encoding="utf-8").strip() if path.exists() else "inactive"
+
+
+def _layout_record(tmp_path: Path) -> str:
+    return (tmp_path / "deploy-logs" / "service-layout").read_text(encoding="utf-8").strip()
+
+
+def _socket_file(tmp_path: Path) -> Path:
+    return tmp_path / "units" / "codex-lb.socket"
+
+
+def _dropin_file(tmp_path: Path) -> Path:
+    return tmp_path / "units" / "codex-lb.service.d" / "50-socket-handoff.conf"
+
+
+def _run_layout_command(tmp_path: Path, env: dict[str, str], *args: str) -> subprocess.CompletedProcess[str]:
+    full_env = os.environ.copy()
+    full_env.update(
+        {
+            "CODEX_LB_DEPLOY_LOG_DIR": str(tmp_path / "deploy-logs"),
+            "CODEX_LB_DEPLOY_LOCK": str(tmp_path / "deploy-logs" / "deploy.lock"),
+            "PATH": f"{tmp_path / 'stub-bin'}{os.pathsep}{full_env['PATH']}",
+            **env,
+        }
+    )
+    return subprocess.run(
+        ["bash", str(_DEPLOY_SCRIPT), *args],
+        capture_output=True,
+        text=True,
+        env=full_env,
+        timeout=120,
+    )
+
+
+def test_first_deploy_moves_the_service_to_the_socket_layout(tmp_path: Path) -> None:
+    _origin, _seed, deploy = _make_deploy_fixture(tmp_path)
+    bin_dir = _stub_bin(tmp_path)
+    env = _layout_env(tmp_path, bin_dir)
+
+    result = _run_deploy(tmp_path, deploy, bin_dir, extra_env=env)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    socket_unit = _socket_file(tmp_path).read_text(encoding="utf-8")
+    assert "ListenStream=0.0.0.0:2455" in socket_unit
+    assert "Service=codex-lb.service" in socket_unit
+    dropin = _dropin_file(tmp_path).read_text(encoding="utf-8")
+    venv = tmp_path / "venv"
+    assert "Requires=codex-lb.socket" in dropin
+    assert "ExecStart=\n" in dropin
+    assert f"ExecStart={venv}/bin/codex-lb --host 0.0.0.0 --port 2455" in dropin
+    assert f"Environment=PATH={venv}/bin:/usr/bin:/bin" in dropin
+    assert "Environment=CODEX_LB_SHUTDOWN_DRAIN_TIMEOUT_SECONDS=120" in dropin
+    assert "TimeoutStopSec=180" in dropin
+    calls = _calls(tmp_path)
+    # The running process owns the port, so it stops before the socket binds it.
+    order = [calls.index(call) for call in ("stop codex-lb.service", "start codex-lb.socket", "start codex-lb.service")]
+    assert order == sorted(order)
+    assert "enable codex-lb.socket" in calls
+    assert _state(tmp_path, "codex-lb.socket") == "active"
+    assert _state(tmp_path, "codex-lb.service") == "active"
+    assert _layout_record(tmp_path) == "socket"
+    assert "health check OK (http://127.0.0.1:2455/health/ready)" in _read_latest_log(tmp_path)
+
+
+@pytest.mark.parametrize(
+    ("exec_start", "expected_listen"),
+    [
+        ("/usr/bin/uv run codex-lb --host 127.0.0.1 --port 2455", "127.0.0.1:2455"),
+        ("/usr/bin/uv run codex-lb --host=127.0.0.1 --port=3000", "127.0.0.1:3000"),
+        ("/usr/bin/uv run codex-lb --host localhost", "127.0.0.1:2455"),
+        ("/usr/bin/uv run codex-lb --port 3000", "127.0.0.1:3000"),
+        (None, "127.0.0.1:2455"),
+    ],
+)
+def test_socket_keeps_the_address_the_service_binds_today(
+    tmp_path: Path, exec_start: str | None, expected_listen: str
+) -> None:
+    _origin, _seed, deploy = _make_deploy_fixture(tmp_path)
+    bin_dir = _stub_bin(tmp_path)
+    env = _layout_env(tmp_path, bin_dir, exec_start=exec_start)
+
+    result = _run_deploy(tmp_path, deploy, bin_dir, extra_env=env)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert f"ListenStream={expected_listen}\n" in _socket_file(tmp_path).read_text(encoding="utf-8")
+    host, port = expected_listen.rsplit(":", 1)
+    assert f"--host {host} --port {port}\n" in _dropin_file(tmp_path).read_text(encoding="utf-8")
+    assert f"health check OK (http://127.0.0.1:{port}/health/ready)" in _read_latest_log(tmp_path)
+
+
+def test_explicit_listen_override_wins(tmp_path: Path) -> None:
+    _origin, _seed, deploy = _make_deploy_fixture(tmp_path)
+    bin_dir = _stub_bin(tmp_path)
+    env = {**_layout_env(tmp_path, bin_dir), "CODEX_LB_LISTEN": "127.0.0.1:2460"}
+
+    result = _run_deploy(tmp_path, deploy, bin_dir, extra_env=env)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "ListenStream=127.0.0.1:2460\n" in _socket_file(tmp_path).read_text(encoding="utf-8")
+
+
+def test_later_deploy_restarts_only_the_service_and_keeps_the_socket(tmp_path: Path) -> None:
+    _origin, _seed, deploy = _make_deploy_fixture(tmp_path)
+    bin_dir = _stub_bin(tmp_path)
+    env = _layout_env(tmp_path, bin_dir)
+    assert _run_deploy(tmp_path, deploy, bin_dir, extra_env=env).returncode == 0
+    _clear_calls(tmp_path)
+
+    result = _run_deploy(tmp_path, deploy, bin_dir, extra_env=env)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    calls = _calls(tmp_path)
+    assert "restart codex-lb.service" in calls
+    assert not [call for call in calls if call.startswith(("stop", "start"))]
+    assert _state(tmp_path, "codex-lb.socket") == "active"
+    assert _layout_record(tmp_path) == "socket"
+
+
+def test_steady_state_restart_not_ready_falls_back_to_the_single_unit(tmp_path: Path) -> None:
+    _origin, _seed, deploy = _make_deploy_fixture(tmp_path)
+    bin_dir = _stub_bin(tmp_path)
+    env = _layout_env(tmp_path, bin_dir)
+    assert _run_deploy(tmp_path, deploy, bin_dir, extra_env=env).returncode == 0
+    # The next build does not become ready on the socket.
+    (tmp_path / "systemd-state" / "not-ready-on-socket").touch()
+    _clear_calls(tmp_path)
+
+    result = _run_deploy(tmp_path, deploy, bin_dir, extra_env=env)
+
+    assert result.returncode != 0
+    assert "restart codex-lb.service" in _calls(tmp_path)
+    assert not _socket_file(tmp_path).exists()
+    assert not _dropin_file(tmp_path).exists()
+    assert _state(tmp_path, "codex-lb.socket") == "inactive"
+    assert _state(tmp_path, "codex-lb.service") == "active"
+    assert _layout_record(tmp_path) == "single"
+    log = _read_latest_log(tmp_path)
+    assert "socket layout failed: codex-lb.service did not become ready" in log
+    assert "runs as a single unit again" in log
+
+
+def test_socket_that_cannot_start_falls_back_to_the_single_unit(tmp_path: Path) -> None:
+    _origin, _seed, deploy = _make_deploy_fixture(tmp_path)
+    bin_dir = _stub_bin(tmp_path)
+    env = _layout_env(tmp_path, bin_dir)
+    (tmp_path / "systemd-state" / "fail-start-codex-lb.socket").touch()
+
+    result = _run_deploy(tmp_path, deploy, bin_dir, extra_env=env)
+
+    assert result.returncode != 0
+    assert not _socket_file(tmp_path).exists()
+    assert not _dropin_file(tmp_path).exists()
+    assert _state(tmp_path, "codex-lb.service") == "active"
+    assert _layout_record(tmp_path) == "single"
+    log = _read_latest_log(tmp_path)
+    assert "socket layout failed: could not start codex-lb.socket" in log
+    assert "runs as a single unit again" in log
+    assert "=== codex-lb deploy failed ===" in log
+
+
+def test_service_not_ready_on_the_socket_falls_back_to_the_single_unit(tmp_path: Path) -> None:
+    _origin, _seed, deploy = _make_deploy_fixture(tmp_path)
+    bin_dir = _stub_bin(tmp_path)
+    env = _layout_env(tmp_path, bin_dir)
+    (tmp_path / "systemd-state" / "not-ready-on-socket").touch()
+
+    result = _run_deploy(tmp_path, deploy, bin_dir, extra_env=env)
+
+    assert result.returncode != 0
+    assert not _socket_file(tmp_path).exists()
+    assert not _dropin_file(tmp_path).exists()
+    assert _state(tmp_path, "codex-lb.socket") == "inactive"
+    assert _state(tmp_path, "codex-lb.service") == "active"
+    assert _layout_record(tmp_path) == "single"
+    log = _read_latest_log(tmp_path)
+    assert "did not become ready" in log
+    assert "runs as a single unit again" in log
+
+
+def test_entrypoint_preflight_failure_leaves_the_running_service_alone(tmp_path: Path) -> None:
+    _origin, _seed, deploy = _make_deploy_fixture(tmp_path)
+    bin_dir = _stub_bin(tmp_path)
+    env = _layout_env(tmp_path, bin_dir, entrypoint_ok=False)
+
+    result = _run_deploy(tmp_path, deploy, bin_dir, extra_env=env)
+
+    assert result.returncode != 0
+    calls = _calls(tmp_path)
+    assert not [call for call in calls if call.startswith(("stop", "start", "restart"))]
+    assert not _socket_file(tmp_path).exists()
+    assert _state(tmp_path, "codex-lb.service") == "active"
+    assert "--help failed; codex-lb.service was not touched" in _read_latest_log(tmp_path)
+
+
+def test_rollback_layout_returns_to_the_single_unit_and_later_deploys_keep_it(tmp_path: Path) -> None:
+    _origin, _seed, deploy = _make_deploy_fixture(tmp_path)
+    bin_dir = _stub_bin(tmp_path)
+    env = _layout_env(tmp_path, bin_dir)
+    assert _run_deploy(tmp_path, deploy, bin_dir, extra_env=env).returncode == 0
+
+    result = _run_layout_command(tmp_path, env, "rollback-layout")
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert not _socket_file(tmp_path).exists()
+    assert not _dropin_file(tmp_path).exists()
+    assert _state(tmp_path, "codex-lb.socket") == "inactive"
+    assert _state(tmp_path, "codex-lb.service") == "active"
+    assert _layout_record(tmp_path) == "single"
+    assert "rollback success" in _read_latest_log(tmp_path)
+
+    _clear_calls(tmp_path)
+    result = _run_deploy(tmp_path, deploy, bin_dir, extra_env=env)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "restart codex-lb.service" in _calls(tmp_path)
+    assert not _socket_file(tmp_path).exists()
+    assert _layout_record(tmp_path) == "single"
+
+
+def test_unknown_command_is_refused(tmp_path: Path) -> None:
+    result = _run_layout_command(tmp_path, {}, "bogus")
+
+    assert result.returncode == 2
+    assert "usage:" in result.stderr

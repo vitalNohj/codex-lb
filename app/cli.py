@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import socket
 import sqlite3
 import sys
 from collections.abc import Sequence
@@ -176,10 +177,16 @@ def main(argv: Sequence[str] | None = None) -> None:
     port = _parse_server_port(args.port)
     timeout_keep_alive = _parse_server_timeout_keep_alive(args.timeout_keep_alive)
     ws_max_size = _parse_server_ws_max_size(args.ws_max_size)
+    listen_socket = _load_inherited_listen_socket()
+    if listen_socket is not None:
+        # systemd's socket unit decides the address; --host/--port only
+        # matter without it. PORT must describe the port really served.
+        port = _socket_port(listen_socket)
     os.environ["PORT"] = str(port)
 
     _run_server(
         "app.main:app",
+        listen_socket=listen_socket,
         host=args.host,
         port=port,
         ssl_certfile=args.ssl_certfile,
@@ -217,13 +224,28 @@ def _load_http_protocol_class() -> Any:
     return load_http_protocol_class()
 
 
+def _load_inherited_listen_socket() -> socket.socket | None:
+    from app.core.socket_activation import SocketActivationError, inherited_listen_socket
+
+    try:
+        return inherited_listen_socket()
+    except SocketActivationError as exc:
+        raise SystemExit(f"codex-lb cannot use the socket from systemd: {exc}") from exc
+
+
+def _socket_port(sock: socket.socket) -> int:
+    from app.core.socket_activation import socket_port
+
+    return socket_port(sock)
+
+
 def _load_shutdown_drain_timeout_seconds() -> int:
     from app.core.config.settings import get_settings
 
     return get_settings().shutdown_drain_timeout_seconds
 
 
-def _run_server(app: str, **kwargs: Any) -> None:
+def _run_server(app: str, *, listen_socket: socket.socket | None = None, **kwargs: Any) -> None:
     # Route warnings.warn() output (for example aiohttp ResourceWarning reprs
     # that embed connection keys) through the redacting log handlers instead
     # of raw stderr.
@@ -246,11 +268,22 @@ def _run_server(app: str, **kwargs: Any) -> None:
     )
     try:
         config.load_app()
-        server = _load_graceful_drain_server()(
-            config,
-            drain_timeout_seconds=drain_timeout_seconds,
-        )
-        server.run()
+        if listen_socket is None:
+            server = _load_graceful_drain_server()(
+                config,
+                drain_timeout_seconds=drain_timeout_seconds,
+            )
+            server.run()
+        else:
+            # systemd keeps this socket open across restarts, so the server
+            # stops accepting as soon as it drains and leaves new connections
+            # queued for the next process.
+            server = _load_graceful_drain_server()(
+                config,
+                drain_timeout_seconds=drain_timeout_seconds,
+                stop_accepting_on_drain=True,
+            )
+            server.run(sockets=[listen_socket])
     except KeyboardInterrupt:
         return
     if not server.started:
