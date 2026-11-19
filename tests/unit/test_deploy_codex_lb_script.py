@@ -455,6 +455,12 @@ state_of() { cat "$STUB_STATE/$1.state" 2>/dev/null || echo inactive; }
 fail_for() { [[ -e "$STUB_STATE/fail-$cmd-$1" ]]; }
 case "$cmd" in
   show-environment) echo "PATH=/usr/bin:/bin" ;;
+  show)
+    # Only `show -p ExecStart --value <unit>` is used: print the unit's argv.
+    unit="${*: -1}"
+    if [[ -e "$STUB_STATE/$unit.execstart" ]]; then
+      printf '{ path=/x ; argv[]=%s ; ignore_errors=no ; start_time=[n/a] }\n' "$(cat "$STUB_STATE/$unit.execstart")"
+    fi ;;
   is-active) s="$(state_of "$1")"; echo "$s"; [[ "$s" == active ]] ;;
   start | restart)
     for unit in "$@"; do
@@ -479,7 +485,16 @@ exit 0
 """
 
 
-def _layout_env(tmp_path: Path, bin_dir: Path, *, entrypoint_ok: bool = True) -> dict[str, str]:
+_PRODUCTION_EXEC_START = "/home/nohj/.local/bin/uv run codex-lb --host 0.0.0.0 --port 2455"
+
+
+def _layout_env(
+    tmp_path: Path,
+    bin_dir: Path,
+    *,
+    entrypoint_ok: bool = True,
+    exec_start: str | None = _PRODUCTION_EXEC_START,
+) -> dict[str, str]:
     state = tmp_path / "systemd-state"
     state.mkdir(exist_ok=True)
     unit_dir = tmp_path / "units"
@@ -495,6 +510,8 @@ def _layout_env(tmp_path: Path, bin_dir: Path, *, entrypoint_ok: bool = True) ->
     entrypoint.chmod(0o755)
     # The service runs before the deploy, as a single unit.
     (state / "codex-lb.service.state").write_text("active\n", encoding="utf-8")
+    if exec_start is not None:
+        (state / "codex-lb.service.execstart").write_text(exec_start, encoding="utf-8")
     return {
         "CODEX_LB_SKIP_RESTART": "0",
         "CODEX_LB_SYSTEMD_USER_DIR": str(unit_dir),
@@ -582,6 +599,42 @@ def test_first_deploy_moves_the_service_to_the_socket_layout(tmp_path: Path) -> 
     assert _state(tmp_path, "codex-lb.service") == "active"
     assert _layout_record(tmp_path) == "socket"
     assert "health check OK (http://127.0.0.1:2455/health/ready)" in _read_latest_log(tmp_path)
+
+
+@pytest.mark.parametrize(
+    ("exec_start", "expected_listen"),
+    [
+        ("/usr/bin/uv run codex-lb --host 127.0.0.1 --port 2455", "127.0.0.1:2455"),
+        ("/usr/bin/uv run codex-lb --host=127.0.0.1 --port=3000", "127.0.0.1:3000"),
+        ("/usr/bin/uv run codex-lb --host localhost", "127.0.0.1:2455"),
+        (None, "127.0.0.1:2455"),
+    ],
+)
+def test_socket_keeps_the_address_the_service_binds_today(
+    tmp_path: Path, exec_start: str | None, expected_listen: str
+) -> None:
+    _origin, _seed, deploy = _make_deploy_fixture(tmp_path)
+    bin_dir = _stub_bin(tmp_path)
+    env = _layout_env(tmp_path, bin_dir, exec_start=exec_start)
+
+    result = _run_deploy(tmp_path, deploy, bin_dir, extra_env=env)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert f"ListenStream={expected_listen}\n" in _socket_file(tmp_path).read_text(encoding="utf-8")
+    host, port = expected_listen.rsplit(":", 1)
+    assert f"--host {host} --port {port}\n" in _dropin_file(tmp_path).read_text(encoding="utf-8")
+    assert f"health check OK (http://127.0.0.1:{port}/health/ready)" in _read_latest_log(tmp_path)
+
+
+def test_explicit_listen_override_wins(tmp_path: Path) -> None:
+    _origin, _seed, deploy = _make_deploy_fixture(tmp_path)
+    bin_dir = _stub_bin(tmp_path)
+    env = {**_layout_env(tmp_path, bin_dir), "CODEX_LB_LISTEN": "127.0.0.1:2460"}
+
+    result = _run_deploy(tmp_path, deploy, bin_dir, extra_env=env)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "ListenStream=127.0.0.1:2460\n" in _socket_file(tmp_path).read_text(encoding="utf-8")
 
 
 def test_later_deploy_restarts_only_the_service_and_keeps_the_socket(tmp_path: Path) -> None:

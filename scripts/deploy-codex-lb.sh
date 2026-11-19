@@ -18,13 +18,16 @@
 #                                  (default: stash them first — see below)
 #   CODEX_LB_DEPLOY_SWITCH_BRANCH  Set to 1 to checkout BRANCH when the clone is elsewhere
 #   CODEX_LB_HEALTH_URL            Post-restart readiness probe (default:
-#                                  http://127.0.0.1:<CODEX_LB_LISTEN port>/health/ready)
+#                                  http://127.0.0.1:<listen port>/health/ready)
 #   CODEX_LB_SERVICE_LAYOUT        socket (default) or single; see "Service layout" below.
 #                                  Without it, the layout recorded by the last deploy is kept
 #   CODEX_LB_SERVICE_LAYOUT_FILE   Records the layout in use (default: $LOG_DIR/service-layout)
 #   CODEX_LB_SOCKET                systemd user socket unit (default: codex-lb.socket)
 #   CODEX_LB_SYSTEMD_USER_DIR      Where the managed units go (default: ~/.config/systemd/user)
-#   CODEX_LB_LISTEN                Address the socket unit holds (default: 0.0.0.0:2455)
+#   CODEX_LB_LISTEN                <host>:<port> the socket unit holds (default: the
+#                                  --host/--port of the service's current ExecStart, so
+#                                  the move keeps today's binding; else 127.0.0.1:2455,
+#                                  the codex-lb default)
 #   CODEX_LB_DRAIN_TIMEOUT_SECONDS Drain budget for in-flight requests at a restart in the
 #                                  socket layout (default: 120, at most 300)
 #   CODEX_LB_DEPLOY_DATA_DIR       Optional CODEX_LB_DATA_DIR for the service (for a rehearsal copy)
@@ -94,9 +97,12 @@ LOCK_FILE="${CODEX_LB_DEPLOY_LOCK:-$LOG_DIR/deploy.lock}"
 LOCK_WAIT="${CODEX_LB_DEPLOY_LOCK_WAIT:-900}"
 ALLOW_DIRTY="${CODEX_LB_DEPLOY_ALLOW_DIRTY:-0}"
 SWITCH_BRANCH="${CODEX_LB_DEPLOY_SWITCH_BRANCH:-0}"
-LISTEN="${CODEX_LB_LISTEN:-0.0.0.0:2455}"
-LISTEN_PORT="${LISTEN##*:}"
-HEALTH_URL="${CODEX_LB_HEALTH_URL:-http://127.0.0.1:${LISTEN_PORT}/health/ready}"
+# LISTEN, LISTEN_PORT and HEALTH_URL are set by resolve_listen once systemd is reachable.
+LISTEN_REQUEST="${CODEX_LB_LISTEN:-}"
+HEALTH_URL_REQUEST="${CODEX_LB_HEALTH_URL:-}"
+LISTEN=""
+LISTEN_PORT=""
+HEALTH_URL="${HEALTH_URL_REQUEST:-unresolved}"
 LAYOUT_REQUEST="${CODEX_LB_SERVICE_LAYOUT:-}"
 SOCKET="${CODEX_LB_SOCKET:-codex-lb.socket}"
 UNIT_DIR="${CODEX_LB_SYSTEMD_USER_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user}"
@@ -333,6 +339,48 @@ resolve_layout() {
   esac
 }
 
+# Print the --host and --port values of the service's current ExecStart
+# ("<host> <port>", either may be empty). With the managed drop-in in place,
+# that ExecStart is the drop-in's, which carries the same address.
+service_exec_listen() {
+  local exec_start argv host="" port="" prev=""
+  exec_start="$(systemctl --user show -p ExecStart --value "$SERVICE" 2>/dev/null || true)"
+  argv="${exec_start#*argv[]=}"
+  argv="${argv%% ;*}"
+  [[ "$argv" == "$exec_start" ]] && argv=""
+  local word
+  for word in $argv; do
+    case "$prev" in
+      --host) host=$word ;;
+      --port) port=$word ;;
+    esac
+    case "$word" in
+      --host=*) host="${word#--host=}" ;;
+      --port=*) port="${word#--port=}" ;;
+    esac
+    prev=$word
+  done
+  printf '%s %s\n' "$host" "$port"
+}
+
+# Set LISTEN, LISTEN_PORT and HEALTH_URL. Without CODEX_LB_LISTEN, keep the
+# address the service binds today, so the move never widens or narrows it.
+resolve_listen() {
+  local host port
+  if [[ -n "$LISTEN_REQUEST" ]]; then
+    LISTEN=$LISTEN_REQUEST
+  else
+    read -r host port <<<"$(service_exec_listen)"
+    # ListenStream= takes a numeric address, not a host name.
+    [[ "$host" == "localhost" ]] && host=127.0.0.1
+    LISTEN="${host:-127.0.0.1}:${port:-2455}"
+    log "listen address from $SERVICE ExecStart: $LISTEN (set CODEX_LB_LISTEN to change it)"
+  fi
+  [[ "$LISTEN" =~ ^[^[:space:]\"\'\\%]+:[1-9][0-9]*$ ]] || die "listen address must be <host>:<port> (got ${LISTEN@Q})"
+  LISTEN_PORT="${LISTEN##*:}"
+  HEALTH_URL="${HEALTH_URL_REQUEST:-http://127.0.0.1:${LISTEN_PORT}/health/ready}"
+}
+
 unit_safe_path() {
   local name=$1
   local value=$2
@@ -514,6 +562,7 @@ rollback_layout() {
   require_cmd curl
   require_cmd flock
   ensure_user_systemd
+  resolve_listen
   if socket_layout_present; then
     remove_socket_layout
   else
@@ -732,7 +781,8 @@ require_int HEALTH_SLEEP_SECS "$HEALTH_SLEEP_SECS"
 require_int ACTIVE_RETRIES "$ACTIVE_RETRIES"
 require_int CODEX_LB_DRAIN_TIMEOUT_SECONDS "$DRAIN_SECS"
 ((DRAIN_SECS <= 300)) || die "CODEX_LB_DRAIN_TIMEOUT_SECONDS must be at most 300 (got $DRAIN_SECS)"
-[[ "$LISTEN" =~ ^[^[:space:]]+:[1-9][0-9]*$ ]] || die "CODEX_LB_LISTEN must be <host>:<port> (got ${LISTEN@Q})"
+[[ -z "$LISTEN_REQUEST" || "$LISTEN_REQUEST" =~ ^[^[:space:]]+:[1-9][0-9]*$ ]] ||
+  die "CODEX_LB_LISTEN must be <host>:<port> (got ${LISTEN_REQUEST@Q})"
 
 if [[ "$COMMAND" == "rollback-layout" ]]; then
   rollback_layout
@@ -793,6 +843,7 @@ if [[ "$SKIP_RESTART" == "1" ]]; then
   log "skipping restart (CODEX_LB_SKIP_RESTART=1)"
 else
   resolve_layout
+  resolve_listen
   log "service layout: $LAYOUT"
   if [[ "$LAYOUT" == "socket" ]]; then
     restart_socket_layout
