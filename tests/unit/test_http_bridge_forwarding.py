@@ -25,6 +25,7 @@ from app.modules.proxy.http_bridge_forwarding import (
     HTTP_BRIDGE_LOCAL_PRE_DISPATCH_REFUSAL_HEADER,
     HTTP_BRIDGE_ORIGIN_INSTANCE_HEADER,
     HTTP_BRIDGE_ORIGINAL_UNANCHORED_HEADER,
+    HTTP_BRIDGE_POOL_USAGE_EXHAUSTED_HEADER,
     HTTP_BRIDGE_RESERVATION_ID_HEADER,
     HTTP_BRIDGE_RESERVATION_KEY_ID_HEADER,
     HTTP_BRIDGE_RESERVATION_MODEL_HEADER,
@@ -1411,29 +1412,29 @@ async def test_owner_forward_non_200_body_read_failure_keeps_rejected(
 
 
 @pytest.mark.parametrize(
-    ("owner_headers", "expected_local_refusal"),
+    ("owner_status", "error_code", "owner_headers", "expected_local_refusal", "expected_pool_limit", "expected_retry"),
     [
-        ({HTTP_BRIDGE_LOCAL_PRE_DISPATCH_REFUSAL_HEADER: "1"}, True),
-        ({}, False),
+        (502, "stream_incomplete", {HTTP_BRIDGE_LOCAL_PRE_DISPATCH_REFUSAL_HEADER: "1"}, True, False, None),
+        (502, "stream_incomplete", {}, False, False, None),
+        (503, "account_busy", {"Retry-After": "3"}, False, False, "3"),
+        (429, "account_busy", {"Retry-After": "not a retry time"}, False, False, None),
+        (429, "usage_limit_reached", {HTTP_BRIDGE_POOL_USAGE_EXHAUSTED_HEADER: "1"}, False, True, None),
     ],
 )
 @pytest.mark.asyncio
-async def test_owner_forward_non_200_carries_local_refusal_provenance(
+async def test_owner_forward_non_200_carries_error_metadata(
     monkeypatch: pytest.MonkeyPatch,
+    owner_status: int,
+    error_code: str,
     owner_headers: dict[str, str],
     expected_local_refusal: bool,
+    expected_pool_limit: bool,
+    expected_retry: str | None,
 ) -> None:
-    """The rebuilt error must keep what only the owner could know.
-
-    A non-200 owner response is rebuilt into a fresh ``ProxyResponseError`` from
-    the status and the body, and the body cannot express whether the owner
-    refused before dispatch or observed a transport failure — both are
-    ``stream_incomplete``. The owner's marker is the only carrier, and a non-200
-    on its own must not be read as one (issue #2364).
-    """
+    """The rebuilt error must keep provenance and retry hints absent from the body."""
 
     class FakeResponse:
-        status = 502
+        status = owner_status
         headers = owner_headers
 
         async def __aenter__(self) -> "FakeResponse":
@@ -1443,10 +1444,7 @@ async def test_owner_forward_non_200_carries_local_refusal_provenance(
             return None
 
         async def text(self) -> str:
-            return (
-                '{"error":{"message":"The previous response anchor was rejected upstream; '
-                'retry the request.","type":"server_error","code":"stream_incomplete"}}'
-            )
+            return f'{{"error":{{"message":"Retry the request.","type":"server_error","code":"{error_code}"}}}}'
 
     class FakeSession:
         def __init__(self, *, timeout: aiohttp.ClientTimeout, trust_env: bool) -> None:
@@ -1484,9 +1482,11 @@ async def test_owner_forward_non_200_carries_local_refusal_provenance(
     with pytest.raises(ProxyResponseError) as exc_info:
         await collect()
 
-    assert exc_info.value.status_code == 502
-    assert exc_info.value.payload["error"]["code"] == "stream_incomplete"
+    assert exc_info.value.status_code == owner_status
+    assert exc_info.value.payload["error"]["code"] == error_code
     assert exc_info.value.local_pre_dispatch_refusal is expected_local_refusal
+    assert exc_info.value.pool_usage_exhausted is expected_pool_limit
+    assert exc_info.value.retry_after_header == expected_retry
 
 
 @pytest.mark.asyncio
