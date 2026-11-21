@@ -6,8 +6,12 @@ from typing import Protocol
 from app.core.clients.proxy import ProxyResponseError
 from app.core.errors import OpenAIErrorEnvelope, ResponseFailedEvent, openai_error, response_failed_event
 from app.core.resilience.overload import is_local_overload_error_code
+from app.modules.proxy.helpers import _normalize_error_code, is_upstream_usage_limit_rejection
 
 USAGE_LIMIT_REACHED = "usage_limit_reached"
+ACCOUNT_BUSY_RETRY_SECONDS = 3
+_ACCOUNT_OVERLOAD_CODES = frozenset({"overloaded_error", "server_is_overloaded"})
+_ACCOUNT_LIMIT_CODES = frozenset({"rate_limit_exceeded", "insufficient_quota", "usage_not_included", "quota_exceeded"})
 
 # Stable fail-closed contract for continuity-bound follow-ups whose required
 # owner account is unavailable. The error code/body never changes between the
@@ -51,6 +55,29 @@ def selection_failure_response(selection: SelectionFailure) -> tuple[int, OpenAI
     if is_local_overload_error_code(code):
         return 429, openai_error(code, message, error_type="rate_limit_error")
     return 503, openai_error(code, message)
+
+
+def selection_failure_error(selection: SelectionFailure) -> ProxyResponseError:
+    status, payload = selection_failure_response(selection)
+    return ProxyResponseError(status, payload, pool_usage_exhausted=selection.error_code == USAGE_LIMIT_REACHED)
+
+
+def account_busy_error(*, code: str | None, error_type: str | None, message: str | None) -> ProxyResponseError | None:
+    """The final account's pressure is not a subscription limit for the pool."""
+    normalized = _normalize_error_code(code, error_type)
+    if normalized in _ACCOUNT_OVERLOAD_CODES:
+        status, public_type = 503, "server_error"
+    elif normalized in _ACCOUNT_LIMIT_CODES or is_upstream_usage_limit_rejection(
+        error_code=normalized, message=message
+    ):
+        status, public_type = 429, "rate_limit_error"
+    else:
+        return None
+    return ProxyResponseError(
+        status,
+        openai_error("account_busy", "Upstream account is busy. Retry in a few seconds.", error_type=public_type),
+        retry_after_seconds=ACCOUNT_BUSY_RETRY_SECONDS,
+    )
 
 
 def previous_response_owner_unavailable_error(

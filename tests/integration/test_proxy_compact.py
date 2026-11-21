@@ -1198,7 +1198,9 @@ async def test_proxy_compact_usage_limit_marks_account(async_client, monkeypatch
     response = await async_client.post("/backend-api/codex/responses/compact", json=payload)
     assert response.status_code == 429
     error = response.json()["error"]
-    assert error["type"] == "usage_limit_reached"
+    assert error["code"] == "account_busy"
+    assert "resets_at" not in error
+    assert response.headers["retry-after"] == "3"
 
     async with SessionLocal() as session:
         account = await session.get(Account, expected_account_id)

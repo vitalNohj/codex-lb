@@ -2858,7 +2858,7 @@ async def test_stream_responses_starts_sse_keepalive_before_first_upstream_event
     seen_client_ip: list[str | None] = []
 
     class _FakeService:
-        async def rate_limit_headers(self):
+        async def rate_limit_headers(self, **_kwargs):
             return {}
 
         async def stream_responses(self, *args, **kwargs):
@@ -2941,7 +2941,7 @@ async def test_stream_responses_keepalive_interval_honours_dashboard_value_over_
     )
 
     class _FakeService:
-        async def rate_limit_headers(self):
+        async def rate_limit_headers(self, **_kwargs):
             return {}
 
         async def stream_responses(self, *args, **kwargs):
@@ -3871,7 +3871,7 @@ async def test_compact_responses_passes_client_ip_to_service(monkeypatch):
     seen_client_ip: list[str | None] = []
 
     class _FakeService:
-        async def rate_limit_headers(self):
+        async def rate_limit_headers(self, **_kwargs):
             return {}
 
         async def compact_responses(self, *args, **kwargs):
@@ -3915,7 +3915,7 @@ async def test_codex_route_stream_responses_starts_event_keepalive_before_first_
     release_upstream = asyncio.Event()
 
     class _FakeService:
-        async def rate_limit_headers(self):
+        async def rate_limit_headers(self, **_kwargs):
             return {}
 
         async def stream_responses(self, *args, **kwargs):
@@ -3973,7 +3973,7 @@ async def test_codex_route_stream_responses_keeps_client_alive_while_bridge_cool
     release_upstream = asyncio.Event()
 
     class _FakeService:
-        async def rate_limit_headers(self):
+        async def rate_limit_headers(self, **_kwargs):
             return {}
 
         async def stream_responses(self, *args, **kwargs):
@@ -4202,9 +4202,10 @@ async def test_proxy_stream_usage_limit_returns_http_error(async_client, monkeyp
     response = await async_client.post("/backend-api/codex/responses", json=payload)
     assert response.status_code == 429
     error = response.json()["error"]
-    assert error["type"] == "usage_limit_reached"
-    assert error["plan_type"] == "plus"
-    assert error["resets_at"] == 1767612327
+    assert error["code"] == "account_busy"
+    assert "plan_type" not in error
+    assert "resets_at" not in error
+    assert response.headers["retry-after"] == "3"
 
     async with SessionLocal() as session:
         acc = await session.get(Account, expected_account_id)

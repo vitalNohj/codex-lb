@@ -65,7 +65,7 @@ from app.modules.proxy.load_balancer import (
     CatalogOmissionQuotaAdmission,
 )
 from app.modules.proxy.sticky_repository import StickySessionsRepository
-from app.modules.usage.repository import AdditionalUsageRepository
+from app.modules.usage.repository import AdditionalUsageRepository, UsageRepository
 
 pytestmark = pytest.mark.integration
 _TEST_SYNC_TIMEOUT_SECONDS = 5.0
@@ -10786,6 +10786,110 @@ async def test_backend_responses_http_bridge_retries_precreated_server_overload(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("error_code", "replacement_available"),
+    [
+        ("server_is_overloaded", False),
+        ("usage_limit_reached", False),
+        ("server_is_overloaded", True),
+        ("usage_limit_reached", True),
+    ],
+)
+async def test_http_bridge_account_rejection_does_not_report_pool_quota(
+    async_client, monkeypatch, error_code, replacement_available
+):
+    _install_bridge_settings(monkeypatch, enabled=True)
+    await _import_account(async_client, "acc_bridge_unsampled", "bridge-unsampled@example.com")
+    full_id = await _import_account(async_client, "acc_bridge_sampled", "bridge-sampled@example.com")
+    reset_at = int(time.time()) + 4680
+    async with SessionLocal() as session:
+        await UsageRepository(session).add_entry(full_id, 100, window="primary", window_minutes=300, reset_at=reset_at)
+
+    class RejectingUpstream(_FakeBridgeUpstreamWebSocket):
+        async def send_text(self, text: str) -> None:
+            self.sent_text.append(text)
+            error = {"code": error_code, "message": "Our servers are currently overloaded. Please try again later."}
+            if error_code == "usage_limit_reached":
+                error.update(type=error_code, message="The usage limit has been reached", resets_at=reset_at)
+            event = {"type": "error", "error": error}
+            if error_code == "usage_limit_reached":
+                event["status"] = 429
+            await self._messages.put(_FakeUpstreamMessage("text", text=json.dumps(event)))
+
+    async def fake_ensure_fresh_with_budget(self, target, *, force=False, timeout_seconds):
+        return target
+
+    attempted_accounts = []
+
+    async def fake_connect_responses_websocket(headers, access_token, account_id_header, **kwargs):
+        attempted_accounts.append(account_id_header)
+        if account_id_header == "acc_bridge_unsampled":
+            return RejectingUpstream()
+        if replacement_available:
+            return _FakeBridgeUpstreamWebSocket(response_id_prefix="resp_replacement")
+        raise OSError("Replacement upstream connection failed")
+
+    monkeypatch.setattr(proxy_module.ProxyService, "_ensure_fresh_with_budget", fake_ensure_fresh_with_budget)
+    monkeypatch.setattr(proxy_module, "connect_responses_websocket", fake_connect_responses_websocket)
+
+    response = await async_client.post(
+        "/v1/responses",
+        json={"model": "gpt-5.1", "input": "hello", "stream": True},
+    )
+
+    if replacement_available:
+        assert response.status_code == 200
+        assert "resp_replacement_1" in response.text
+        assert attempted_accounts == ["acc_bridge_unsampled", "acc_bridge_sampled"]
+        assert response.headers["x-codex-primary-used-percent"] == "50.0"
+        return
+
+    observed = f"{response.status_code} {dict(response.headers)} {response.text}"
+    assert response.status_code == (503 if error_code == "server_is_overloaded" else 429), observed
+    assert response.headers.get("retry-after") == "3", observed
+    assert not any(
+        name.startswith(("x-codex-primary-", "x-codex-secondary-", "x-codex-monthly-", "x-codex-credits-"))
+        for name in response.headers
+    ), observed
+    assert response.json()["error"]["code"] == "account_busy"
+    assert "resets_at" not in response.json()["error"]
+
+
+@pytest.mark.asyncio
+async def test_http_bridge_pool_exhaustion_reports_first_usable_account(async_client, monkeypatch):
+    _install_bridge_settings(monkeypatch, enabled=True)
+    first_id = await _import_account(async_client, "acc_bridge_late", "bridge-late@example.com")
+    second_id = await _import_account(async_client, "acc_bridge_early", "bridge-early@example.com")
+    now = int(time.time())
+    earliest_available_at = now + 600
+    async with SessionLocal() as session:
+        usage = UsageRepository(session)
+        await usage.add_entry(first_id, 100, window="primary", window_minutes=300, reset_at=now + 300)
+        await usage.add_entry(first_id, 100, window="secondary", window_minutes=10080, reset_at=now + 1800)
+        await usage.add_entry(second_id, 100, window="primary", window_minutes=300, reset_at=earliest_available_at)
+        first = await session.get(Account, first_id)
+        second = await session.get(Account, second_id)
+        assert first is not None and second is not None
+        first.status = AccountStatus.QUOTA_EXCEEDED
+        first.reset_at = now + 1800
+        second.status = AccountStatus.RATE_LIMITED
+        second.reset_at = earliest_available_at
+        await session.commit()
+
+    response = await async_client.post(
+        "/v1/responses",
+        json={"model": "gpt-5.1", "input": "hello", "stream": True},
+    )
+
+    assert response.status_code == 429, response.text
+    assert response.json()["error"]["code"] == "usage_limit_reached"
+    assert response.json()["error"]["resets_at"] == earliest_available_at
+    assert response.headers["x-codex-primary-used-percent"] == "100.0"
+    assert response.headers["x-codex-primary-reset-at"] == str(earliest_available_at)
+    assert float(response.headers["x-codex-secondary-used-percent"]) < 100
+
+
+@pytest.mark.asyncio
 async def test_v1_responses_http_bridge_rejects_oversized_response_create_before_upstream(
     async_client,
     monkeypatch,
@@ -14041,7 +14145,7 @@ async def test_v1_responses_http_bridge_surfaces_selected_replacement_failure(as
 
 
 @pytest.mark.asyncio
-async def test_v1_responses_http_bridge_preserves_rate_limit_metadata_in_429(async_client, monkeypatch):
+async def test_v1_responses_http_bridge_replaces_account_rate_limit_metadata(async_client, monkeypatch):
     _install_bridge_settings(monkeypatch, enabled=True)
     account_id = await _import_account(
         async_client,
@@ -14103,10 +14207,11 @@ async def test_v1_responses_http_bridge_preserves_rate_limit_metadata_in_429(asy
 
     assert response.status_code == 429
     body = response.json()
-    assert body["error"]["code"] == "rate_limit_exceeded"
-    assert body["error"]["plan_type"] == "team"
-    assert body["error"]["resets_at"] == 1700000000
-    assert body["error"]["resets_in_seconds"] == 3600
+    assert body["error"]["code"] == "account_busy"
+    assert response.headers["retry-after"] == "3"
+    assert "plan_type" not in body["error"]
+    assert "resets_at" not in body["error"]
+    assert "resets_in_seconds" not in body["error"]
 
 
 @pytest.mark.asyncio

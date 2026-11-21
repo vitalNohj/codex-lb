@@ -10,7 +10,7 @@ from typing import cast
 
 import aiohttp
 
-from app.core.clients.proxy import ProxyResponseError, filter_inbound_headers
+from app.core.clients.proxy import ProxyResponseError, _safe_retry_after_header, filter_inbound_headers
 from app.core.clock import REAL_CLOCK, REAL_SCHEDULER, Clock, Scheduler
 from app.core.config.dashboard_overrides import with_dashboard_overrides
 from app.core.config.settings import get_settings
@@ -83,6 +83,7 @@ _HTTP_BRIDGE_SIGNATURE_VERSION_V2 = "2"
 # transport-failure lifecycle aborts the committed body, moving issue #2364's
 # empty 200 from the owner onto the origin.
 HTTP_BRIDGE_LOCAL_PRE_DISPATCH_REFUSAL_HEADER = "x-codex-bridge-local-pre-dispatch-refusal"
+HTTP_BRIDGE_POOL_USAGE_EXHAUSTED_HEADER = "x-codex-bridge-pool-usage-exhausted"
 
 
 @dataclass(frozen=True, slots=True)
@@ -225,6 +226,7 @@ class HTTPBridgeOwnerClient:
                             failure_phase="owner_forward_status",
                             failure_detail="owner_forward_non_200",
                             upstream_status_code=response.status,
+                            retry_after_header=_safe_retry_after_header(response.headers),
                             # Rebuilding the error from the owner's body alone
                             # would drop the provenance the owner attached, so
                             # carry it over the hop: a non-200 by itself does
@@ -233,6 +235,9 @@ class HTTPBridgeOwnerClient:
                             # local pre-dispatch refusal (issue #2364).
                             local_pre_dispatch_refusal=_bool_header(
                                 response.headers.get(HTTP_BRIDGE_LOCAL_PRE_DISPATCH_REFUSAL_HEADER)
+                            ),
+                            pool_usage_exhausted=_bool_header(
+                                response.headers.get(HTTP_BRIDGE_POOL_USAGE_EXHAUSTED_HEADER)
                             ),
                         )
                     if on_response_ready is not None:

@@ -367,6 +367,20 @@ def _sse_events(body: bytes) -> list[dict]:
     return events
 
 
+@pytest.mark.asyncio
+async def test_grok_native_responses_omits_codex_quota_headers(async_client, fake_cliproxy, monkeypatch):
+    async def pool_headers(_self, **kwargs):
+        return {"x-codex-primary-used-percent": "100.0", "x-codex-primary-reset-at": "1800000000"}
+
+    monkeypatch.setattr("app.modules.proxy.service.ProxyService.rate_limit_headers", pool_headers)
+    response = await async_client.post("/v1/responses", json=_xai_request())
+
+    assert response.status_code == 200
+    assert len(fake_cliproxy.responses_payloads) == 1
+    assert "x-codex-primary-used-percent" not in response.headers
+    assert "x-codex-primary-reset-at" not in response.headers
+
+
 # --- the request reaches CLIProxyAPI unchanged ------------------------------------
 
 

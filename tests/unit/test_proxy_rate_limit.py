@@ -9,10 +9,11 @@ from typing import TypeVar, cast
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.usage.types import UsageWindowRow
 from app.db.models import Account, AccountStatus, UsageHistory
 from app.modules.accounts.repository import AccountsRepository
 from app.modules.api_keys.repository import ApiKeysRepository
-from app.modules.proxy._service.rate_limit import _RateLimitMixin
+from app.modules.proxy._service.rate_limit import _RateLimitMixin, _summarize_usage_header_window
 from app.modules.proxy.repo_bundle import ProxyRepoFactory, ProxyRepositories
 from app.modules.proxy.sticky_repository import StickySessionsRepository
 from app.modules.quota_planner.repository import QuotaPlannerRepository
@@ -216,11 +217,12 @@ async def test_rate_limit_headers_serialize_usage_reads(monkeypatch: pytest.Monk
         "usage:monthly",
         "usage:credits",
     ]
+    # The missing secondary sample contributes the free plan's nominal capacity.
+    assert float(headers.pop("x-codex-secondary-used-percent")) == pytest.approx(40 * 7560 / (7560 + 1134))
     assert headers == {
         "x-codex-primary-used-percent": "20.0",
         "x-codex-primary-window-minutes": "300",
         "x-codex-primary-reset-at": str(_NOW_EPOCH + 300),
-        "x-codex-secondary-used-percent": "40.0",
         "x-codex-secondary-window-minutes": "10080",
         "x-codex-secondary-reset-at": str(_NOW_EPOCH + 604_800),
         "x-codex-monthly-used-percent": "60.0",
@@ -230,6 +232,19 @@ async def test_rate_limit_headers_serialize_usage_reads(monkeypatch: pytest.Monk
         "x-codex-credits-unlimited": "false",
         "x-codex-credits-balance": "8.75",
     }
+
+
+@pytest.mark.parametrize(("other_plan", "expected"), [("plus", "50.0"), ("free", None)])
+def test_unsampled_account_prevents_full_primary_header(other_plan: str, expected: str | None) -> None:
+    full = _account("full", plan_type="plus")
+    other = _account("other", plan_type=other_plan)
+    rows = [UsageWindowRow(account_id=full.id, used_percent=140.0, reset_at=_NOW_EPOCH + 60, window_minutes=300)]
+
+    headers = _summarize_usage_header_window(rows, {full.id: full, other.id: other}, "primary")
+
+    assert headers.get("x-codex-primary-used-percent") == expected
+    if expected is None:
+        assert "x-codex-primary-reset-at" not in headers
 
 
 @pytest.mark.asyncio

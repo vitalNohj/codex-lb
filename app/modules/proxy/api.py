@@ -353,6 +353,7 @@ from app.modules.proxy.error_status import (
 from app.modules.proxy.helpers import _openai_error_param, _parse_openai_error, _rate_limit_details
 from app.modules.proxy.http_bridge_forwarding import (
     HTTP_BRIDGE_LOCAL_PRE_DISPATCH_REFUSAL_HEADER,
+    HTTP_BRIDGE_POOL_USAGE_EXHAUSTED_HEADER,
     parse_forwarded_request,
 )
 from app.modules.proxy.images_observability import (
@@ -462,7 +463,7 @@ from app.modules.proxy.schemas import (
     WarmupSkippedAccount,
     WarmupSubmittedAccount,
 )
-from app.modules.proxy.selection_errors import USAGE_LIMIT_REACHED
+from app.modules.proxy.selection_errors import USAGE_LIMIT_REACHED, account_busy_error
 from app.modules.proxy.sidecar_model_profiles import apply_sidecar_model_profile_with_suffix_effort
 from app.modules.proxy.sidecar_routing import (
     SidecarRoutingEntry,
@@ -1342,7 +1343,7 @@ async def _opencode_go_responses_dispatch_or_none(
         return None
 
     validate_model_access(api_key, effective_model, routing_entries=routing_entries)
-    rate_limit_headers = await _rate_limit_headers_for_request(context, api_key)
+    rate_limit_headers: dict[str, str] = {}
     reject_disallowed_sidecar_reasoning(responses_payload, api_key)
     translation = _responses_chat_translation_or_error(
         request, responses_payload, decision.wire_model or effective_model, rate_limit_headers
@@ -1397,7 +1398,7 @@ async def _omniroute_responses_dispatch_or_none(
         # Defense in depth on the externally callable Responses path.
         return None
     validate_model_access(api_key, effective_model, routing_entries=tuple(routing_entries))
-    rate_limit_headers = await _rate_limit_headers_for_request(context, api_key)
+    rate_limit_headers: dict[str, str] = {}
     reject_disallowed_sidecar_reasoning(responses_payload, api_key)
     translation = _responses_chat_translation_or_error(
         request, responses_payload, decision.wire_model or effective_model, rate_limit_headers
@@ -1447,7 +1448,7 @@ async def _chat_provider_responses_dispatch_or_none(
         return None
 
     validate_model_access(api_key, effective_model, routing_entries=routing_entries)
-    rate_limit_headers = await _rate_limit_headers_for_request(context, api_key)
+    rate_limit_headers: dict[str, str] = {}
     # A resolved route whose config cannot be loaded never starts a turn.
     # Reserving first would leave that quota pending until the expiry sweep.
     client = await _responses_chat_provider_client(decision.provider)
@@ -1789,13 +1790,12 @@ async def responses(
         # not reject them.
         if not backend_non_streaming_requested:
             responses_payload.stream = True
-        rate_limit_headers = await _rate_limit_headers_for_request(context, api_key)
         return await _source_responses_response(
             request,
             responses_payload,
             source=source,
             api_key=api_key,
-            rate_limit_headers=rate_limit_headers,
+            rate_limit_headers={},
             pre_normalization_effort=pre_normalization_effort,
             enforce_openai_sdk_contract=openai_sdk_request,
             native_codex_heartbeat=native_codex_heartbeat,
@@ -2031,13 +2031,12 @@ async def v1_responses(
         # Opportunistic admission gates subscription *account* capacity;
         # source-routed requests use no account, so a closed/empty pool must
         # not reject them.
-        rate_limit_headers = await _rate_limit_headers_for_request(context, api_key)
         return await _source_responses_response(
             request,
             responses_payload,
             source=source,
             api_key=api_key,
-            rate_limit_headers=rate_limit_headers,
+            rate_limit_headers={},
             pre_normalization_effort=pre_normalization_effort,
             context=context,
         )
@@ -2936,10 +2935,19 @@ def _is_fast_mode_model_alias(model: str | None) -> bool:
 async def _rate_limit_headers_for_request(
     context: ProxyContext,
     api_key: ApiKeyData | None,
+    *,
+    model: str,
+    service_tier: str | None = None,
 ) -> dict[str, str]:
     if api_key is not None and not (await api_key_visibility(api_key)).quota_headers:
         return {}
-    return await context.service.rate_limit_headers()
+    settings = await get_settings_cache().get()
+    account_ids = proxy_service_module.opportunistic_admission_account_scope(settings, api_key)
+    return await context.service.rate_limit_headers(
+        model=model,
+        service_tier=service_tier,
+        account_ids=None if account_ids is None else frozenset(account_ids),
+    )
 
 
 async def _release_reservation_deferring_cancellation(
@@ -2966,10 +2974,12 @@ async def _rate_limit_headers_with_reservation_cleanup(
     api_key: ApiKeyData | None,
     owned_reservation: ApiKeyUsageReservationData | None,
     *,
+    model: str,
+    service_tier: str | None = None,
     reservation_cleanup: _ResponsesReservationCleanup | None = None,
 ) -> dict[str, str]:
     try:
-        return await _rate_limit_headers_for_request(context, api_key)
+        return await _rate_limit_headers_for_request(context, api_key, model=model, service_tier=service_tier)
     except BaseException:
         if reservation_cleanup is not None:
             await reservation_cleanup.release(action="rate limit headers")
@@ -3359,14 +3369,13 @@ async def v1_audio_transcriptions(
     source = await _select_audio_transcriptions_model_source(model, api_key)
     if source is not None:
         validate_model_access(api_key, model)
-        rate_limit_headers = await _rate_limit_headers_for_request(context, api_key)
         return await _source_audio_transcription_response(
             request=request,
             model=model,
             multipart=multipart,
             source=source,
             api_key=api_key,
-            rate_limit_headers=rate_limit_headers,
+            rate_limit_headers={},
         )
     if model != _TRANSCRIPTION_MODEL:
         return _logged_error_json_response(
@@ -3407,7 +3416,6 @@ async def v1_embeddings(
     if capability_transport_denial is not None:
         return capability_transport_denial
     model = payload.model
-    rate_limit_headers = await _rate_limit_headers_for_request(context, api_key)
     source = await _select_embeddings_model_source(model, api_key)
     if source is None:
         # Embeddings have no subscription-backed fallback: only configured
@@ -3420,7 +3428,6 @@ async def v1_embeddings(
                 f"The model '{model}' does not exist or no enabled model source supports embeddings for it",
                 error_type="invalid_request_error",
             ),
-            headers=rate_limit_headers,
         )
     validate_model_access(api_key, model)
     return await _source_embeddings_response(
@@ -3429,7 +3436,7 @@ async def v1_embeddings(
         payload=payload,
         source=source,
         api_key=api_key,
-        rate_limit_headers=rate_limit_headers,
+        rate_limit_headers={},
     )
 
 
@@ -3999,7 +4006,7 @@ async def _proxy_images_generation_request(
         )
         raise
 
-    rate_limit_headers = await _rate_limit_headers_for_request(context, api_key)
+    rate_limit_headers = await _rate_limit_headers_for_request(context, api_key, model=host_model)
     try:
         reservation = await _enforce_request_limits(
             api_key,
@@ -4160,12 +4167,7 @@ async def _proxy_images_generation_request(
             outcome="upstream_error",
             started_at=started_at,
         )
-        return _logged_error_json_response(
-            request,
-            exc.status_code,
-            exc.payload,
-            headers=rate_limit_headers,
-        )
+        return _stream_startup_error_response(request, exc, headers=rate_limit_headers)
 
     response_id = captured.get("response_id")
     if response_id and isinstance(response_id, str):
@@ -4304,7 +4306,7 @@ async def _proxy_images_edit_request(
         )
         raise
 
-    rate_limit_headers = await _rate_limit_headers_for_request(context, api_key)
+    rate_limit_headers = await _rate_limit_headers_for_request(context, api_key, model=host_model)
     try:
         reservation = await _enforce_request_limits(
             api_key,
@@ -4458,12 +4460,7 @@ async def _proxy_images_edit_request(
             outcome="upstream_error",
             started_at=started_at,
         )
-        return _logged_error_json_response(
-            request,
-            exc.status_code,
-            exc.payload,
-            headers=rate_limit_headers,
-        )
+        return _stream_startup_error_response(request, exc, headers=rate_limit_headers)
 
     response_id = captured.get("response_id")
     if response_id and isinstance(response_id, str):
@@ -5798,7 +5795,9 @@ async def v1_chat_completions(
     )
     metering_model = alias_pool.alias if alias_pool is not None and alias_pool.alias is not None else effective_model
 
-    rate_limit_headers = await _rate_limit_headers_for_request(context, api_key)
+    # External providers do not use ChatGPT account capacity. Populate the
+    # summary only after resolving the subscription-backed route below.
+    rate_limit_headers: dict[str, str] = {}
 
     sidecar_config = await load_sidecar_config()
     openrouter_config = await load_openrouter_sidecar_config()
@@ -6211,6 +6210,9 @@ async def v1_chat_completions(
             rate_limit_headers=rate_limit_headers,
             prohibit_fast_mode=prohibit_fast_mode,
         )
+    rate_limit_headers = await _rate_limit_headers_with_reservation_cleanup(
+        context, api_key, reservation, model=responses_payload.model, service_tier=responses_payload.service_tier
+    )
     responses_payload.stream = True
     if bridge_active:
         downstream_turn_state = proxy_affinity_module.ensure_http_downstream_turn_state(request.headers)
@@ -6306,13 +6308,13 @@ async def v1_chat_completions(
             first = await stream.__anext__()
         except StopAsyncIteration:
             first = None
-        except ProxyResponseError as exc:
-            return _logged_error_json_response(request, exc.status_code, exc.payload, headers=rate_limit_headers)
 
         result = await collect_chat_completion(
             _prepend_first(first, stream),
             model=responses_payload.model,
         )
+    except ProxyResponseError as exc:
+        return _stream_startup_error_response(request, exc, headers=rate_limit_headers)
     finally:
         await _aclose_stream(stream)
     if isinstance(result, OpenAIErrorEnvelopeModel):
@@ -6322,13 +6324,7 @@ async def v1_chat_completions(
                 payload.model,
             )
             return cursor_context_limit_usage_completion(payload, headers=rate_limit_headers)
-        status_code, envelope = _mask_previous_response_not_found_error(result)
-        return _logged_error_json_response(
-            request,
-            status_code,
-            content=envelope.model_dump(mode="json", exclude_none=True),
-            headers=rate_limit_headers,
-        )
+        return _stream_startup_error_response(request, result, headers=rate_limit_headers)
     if cursor_compat_client and isinstance(result, ChatCompletion):
         apply_cursor_usage_fallback(result, payload, source="non_stream")
     return JSONResponse(
@@ -8135,6 +8131,8 @@ async def _stream_responses(
             context,
             api_key,
             reservation if owns_reservation else None,
+            model=payload.model,
+            service_tier=payload.service_tier,
             reservation_cleanup=reservation_cleanup if owns_reservation else None,
         )
         if include_rate_limit_headers
@@ -8393,7 +8391,7 @@ async def _stream_responses(
                 startup_error,
                 headers={
                     **rate_limit_headers,
-                    **_owner_forward_local_refusal_headers(startup_error, forwarded_request=forwarded_request),
+                    **_owner_forward_error_headers(startup_error, forwarded_request=forwarded_request),
                 },
             )
     stream = _normalize_public_responses_stream(
@@ -8460,7 +8458,7 @@ def _strip_internal_bridge_headers(headers: Mapping[str, str]) -> dict[str, str]
     return {key: value for key, value in headers.items() if not key.lower().startswith("x-codex-bridge-")}
 
 
-def _owner_forward_local_refusal_headers(
+def _owner_forward_error_headers(
     error: ProxyResponseError | OpenAIErrorEnvelopeModel,
     *,
     forwarded_request: bool,
@@ -8478,9 +8476,12 @@ def _owner_forward_local_refusal_headers(
 
     if not forwarded_request or not isinstance(error, ProxyResponseError):
         return {}
-    if not error.local_pre_dispatch_refusal:
-        return {}
-    return {HTTP_BRIDGE_LOCAL_PRE_DISPATCH_REFUSAL_HEADER: "1"}
+    headers: dict[str, str] = {}
+    if error.local_pre_dispatch_refusal:
+        headers[HTTP_BRIDGE_LOCAL_PRE_DISPATCH_REFUSAL_HEADER] = "1"
+    if error.pool_usage_exhausted:
+        headers[HTTP_BRIDGE_POOL_USAGE_EXHAUSTED_HEADER] = "1"
+    return headers
 
 
 async def _http_bridge_active_for_request(
@@ -8561,6 +8562,8 @@ async def _collect_responses(
         context,
         api_key,
         reservation,
+        model=payload.model,
+        service_tier=payload.service_tier,
         reservation_cleanup=reservation_cleanup,
     )
     bridge_active = await _http_bridge_active_for_request(
@@ -8645,15 +8648,8 @@ async def _collect_responses(
                 source="responses_collect",
                 headers={**captured_turn_state_headers, **rate_limit_headers},
             )
-        status_code, error = _mask_previous_response_not_found_error(
-            error,
-            default_status=exc.status_code,
-        )
-        return _logged_error_json_response(
-            request,
-            status_code,
-            error.model_dump(mode="json", exclude_none=True),
-            headers={**captured_turn_state_headers, **rate_limit_headers},
+        return _stream_startup_error_response(
+            request, exc, headers={**captured_turn_state_headers, **rate_limit_headers}
         )
     except BaseException:
         if _responses_origin_may_release_reservation(
@@ -8676,11 +8672,9 @@ async def _collect_responses(
                     source="responses_collect_failed",
                     headers={**turn_state_headers, **captured_turn_state_headers, **rate_limit_headers},
                 )
-            status_code, error_payload = _mask_previous_response_not_found_error(error_payload)
-            return _logged_error_json_response(
+            return _stream_startup_error_response(
                 request,
-                status_code,
-                error_payload.model_dump(mode="json", exclude_none=True),
+                error_payload,
                 headers={**turn_state_headers, **captured_turn_state_headers, **rate_limit_headers},
             )
         return JSONResponse(
@@ -8693,12 +8687,8 @@ async def _collect_responses(
             source="responses_collect_envelope",
             headers={**turn_state_headers, **captured_turn_state_headers, **rate_limit_headers},
         )
-    status_code, response_payload = _mask_previous_response_not_found_error(response_payload)
-    return _logged_error_json_response(
-        request,
-        status_code,
-        response_payload.model_dump(mode="json", exclude_none=True),
-        headers={**turn_state_headers, **captured_turn_state_headers, **rate_limit_headers},
+    return _stream_startup_error_response(
+        request, response_payload, headers={**turn_state_headers, **captured_turn_state_headers, **rate_limit_headers}
     )
 
 
@@ -8819,6 +8809,8 @@ async def _compact_responses(
         context,
         api_key,
         reservation,
+        model=payload.model,
+        service_tier=payload.service_tier,
         reservation_cleanup=reservation_cleanup,
     )
     responses_cleanup_ready_token = _bind_propagated_responses_service_cleanup_ready(
@@ -8849,14 +8841,7 @@ async def _compact_responses(
             headers=rate_limit_headers,
         )
     except ProxyResponseError as exc:
-        error = _parse_error_envelope(exc.payload)
-        status_code, error = _mask_previous_response_not_found_error(error, default_status=exc.status_code)
-        return _logged_error_json_response(
-            request,
-            status_code,
-            error.model_dump(mode="json", exclude_none=True),
-            headers=rate_limit_headers,
-        )
+        return _stream_startup_error_response(request, exc, headers=rate_limit_headers)
     finally:
         _reset_propagated_responses_service_cleanup_ready(responses_cleanup_ready_token)
         if _responses_origin_may_release_reservation(service_cleanup_ready_event=responses_service_cleanup_ready_event):
@@ -9030,7 +9015,9 @@ async def _transcribe_request(
         request_model=_TRANSCRIPTION_MODEL,
         request_service_tier=None,
     )
-    rate_limit_headers = await _rate_limit_headers_with_reservation_cleanup(context, api_key, reservation)
+    rate_limit_headers = await _rate_limit_headers_with_reservation_cleanup(
+        context, api_key, reservation, model=_TRANSCRIPTION_MODEL
+    )
     cancellation_handled = False
 
     async def release_reservation() -> bool:
@@ -9077,13 +9064,7 @@ async def _transcribe_request(
             )
         raise
     except ProxyResponseError as exc:
-        error = _parse_error_envelope(exc.payload)
-        return _logged_error_json_response(
-            request,
-            exc.status_code,
-            error.model_dump(mode="json", exclude_none=True),
-            headers=rate_limit_headers,
-        )
+        return _stream_startup_error_response(request, exc, headers=rate_limit_headers)
     finally:
         if not cancellation_handled and await release_reservation():
             raise asyncio.CancelledError
@@ -9863,6 +9844,13 @@ async def _stream_response_error_events(
         yield retry_hint + format_sse_event(failed_event)
 
 
+def _account_busy_error_from_envelope(envelope: OpenAIErrorEnvelopeModel) -> ProxyResponseError | None:
+    error = envelope.error
+    if error is None:
+        return None
+    return account_busy_error(code=error.code, error_type=error.type, message=error.message)
+
+
 def _stream_startup_error_response(
     request: Request,
     error: ProxyResponseError | OpenAIErrorEnvelopeModel,
@@ -9871,6 +9859,11 @@ def _stream_startup_error_response(
 ) -> JSONResponse:
     if isinstance(error, ProxyResponseError):
         envelope = _parse_error_envelope(error.payload)
+        if not error.pool_usage_exhausted:
+            busy_error = _account_busy_error_from_envelope(envelope)
+            if busy_error is not None:
+                error = busy_error
+                envelope = _parse_error_envelope(error.payload)
         status_code, envelope = _mask_previous_response_not_found_error(
             envelope,
             default_status=error.status_code,
@@ -9888,7 +9881,11 @@ def _stream_startup_error_response(
             status_code,
             envelope.model_dump(mode="json", exclude_none=True),
             headers=startup_headers,
+            pool_usage_exhausted=error.pool_usage_exhausted,
         )
+    busy_error = _account_busy_error_from_envelope(error)
+    if busy_error is not None:
+        return _stream_startup_error_response(request, busy_error, headers=headers)
     status_code, envelope = _mask_previous_response_not_found_error(error)
     return _logged_error_json_response(
         request,
@@ -9923,12 +9920,16 @@ def _parse_sse_payload(line: str) -> dict[str, JsonValue] | None:
     return parse_sse_data_json(line)
 
 
+_POOL_USAGE_HEADER_PREFIXES = ("x-codex-primary-", "x-codex-secondary-", "x-codex-monthly-", "x-codex-credits-")
+
+
 def _logged_error_json_response(
     request: Request,
     status_code: int,
     content: Mapping[str, JsonValue] | OpenAIErrorEnvelopeModel | OpenAIErrorEnvelope,
     *,
     headers: Mapping[str, str] | None = None,
+    pool_usage_exhausted: bool = False,
 ) -> JSONResponse:
     if isinstance(content, OpenAIErrorEnvelopeModel):
         public_content: Mapping[str, JsonValue] | OpenAIErrorEnvelope = content.model_dump(
@@ -9937,8 +9938,22 @@ def _logged_error_json_response(
     else:
         public_content = content
     code, message = _error_details_from_content(public_content)
-    effective_headers = dict(headers or {})
     error = public_content.get("error")
+    effective_headers = {
+        name: value
+        for name, value in (headers or {}).items()
+        if not name.lower().startswith(_POOL_USAGE_HEADER_PREFIXES)
+    }
+    if pool_usage_exhausted and isinstance(error, dict):
+        # The selector has evidence for the entire eligible pool. Use its
+        # first usable account, not a header snapshot's first rolling reset.
+        reset_at = error.get("resets_at")
+        for name, value in (headers or {}).items():
+            if name.lower().startswith(_POOL_USAGE_HEADER_PREFIXES):
+                if not name.lower().endswith("-reset-at"):
+                    effective_headers[name] = value
+                elif isinstance(reset_at, int):
+                    effective_headers[name] = str(reset_at)
     if status_code in {429, 503} and isinstance(error, dict):
         retry_after = error_retry_after_seconds(error)
         if retry_after is not None and not any(key.lower() == "retry-after" for key in effective_headers):

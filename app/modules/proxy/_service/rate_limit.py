@@ -2,13 +2,20 @@ from __future__ import annotations
 
 import time
 from collections.abc import Mapping
+from dataclasses import replace
 from typing import TYPE_CHECKING, Protocol, cast
 
 from app.core import usage as usage_core
+from app.core.openai.model_registry import get_model_registry
 from app.core.usage.types import UsageWindowRow
 from app.db.models import Account, UsageHistory
 from app.db.session import detach_session_objects
 from app.modules.accounts.background_repository import BackgroundAccountsRepository
+from app.modules.proxy._load_balancer.model_eligibility import (
+    _filter_accounts_for_model,
+    _gated_limit_name_for_model,
+    _mapped_model_has_registry_entry,
+)
 from app.modules.proxy.helpers import (
     _credits_headers,
     _credits_snapshot,
@@ -76,6 +83,32 @@ def _has_available_usage_account(
     return False
 
 
+def _summarize_usage_header_window(
+    rows: list[UsageWindowRow], account_map: dict[str, Account], window: str
+) -> dict[str, str]:
+    rows_by_account = {row.account_id: row for row in rows if row.used_percent is not None}
+    if not rows_by_account:
+        return {}
+
+    # An unsampled account with nominal capacity counts as unused for this
+    # display estimate, not as evidence that the account is available. Plans
+    # without this window contribute no capacity. Neither case can prove full.
+    bounded_rows = [
+        replace(row, used_percent=min(100.0, max(0.0, float(row.used_percent or 0))))
+        for row in rows_by_account.values()
+    ]
+    bounded_rows.extend(
+        UsageWindowRow(account_id=account_id, used_percent=0.0, reset_at=None, window_minutes=None)
+        for account_id in account_map.keys() - rows_by_account.keys()
+    )
+    summary = usage_core.summarize_usage_window(bounded_rows, account_map, window)
+    if summary.used_percent is not None and summary.used_percent >= 100.0:
+        if any(row.used_percent != 100.0 for row in bounded_rows):
+            return {}
+        summary = replace(summary, used_percent=100.0)
+    return _rate_limit_headers(window, summary)
+
+
 class _RateLimitMixin:
     async def record_account_probe_result(
         self,
@@ -90,15 +123,41 @@ class _RateLimitMixin:
             http_status=http_status,
         )
 
-    async def rate_limit_headers(self) -> dict[str, str]:
-        return await get_rate_limit_headers_cache().get(self._compute_rate_limit_headers)
+    async def rate_limit_headers(
+        self,
+        *,
+        model: str,
+        service_tier: str | None,
+        account_ids: frozenset[str] | None,
+    ) -> dict[str, str]:
+        # Standard subscription windows do not govern the additional-quota
+        # route. Do not represent them as that model's limits.
+        if _gated_limit_name_for_model(model) is not None:
+            return {}
+        return await get_rate_limit_headers_cache().get(
+            lambda: self._compute_rate_limit_headers(model=model, service_tier=service_tier, account_ids=account_ids),
+            key=(model, service_tier, account_ids),
+        )
 
-    async def _compute_rate_limit_headers(self) -> dict[str, str]:
+    async def _compute_rate_limit_headers(
+        self,
+        *,
+        model: str | None = None,
+        service_tier: str | None = None,
+        account_ids: frozenset[str] | None = None,
+    ) -> dict[str, str]:
         headers: dict[str, str] = {}
         proxy = cast(_RateLimitServiceProtocol, self)
         async with proxy._repo_factory() as repos:
             accounts = await repos.accounts.list_accounts()
             selected_accounts = _select_accounts_for_limits(accounts)
+            if account_ids is not None:
+                selected_accounts = [account for account in selected_accounts if account.id in account_ids]
+            registry = get_model_registry()
+            if model is not None and _mapped_model_has_registry_entry(model, registry=registry):
+                selected_accounts = _filter_accounts_for_model(
+                    selected_accounts, model, registry=registry, service_tier=service_tier
+                )
             if not selected_accounts:
                 return headers
 
@@ -115,16 +174,9 @@ class _RateLimitMixin:
             secondary_rows = usage_core.expire_elapsed_window_rows(secondary_rows, now_epoch=now_epoch)
             monthly_rows = usage_core.expire_elapsed_window_rows(monthly_rows, now_epoch=now_epoch)
 
-            primary_summary = _summarize_window(primary_rows, account_map, "primary")
-            if primary_summary is not None:
-                headers.update(_rate_limit_headers("primary", primary_summary))
-
-            secondary_summary = _summarize_window(secondary_rows, account_map, "secondary")
-            if secondary_summary is not None:
-                headers.update(_rate_limit_headers("secondary", secondary_summary))
-            monthly_summary = _summarize_window(monthly_rows, account_map, "monthly")
-            if monthly_summary is not None:
-                headers.update(_rate_limit_headers("monthly", monthly_summary))
+            headers.update(_summarize_usage_header_window(primary_rows, account_map, "primary"))
+            headers.update(_summarize_usage_header_window(secondary_rows, account_map, "secondary"))
+            headers.update(_summarize_usage_header_window(monthly_rows, account_map, "monthly"))
 
             headers.update(_credits_headers(await self._latest_usage_entries(repos, account_map)))
         return headers

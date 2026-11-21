@@ -17,7 +17,7 @@ from tests.integration.test_http_responses_bridge import (
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("stream", [True, False])
-async def test_responses_quota_recovery_returns_honest_http_error(async_client, monkeypatch, stream):
+async def test_responses_account_quota_recovery_returns_short_retry(async_client, monkeypatch, stream):
     _install_bridge_settings(monkeypatch, enabled=True)
     account_id = await _import_account(async_client, "quota-evidence", "quota@example.com")
     account = await _get_account(account_id)
@@ -80,7 +80,8 @@ async def test_responses_quota_recovery_returns_honest_http_error(async_client, 
         )
     )
     assert response.status_code == 429
-    assert response.json()["error"]["code"] == "usage_limit_reached"
-    assert response.json()["error"]["message"] == message
+    assert response.json()["error"]["code"] == "account_busy"
+    assert "resets_in_seconds" not in response.json()["error"]
+    assert "resets_at" not in response.json()["error"]
     assert elapsed < 10
-    assert response.headers.get("retry-after") == "300"
+    assert response.headers.get("retry-after") == "3"

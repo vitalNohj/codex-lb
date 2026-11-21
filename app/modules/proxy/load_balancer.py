@@ -943,7 +943,7 @@ class LoadBalancer:
                     selection_inputs=selection_inputs,
                     reload_inputs=load_selection_inputs,
                     record_account_cap_rejection=_record_account_cap_rejection,
-                    allow_usage_exhaustion_error=allow_usage_exhaustion_error,
+                    allow_usage_exhaustion_error=allow_usage_exhaustion_error and not excluded_ids,
                 ),
             )
             selection_inputs = unbound_outcome.selection_inputs
@@ -1020,7 +1020,7 @@ class LoadBalancer:
                     selection_inputs=selection_inputs,
                     reload_inputs=load_selection_inputs,
                     record_account_cap_rejection=_record_account_cap_rejection,
-                    allow_usage_exhaustion_error=allow_usage_exhaustion_error,
+                    allow_usage_exhaustion_error=allow_usage_exhaustion_error and not excluded_ids,
                     initial_sticky_owner_lookup=initial_sticky_owner_lookup,
                 ),
             )

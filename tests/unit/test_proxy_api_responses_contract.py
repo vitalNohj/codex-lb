@@ -34,7 +34,7 @@ async def test_rate_limit_header_failure_releases_only_owned_reservation(
     failure = failure_type("rate-limit header failure")
     releases: list[object] = []
 
-    async def fail_headers(*_args: object) -> dict[str, str]:
+    async def fail_headers(*_args: object, **_kwargs: object) -> dict[str, str]:
         raise failure
 
     async def release_reservation(value: object) -> None:
@@ -49,6 +49,7 @@ async def test_rate_limit_header_failure_releases_only_owned_reservation(
             cast(Any, object()),
             None,
             cast(Any, reservation if owns_reservation else None),
+            model="gpt-5.1",
         )
 
     assert caught.value is failure
@@ -65,7 +66,7 @@ async def test_rate_limit_header_cancellation_shields_reservation_release(
     release_started = asyncio.Event()
     release_finished = asyncio.Event()
 
-    async def cancel_headers(*_args: object) -> dict[str, str]:
+    async def cancel_headers(*_args: object, **_kwargs: object) -> dict[str, str]:
         raise failure
 
     async def release_reservation(value: object) -> None:
@@ -84,6 +85,7 @@ async def test_rate_limit_header_cancellation_shields_reservation_release(
                 cast(Any, object()),
                 None,
                 cast(Any, reservation),
+                model="gpt-5.1",
             )
 
     assert caught.value is failure
@@ -103,7 +105,7 @@ async def test_rate_limit_header_failure_defers_repeated_cancellation_until_rele
     release_continue = asyncio.Event()
     release_finished = asyncio.Event()
 
-    async def fail_headers(*_args: object) -> dict[str, str]:
+    async def fail_headers(*_args: object, **_kwargs: object) -> dict[str, str]:
         raise failure
 
     async def release_reservation(value: object) -> None:
@@ -120,6 +122,7 @@ async def test_rate_limit_header_failure_defers_repeated_cancellation_until_rele
             cast(Any, object()),
             None,
             cast(Any, reservation),
+            model="gpt-5.1",
         )
     )
     await release_started.wait()
@@ -145,7 +148,7 @@ async def test_rate_limit_header_failure_survives_release_failure(
     header_failure = RuntimeError("rate-limit header failure")
     releases: list[object] = []
 
-    async def fail_headers(*_args: object) -> dict[str, str]:
+    async def fail_headers(*_args: object, **_kwargs: object) -> dict[str, str]:
         raise header_failure
 
     async def fail_release(value: object) -> None:
@@ -160,6 +163,7 @@ async def test_rate_limit_header_failure_survives_release_failure(
             cast(Any, object()),
             None,
             cast(Any, reservation),
+            model="gpt-5.1",
         )
 
     assert caught.value is header_failure
@@ -175,7 +179,7 @@ async def test_rate_limit_header_failure_uses_reservation_cleanup_retry(
     header_failure = RuntimeError("rate-limit header failure")
     released: list[str] = []
 
-    async def fail_headers(*_args: object) -> dict[str, str]:
+    async def fail_headers(*_args: object, **_kwargs: object) -> dict[str, str]:
         raise header_failure
 
     async def record_release(
@@ -202,6 +206,7 @@ async def test_rate_limit_header_failure_uses_reservation_cleanup_retry(
             cast(Any, object()),
             None,
             cast(Any, reservation),
+            model="gpt-5.1",
             reservation_cleanup=cleanup,
         )
 
