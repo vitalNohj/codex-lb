@@ -120,6 +120,7 @@ from app.modules.proxy.selection_errors import (
     USAGE_LIMIT_REACHED,
     previous_response_owner_unavailable_error,
     previous_response_owner_unavailable_failed_event,
+    selection_failure_error,
     selection_failure_response,
 )
 
@@ -1756,7 +1757,6 @@ class _StreamingRetryMixin:
                     if selection.error_code == USAGE_LIMIT_REACHED:
                         await _drain_pending_post_refresh_penalty_on_terminal(settlement)
                         no_accounts_msg = selection.error_message or "Usage limit reached"
-                        status_code, error_payload = selection_failure_response(selection)
                         await proxy._write_request_log(
                             affinity_observation=affinity_observation,
                             account_id=None,
@@ -1778,7 +1778,7 @@ class _StreamingRetryMixin:
                             client_ip=client_ip,
                         )
                         if propagate_http_errors:
-                            raise ProxyResponseError(status_code, error_payload)
+                            raise selection_failure_error(selection)
                         yield format_sse_event(
                             response_failed_event(
                                 USAGE_LIMIT_REACHED,

@@ -83,6 +83,7 @@ _HTTP_BRIDGE_SIGNATURE_VERSION_V2 = "2"
 # transport-failure lifecycle aborts the committed body, moving issue #2364's
 # empty 200 from the owner onto the origin.
 HTTP_BRIDGE_LOCAL_PRE_DISPATCH_REFUSAL_HEADER = "x-codex-bridge-local-pre-dispatch-refusal"
+HTTP_BRIDGE_POOL_USAGE_EXHAUSTED_HEADER = "x-codex-bridge-pool-usage-exhausted"
 
 
 @dataclass(frozen=True, slots=True)
@@ -233,6 +234,9 @@ class HTTPBridgeOwnerClient:
                             # local pre-dispatch refusal (issue #2364).
                             local_pre_dispatch_refusal=_bool_header(
                                 response.headers.get(HTTP_BRIDGE_LOCAL_PRE_DISPATCH_REFUSAL_HEADER)
+                            ),
+                            pool_usage_exhausted=_bool_header(
+                                response.headers.get(HTTP_BRIDGE_POOL_USAGE_EXHAUSTED_HEADER)
                             ),
                         )
                     if on_response_ready is not None:

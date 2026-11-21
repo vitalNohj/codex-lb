@@ -603,8 +603,10 @@ class ProxyResponseError(Exception):
         retry_after_header: str | None = None,
         reservation_released: bool = False,
         local_pre_dispatch_refusal: bool = False,
+        pool_usage_exhausted: bool = False,
     ) -> None:
         super().__init__(f"Proxy response error ({status_code})")
+        self.pool_usage_exhausted = pool_usage_exhausted
         self.status_code = status_code
         self.payload = payload
         self.failure_phase = failure_phase

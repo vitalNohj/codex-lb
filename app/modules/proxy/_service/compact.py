@@ -86,7 +86,7 @@ from app.modules.proxy.replay_safety import (
     responses_input_suffix_retains_prior_output,
     responses_payload_is_account_neutral_fresh_replay,
 )
-from app.modules.proxy.selection_errors import selection_failure_response
+from app.modules.proxy.selection_errors import selection_failure_error
 from app.modules.proxy.work_admission import AdmissionLease, WorkAdmissionController
 
 logger = logging.getLogger("app.modules.proxy.service")
@@ -1484,11 +1484,7 @@ class _CompactMixin:
                     else:
                         log_error_code = selection.error_code or "no_accounts"
                         log_error_message = selection.error_message or "No active accounts available"
-                        status_code, error_payload = selection_failure_response(selection)
-                        raise ProxyResponseError(
-                            status_code,
-                            error_payload,
-                        )
+                        raise selection_failure_error(selection)
                 assert account is not None
                 account_id_value = account.id
                 selected_account_response_create_lease = selection.lease

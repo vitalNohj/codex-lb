@@ -2765,13 +2765,13 @@ async def test_a_pinned_claude_turn_that_reads_no_cache_is_counted_as_a_miss(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("hidden", [False, True])
-async def test_responses_claude_dispatch_follows_api_key_quota_privacy(
+async def test_responses_claude_dispatch_omits_codex_quota_headers(
     async_client, sidecar_enabled, fake_sidecar, monkeypatch, hidden
 ):
-    """Pool-wide quota headers on the chat-provider Responses path obey the privacy setting."""
+    """Claude must not inherit Codex quota, even for a key that can see it."""
 
-    async def pool_headers(_self):
-        return {"x-codex-primary-used-percent": "42.0"}
+    async def pool_headers(_self, **kwargs):
+        return {"x-codex-primary-used-percent": "42.0", "x-codex-credits-balance": "12.50"}
 
     monkeypatch.setattr("app.modules.proxy.service.ProxyService.rate_limit_headers", pool_headers)
     await _enable_api_key_auth(async_client)
@@ -2787,10 +2787,8 @@ async def test_responses_claude_dispatch_follows_api_key_quota_privacy(
 
     assert response.status_code == 200
     assert len(fake_sidecar.chat_payloads) == 1
-    if hidden:
-        assert "x-codex-primary-used-percent" not in response.headers
-    else:
-        assert response.headers["x-codex-primary-used-percent"] == "42.0"
+    assert "x-codex-primary-used-percent" not in response.headers
+    assert "x-codex-credits-balance" not in response.headers
 
 
 def _opus_chat(**extra: object) -> dict:

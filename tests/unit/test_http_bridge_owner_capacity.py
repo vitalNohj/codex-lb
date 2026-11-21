@@ -78,7 +78,7 @@ def test_owner_free_full_resend_text_keeps_the_response_create_frame() -> None:
     assert [item.get("type") for item in projected["input"]] == [None, "message", None]
 
 
-def test_required_owner_at_usage_limit_gets_retryable_503_with_its_reset() -> None:
+def test_required_owner_at_usage_limit_gets_short_retry_without_its_reset() -> None:
     resets_at = int(time.time()) + 3_000
     selection = SimpleNamespace(
         account=None,
@@ -92,9 +92,9 @@ def test_required_owner_at_usage_limit_gets_retryable_503_with_its_reset() -> No
 
     assert error.status_code == 503
     assert error.payload["error"]["code"] == "previous_response_owner_unavailable"
-    assert error.payload["error"]["resets_at"] == resets_at
-    assert "usage limit" in error.payload["error"]["message"]
-    assert error.retry_after_seconds is not None and 2_990 <= error.retry_after_seconds <= 3_000
+    assert "resets_at" not in error.payload["error"]
+    assert "without previous_response_id" in error.payload["error"]["message"]
+    assert error.retry_after_seconds == 3
 
 
 def test_required_owner_rate_limited_without_reset_still_gets_retryable_503() -> None:

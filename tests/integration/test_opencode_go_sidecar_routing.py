@@ -1012,12 +1012,12 @@ _POOL_HEADER = "x-codex-primary-used-percent"
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("hidden", [False, True])
-async def test_responses_go_dispatch_follows_api_key_quota_privacy(
+async def test_responses_go_dispatch_omits_codex_quota_headers(
     async_client, opencode_go_enabled, fake_opencode_go, monkeypatch, hidden
 ):
-    """Pool-wide quota headers on the Go Responses path obey the privacy setting."""
+    """The Go sidecar does not use the Codex account pool."""
 
-    async def pool_headers(_self):
+    async def pool_headers(_self, **kwargs):
         return {_POOL_HEADER: "42.0"}
 
     monkeypatch.setattr("app.modules.proxy.service.ProxyService.rate_limit_headers", pool_headers)
@@ -1035,7 +1035,4 @@ async def test_responses_go_dispatch_follows_api_key_quota_privacy(
 
     assert response.status_code == 200
     assert fake_opencode_go.chat_payloads[0]["model"] == "glm-5.3"
-    if hidden:
-        assert _POOL_HEADER not in response.headers
-    else:
-        assert response.headers[_POOL_HEADER] == "42.0"
+    assert _POOL_HEADER not in response.headers

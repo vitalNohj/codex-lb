@@ -222,7 +222,7 @@ from app.modules.proxy.continuity import (
 )
 from app.modules.proxy.durable_bridge_coordinator import DurableBridgeLookup
 from app.modules.proxy.load_balancer import CONTINUITY_OWNER_UNAVAILABLE, AccountLease
-from app.modules.proxy.selection_errors import USAGE_LIMIT_REACHED, selection_failure_response
+from app.modules.proxy.selection_errors import USAGE_LIMIT_REACHED, selection_failure_error
 
 logger = logging.getLogger("app.modules.proxy.service")
 T = TypeVar("T")
@@ -1724,8 +1724,7 @@ class _HTTPBridgeMixin(
                     ) or _http_bridge_previous_response_owner_unavailable_error(
                         hold_expired=bool(selection.owner_hold_expired)
                     )
-                status_code, error_payload = selection_failure_response(selection)
-                raise ProxyResponseError(status_code, error_payload)
+                raise selection_failure_error(selection)
             if require_preferred_account and preferred_account_id is not None and account.id != preferred_account_id:
                 await self._load_balancer.release_account_lease(selected_account_lease)
                 selected_account_lease = None
@@ -2176,9 +2175,8 @@ class _HTTPBridgeMixin(
                     )
                 if selection.error_code == USAGE_LIMIT_REACHED:
                     record_selected_account_takeover(None)
-                    status_code, error_payload = selection_failure_response(selection)
                     complete_failed_handoff()
-                    raise ProxyResponseError(status_code, error_payload)
+                    raise selection_failure_error(selection)
                 try:
                     should_retry_selection = await _sleep_for_account_selection_recovery(
                         selection,

@@ -4810,7 +4810,7 @@ async def test_rate_limit_header_failure_releases_reservation_once(
     upstream_calls: list[str] = []
     original_release_reservation = proxy_api._release_reservation
 
-    async def fail_rate_limit_headers(_service) -> dict[str, str]:
+    async def fail_rate_limit_headers(_service, **_kwargs: object) -> dict[str, str]:
         raise RuntimeError("injected rate-limit header failure")
 
     async def release_reservation(reservation) -> None:
