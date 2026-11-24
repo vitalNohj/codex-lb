@@ -345,17 +345,17 @@ def _normalize_plan_type(value: str | None) -> str | None:
 
 def _rate_limit_headers(
     window_label: str,
-    summary: UsageWindowSummary,
+    *,
+    used_percent: float | None,
+    window_minutes: int | None,
+    reset_at: int | None,
 ) -> dict[str, str]:
-    used_percent = summary.used_percent
-    window_minutes = summary.window_minutes
     if used_percent is None or window_minutes is None:
         return {}
     headers = {
         f"x-codex-{window_label}-used-percent": str(float(used_percent)),
         f"x-codex-{window_label}-window-minutes": str(int(window_minutes)),
     }
-    reset_at = summary.reset_at
     if reset_at is not None:
         headers[f"x-codex-{window_label}-reset-at"] = str(int(reset_at))
     return headers

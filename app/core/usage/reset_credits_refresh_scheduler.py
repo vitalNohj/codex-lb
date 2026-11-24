@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import hashlib
 import logging
 import random
 from collections.abc import Awaitable, Callable
@@ -11,9 +10,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from app.core.clients.rate_limit_reset_credits import (
-    RateLimitResetCreditsSnapshot,
     ResetCreditFetchError,
-    ResetCreditItem,
     ResetCreditsResponse,
     build_snapshot,
     fetch_reset_credits,
@@ -21,11 +18,17 @@ from app.core.clients.rate_limit_reset_credits import (
 from app.core.config.background_jobs import background_job_enabled, resolve_background_job_toggle
 from app.core.crypto import TokenEncryptor
 from app.core.upstream_proxy import ResolvedUpstreamRoute, UpstreamProxyRouteError
-from app.db.models import Account, AccountStatus
+from app.db.models import Account
 from app.db.session import detach_session_objects, get_background_session
 from app.modules.accounts.auth_manager import AuthManager
 from app.modules.accounts.repository import AccountsRepository
 from app.modules.proxy.account_cache import get_account_selection_cache
+from app.modules.rate_limit_reset_credits.automatic import (
+    AUTO_REDEEM_WINDOW_SECONDS,
+    AutomaticRedeemCandidate,
+    automatic_redeem_candidate,
+    can_poll_reset_credits,
+)
 from app.modules.rate_limit_reset_credits.store import (
     RateLimitResetCreditsStore,
     get_rate_limit_reset_credits_store,
@@ -36,10 +39,6 @@ from app.modules.usage.updater import UsageUpdater, _resolve_upstream_route_for_
 
 logger = logging.getLogger(__name__)
 
-_RESET_CREDITS_SKIP_STATUSES = frozenset(
-    {AccountStatus.PAUSED, AccountStatus.REAUTH_REQUIRED, AccountStatus.DEACTIVATED}
-)
-
 ResetCreditsFetchFn = Callable[..., Awaitable[ResetCreditsResponse]]
 ResetCreditsRedeemFn = Callable[..., Awaitable[Any]]
 ResolveRouteFn = Callable[[Account], Awaitable[ResolvedUpstreamRoute | None]]
@@ -47,7 +46,6 @@ ResolveRouteFn = Callable[[Account], Awaitable[ResolvedUpstreamRoute | None]]
 
 _TICK_JITTER_LOW = 0.9
 _TICK_JITTER_HIGH = 1.1
-_AUTO_REDEEM_WINDOW_SECONDS = 5 * 60
 # Polling cadence per replica (fixed; issue #1340 / PRINCIPLES.md P2). The
 # dataclass field stays so tests can inject a shorter interval.
 _REFRESH_INTERVAL_SECONDS = 60
@@ -164,7 +162,7 @@ class RateLimitResetCreditsRefreshScheduler:
                     resolve_route=_resolve_reset_credits_refresh_route,
                     auto_redeem_resolve_route=_resolve_reset_credits_consume_route,
                     auto_redeem_before_expiry=auto_redeem_before_expiry,
-                    auto_redeem_window_seconds=float(_AUTO_REDEEM_WINDOW_SECONDS),
+                    auto_redeem_window_seconds=AUTO_REDEEM_WINDOW_SECONDS,
                 )
             except Exception:
                 logger.exception("Reset credits refresh loop failed")
@@ -190,9 +188,7 @@ async def refresh_reset_credits_for_accounts(
     stays owned by usage refresh. One account failing must not abort the loop.
     """
     for account in accounts:
-        if account.status in _RESET_CREDITS_SKIP_STATUSES:
-            continue
-        if not account.chatgpt_account_id:
+        if not can_poll_reset_credits(account):
             continue
         await _refresh_account_reset_credits(
             account,
@@ -270,14 +266,19 @@ async def _refresh_account_reset_credits(
             account.id,
         )
         return
-    if auto_redeem_before_expiry and _should_auto_redeem_snapshot(
-        snapshot,
-        window_seconds=auto_redeem_window_seconds,
+    if (
+        auto_redeem_before_expiry
+        and (
+            candidate := automatic_redeem_candidate(
+                account, snapshot, now=datetime.now(UTC), window_seconds=auto_redeem_window_seconds or 0
+            )
+        )
+        is not None
     ):
         try:
             await _auto_redeem_reset_credit(
                 account,
-                snapshot=snapshot,
+                candidate=candidate,
                 encryptor=encryptor,
                 store=store,
                 fetch_fn=fetch_fn,
@@ -292,24 +293,10 @@ async def _refresh_account_reset_credits(
             )
 
 
-def _should_auto_redeem_snapshot(
-    snapshot: RateLimitResetCreditsSnapshot,
-    *,
-    window_seconds: float | None,
-) -> bool:
-    if snapshot.available_count <= 0 or snapshot.nearest_expires_at is None:
-        return False
-    expires_at = snapshot.nearest_expires_at
-    if expires_at.tzinfo is None:
-        expires_at = expires_at.replace(tzinfo=UTC)
-    seconds_until_expiry = (expires_at - datetime.now(UTC)).total_seconds()
-    return 0 <= seconds_until_expiry <= float(window_seconds or 0)
-
-
 async def _auto_redeem_reset_credit(
     account: Account,
     *,
-    snapshot: RateLimitResetCreditsSnapshot,
+    candidate: AutomaticRedeemCandidate,
     encryptor: TokenEncryptor,
     store: RateLimitResetCreditsStore,
     fetch_fn: ResetCreditsFetchFn,
@@ -322,9 +309,7 @@ async def _auto_redeem_reset_credit(
     )
     from app.modules.rate_limit_reset_credits.redeem_coordination import get_pinned_redeem_credit_id
 
-    redeem_request_id = _auto_redeem_request_id(account, snapshot)
-    if redeem_request_id is None:
-        return
+    redeem_request_id = candidate.request_id
     pinned_credit_id = await get_pinned_redeem_credit_id(account.id, redeem_request_id)
     if pinned_credit_id is not None:
         logger.info(
@@ -334,10 +319,6 @@ async def _auto_redeem_reset_credit(
             pinned_credit_id,
         )
         return
-    target_credit = _select_auto_redeem_target_credit(snapshot)
-    if target_credit is None:
-        return
-
     effective_redeem_fn = redeem_fn or _redeem_soonest_reset_credit
     async with get_background_session() as lock_session:
         latest_account = await lock_session.get(Account, account.id)
@@ -347,7 +328,7 @@ async def _auto_redeem_reset_credit(
                 account.id,
             )
             return
-        if latest_account.status in _RESET_CREDITS_SKIP_STATUSES or not latest_account.chatgpt_account_id:
+        if not can_poll_reset_credits(latest_account):
             logger.info(
                 "Skipping automatic reset credit redeem because account is no longer eligible "
                 "account_id=%s status=%s has_chatgpt_account_id=%s",
@@ -367,8 +348,8 @@ async def _auto_redeem_reset_credit(
                 refresh_usage=_refresh_usage_after_auto_redeem,
                 redeem_request_id=redeem_request_id,
                 skip_if_redeem_request_pinned=True,
-                expected_credit_id=target_credit.id,
-                expected_credit_expires_at=target_credit.expires_at,
+                expected_credit_id=candidate.credit.id,
+                expected_credit_expires_at=candidate.credit.expires_at,
             )
         except ResetCreditRedeemRequestAlreadyPinned as exc:
             logger.info(
@@ -377,32 +358,6 @@ async def _auto_redeem_reset_credit(
                 exc.account_id,
                 exc.credit_id,
             )
-
-
-def _auto_redeem_request_id(account: Account, snapshot: RateLimitResetCreditsSnapshot) -> str | None:
-    expires_at = snapshot.nearest_expires_at
-    if expires_at is None:
-        return None
-    if expires_at.tzinfo is None:
-        expires_at = expires_at.replace(tzinfo=UTC)
-    else:
-        expires_at = expires_at.astimezone(UTC)
-    # Intentionally one automatic request per account and UTC expiry date. If
-    # multiple credits expire on the same day, the automatic path favors not
-    # burning a second coupon over trying to exhaust every expiring credit.
-    digest = hashlib.sha256(f"{account.id}:{expires_at.date().isoformat()}".encode("utf-8")).hexdigest()[:32]
-    return f"auto-reset-credit:{digest}"
-
-
-def _select_auto_redeem_target_credit(snapshot: RateLimitResetCreditsSnapshot) -> ResetCreditItem | None:
-    if snapshot.available_count <= 0:
-        return None
-    available = [
-        credit for credit in snapshot.credits if credit.status == "available" and credit.expires_at is not None
-    ]
-    if not available:
-        return None
-    return min(available, key=lambda credit: credit.expires_at)
 
 
 async def _refresh_usage_after_auto_redeem(account: Account) -> None:
