@@ -4149,7 +4149,7 @@ async def _proxy_images_generation_request(
         return StreamingResponse(
             _stream_with_log_rewrite(),
             media_type="text/event-stream",
-            headers={"Cache-Control": "no-cache", **rate_limit_headers},
+            headers={"Cache-Control": "no-cache", **_without_unconfirmed_full_usage(rate_limit_headers)},
         )
 
     try:
@@ -4442,7 +4442,7 @@ async def _proxy_images_edit_request(
         return StreamingResponse(
             _stream_with_log_rewrite(),
             media_type="text/event-stream",
-            headers={"Cache-Control": "no-cache", **rate_limit_headers},
+            headers={"Cache-Control": "no-cache", **_without_unconfirmed_full_usage(rate_limit_headers)},
         )
 
     try:
@@ -6300,7 +6300,7 @@ async def v1_chat_completions(
                 on_keepalive=lambda: _record_stream_keepalive("chat_completions"),
             ),
             media_type="text/event-stream",
-            headers={"Cache-Control": "no-cache", **rate_limit_headers},
+            headers={"Cache-Control": "no-cache", **_without_unconfirmed_full_usage(rate_limit_headers)},
         )
 
     try:
@@ -8214,7 +8214,7 @@ async def _stream_responses(
                             "Cache-Control": "no-cache, no-transform",
                             "X-Accel-Buffering": "no",
                             **turn_state_headers,
-                            **rate_limit_headers,
+                            **_without_unconfirmed_full_usage(rate_limit_headers),
                         },
                     )
                 return _stream_startup_error_response(
@@ -8246,7 +8246,7 @@ async def _stream_responses(
                     "Cache-Control": "no-cache, no-transform",
                     "X-Accel-Buffering": "no",
                     **turn_state_headers,
-                    **rate_limit_headers,
+                    **_without_unconfirmed_full_usage(rate_limit_headers),
                 },
             )
         finally:
@@ -8449,7 +8449,7 @@ async def _stream_responses(
             "Cache-Control": "no-cache, no-transform",
             "X-Accel-Buffering": "no",
             **turn_state_headers,
-            **rate_limit_headers,
+            **_without_unconfirmed_full_usage(rate_limit_headers),
         },
     )
 
@@ -9920,7 +9920,24 @@ def _parse_sse_payload(line: str) -> dict[str, JsonValue] | None:
     return parse_sse_data_json(line)
 
 
-_POOL_USAGE_HEADER_PREFIXES = ("x-codex-primary-", "x-codex-secondary-", "x-codex-monthly-", "x-codex-credits-")
+_POOL_WINDOW_HEADER_PREFIXES = ("x-codex-primary-", "x-codex-secondary-", "x-codex-monthly-")
+_POOL_USAGE_HEADER_PREFIXES = (*_POOL_WINDOW_HEADER_PREFIXES, "x-codex-credits-")
+
+
+def _without_unconfirmed_full_usage(
+    headers: Mapping[str, str], *, confirmed_reset_at: int | None = None
+) -> dict[str, str]:
+    # HTTP headers are sent before a stream's terminal event. Do not claim
+    # exhaustion then. On a selector-confirmed error, keep a full window only
+    # when its deadline agrees, rather than rewriting half of its timing pair.
+    lower_headers = {name.lower(): value for name, value in headers.items()}
+    unconfirmed = tuple(
+        prefix
+        for prefix in _POOL_WINDOW_HEADER_PREFIXES
+        if float(lower_headers.get(f"{prefix}used-percent", "0")) >= 100
+        and (confirmed_reset_at is None or lower_headers.get(f"{prefix}reset-at") != str(confirmed_reset_at))
+    )
+    return {name: value for name, value in headers.items() if not name.lower().startswith(unconfirmed)}
 
 
 def _logged_error_json_response(
@@ -9939,21 +9956,17 @@ def _logged_error_json_response(
         public_content = content
     code, message = _error_details_from_content(public_content)
     error = public_content.get("error")
-    effective_headers = {
-        name: value
-        for name, value in (headers or {}).items()
-        if not name.lower().startswith(_POOL_USAGE_HEADER_PREFIXES)
-    }
-    if pool_usage_exhausted and isinstance(error, dict):
-        # The selector has evidence for the entire eligible pool. Use its
-        # first usable account, not a header snapshot's first rolling reset.
+    if pool_usage_exhausted and status_code == 429 and code == USAGE_LIMIT_REACHED and isinstance(error, dict):
         reset_at = error.get("resets_at")
-        for name, value in (headers or {}).items():
-            if name.lower().startswith(_POOL_USAGE_HEADER_PREFIXES):
-                if not name.lower().endswith("-reset-at"):
-                    effective_headers[name] = value
-                elif isinstance(reset_at, int):
-                    effective_headers[name] = str(reset_at)
+        effective_headers = _without_unconfirmed_full_usage(
+            headers or {}, confirmed_reset_at=reset_at if isinstance(reset_at, int) else None
+        )
+    else:
+        effective_headers = {
+            name: value
+            for name, value in (headers or {}).items()
+            if not name.lower().startswith(_POOL_USAGE_HEADER_PREFIXES)
+        }
     if status_code in {429, 503} and isinstance(error, dict):
         retry_after = error_retry_after_seconds(error)
         if retry_after is not None and not any(key.lower() == "retry-after" for key in effective_headers):

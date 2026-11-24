@@ -25,8 +25,10 @@ import app.core.middleware.dashboard_overrides as dashboard_overrides_middleware
 import app.modules.proxy.load_balancer as load_balancer_module
 import app.modules.proxy.service as proxy_module
 from app.core.clients.proxy_websocket import UpstreamWebSocketMessage as _FakeUpstreamMessage
+from app.core.clients.rate_limit_reset_credits import ResetCreditItem, ResetCreditsResponse, build_snapshot
 from app.core.config.dashboard_overrides import with_dashboard_overrides
 from app.core.config.settings import Settings
+from app.core.config.settings_cache import get_settings_cache
 from app.core.openai.model_registry import ModelRegistry
 from app.core.utils.request_id import (
     reset_request_id,
@@ -65,6 +67,10 @@ from app.modules.proxy.load_balancer import (
     CatalogOmissionQuotaAdmission,
 )
 from app.modules.proxy.sticky_repository import StickySessionsRepository
+from app.modules.rate_limit_reset_credits.automatic import automatic_redeem_candidate
+from app.modules.rate_limit_reset_credits.redeem_coordination import pin_redeem_request
+from app.modules.rate_limit_reset_credits.store import get_rate_limit_reset_credits_store
+from app.modules.settings.repository import SettingsRepository
 from app.modules.usage.repository import AdditionalUsageRepository, UsageRepository
 
 pytestmark = pytest.mark.integration
@@ -10887,6 +10893,139 @@ async def test_http_bridge_pool_exhaustion_reports_first_usable_account(async_cl
     assert response.headers["x-codex-primary-used-percent"] == "100.0"
     assert response.headers["x-codex-primary-reset-at"] == str(earliest_available_at)
     assert float(response.headers["x-codex-secondary-used-percent"]) < 100
+
+
+@pytest.mark.parametrize(
+    ("weekly_reset_after", "credit", "expected_window"),
+    [
+        (3 * 86400, "none", "primary"),
+        (1800, "none", "secondary"),
+        (3 * 86400, "ready", None),
+        (3 * 86400, "disabled", "primary"),
+        (3 * 86400, "not_due", "primary"),
+        (3 * 86400, "already_pinned", "primary"),
+    ],
+)
+async def test_http_bridge_pool_exhaustion_with_mixed_windows(
+    async_client, monkeypatch, weekly_reset_after, credit, expected_window
+):
+    _install_bridge_settings(monkeypatch, enabled=True)
+    plus_first = await _import_account(async_client, "acc_plus_first", "plus-first@example.com")
+    plus_second = await _import_account(async_client, "acc_plus_second", "plus-second@example.com")
+    prolite = await _import_account(async_client, "acc_prolite", "prolite@example.com", plan_type="prolite")
+    now = int(time.time())
+    async with SessionLocal() as session:
+        usage = UsageRepository(session)
+        for account_id, reset_after, minutes, status in (
+            (plus_first, 4620, 300, AccountStatus.RATE_LIMITED),
+            (plus_second, 12840, 300, AccountStatus.RATE_LIMITED),
+            (prolite, weekly_reset_after, 10080, AccountStatus.QUOTA_EXCEEDED),
+        ):
+            # The Pro Lite account reports its only weekly window in the primary slot.
+            await usage.add_entry(account_id, 100, window="primary", window_minutes=minutes, reset_at=now + reset_after)
+            account = await session.get(Account, account_id)
+            assert account is not None
+            account.status = status
+            account.reset_at = now + reset_after
+        settings = await SettingsRepository(session).get_or_create()
+        settings.auto_redeem_reset_credits_before_expiry = credit not in {"none", "disabled"}
+        settings.rate_limit_reset_credits_refresh_enabled = True
+        await session.commit()
+    await get_settings_cache().invalidate(propagate=False)
+
+    store = get_rate_limit_reset_credits_store()
+    if credit != "none":
+        expires_after = 3600 if credit == "not_due" else 180
+        snapshot = build_snapshot(
+            ResetCreditsResponse(
+                credits=[
+                    ResetCreditItem(
+                        id="reset-credit",
+                        status="available",
+                        expires_at=datetime.fromtimestamp(now + expires_after, tz=timezone.utc),
+                    )
+                ],
+                available_count=1,
+            )
+        )
+        if credit == "already_pinned":
+            async with SessionLocal() as session:
+                pro_account = await session.get(Account, prolite)
+                assert pro_account is not None
+                candidate = automatic_redeem_candidate(
+                    pro_account, snapshot, now=datetime.fromtimestamp(now, timezone.utc)
+                )
+            assert candidate is not None
+            await pin_redeem_request(prolite, candidate.request_id, candidate.credit.id)
+        await store.set(prolite, snapshot)
+    try:
+        response = await async_client.post("/v1/responses", json={"model": "gpt-5.1", "input": "hello", "stream": True})
+    finally:
+        await store.invalidate(prolite)
+
+    assert response.status_code == 429, response.text
+    assert response.json()["error"]["code"] == "usage_limit_reached"
+    full_windows = {
+        window
+        for window in ("primary", "secondary", "monthly")
+        if float(response.headers.get(f"x-codex-{window}-used-percent", "0")) >= 100
+    }
+    if expected_window is None:
+        assert not full_windows
+    else:
+        assert full_windows == {expected_window}
+        assert response.headers[f"x-codex-{expected_window}-reset-at"] == str(now + min(4620, weekly_reset_after))
+        assert response.headers[f"x-codex-{expected_window}-window-minutes"] == (
+            "300" if expected_window == "primary" else "10080"
+        )
+
+
+@pytest.mark.parametrize(
+    "terminal_code", ["server_is_overloaded", "upstream_unavailable", "stream_incomplete", "proxy_overloaded", None]
+)
+async def test_codex_stream_keeps_usage_estimate_but_not_exhaustion_claim(async_client, monkeypatch, terminal_code):
+    _install_bridge_settings(monkeypatch, enabled=False)
+    reset_at = str(int(time.time()) + 4620)
+
+    # A quota snapshot taken before dispatch can be full even when a request
+    # finds an account or ends for a reason other than quota exhaustion.
+    async def header_snapshot(self, **kwargs):
+        return {
+            "x-codex-primary-used-percent": "100.0" if terminal_code else "80.0",
+            "x-codex-primary-reset-at": reset_at,
+            "x-codex-primary-window-minutes": "300",
+            "x-codex-secondary-used-percent": "40.0",
+        }
+
+    async def stream(self, *args, **kwargs):
+        yield 'data: {"type":"response.created","response":{"id":"resp_test","status":"in_progress"}}\n\n'
+        terminal_event = {
+            "type": "response.failed" if terminal_code else "response.completed",
+            "response": {"id": "resp_test", "status": "failed" if terminal_code else "completed", "output": []},
+        }
+        if terminal_code:
+            terminal_event["response"]["error"] = {"code": terminal_code, "message": "Transient failure"}
+        yield f"data: {json.dumps(terminal_event)}\n\n"
+
+    monkeypatch.setattr(proxy_module.ProxyService, "rate_limit_headers", header_snapshot)
+    monkeypatch.setattr(proxy_module.ProxyService, "stream_http_responses", stream)
+    monkeypatch.setattr(proxy_module.ProxyService, "stream_responses", stream)
+    events, headers = await _collect_sse_events_with_headers(
+        async_client,
+        "/backend-api/codex/responses",
+        json_body={"model": "gpt-5.1", "input": "hello", "instructions": "Say hello.", "stream": True},
+    )
+
+    assert events[0]["type"] == "response.created"
+    assert headers["x-codex-secondary-used-percent"] == "40.0"
+    if terminal_code:
+        assert events[-1]["response"]["error"]["code"] == terminal_code
+        assert not any(name.startswith("x-codex-primary-") for name in headers)
+    else:
+        assert events[-1]["type"] == "response.completed"
+        assert headers["x-codex-primary-used-percent"] == "80.0"
+        assert headers["x-codex-primary-reset-at"] == reset_at
+        assert headers["x-codex-primary-window-minutes"] == "300"
 
 
 @pytest.mark.asyncio

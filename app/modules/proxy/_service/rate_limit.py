@@ -3,9 +3,12 @@ from __future__ import annotations
 import time
 from collections.abc import Mapping
 from dataclasses import replace
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Protocol, cast
 
 from app.core import usage as usage_core
+from app.core.config.background_jobs import resolve_background_job_toggle
+from app.core.config.settings_cache import get_settings_cache
 from app.core.openai.model_registry import get_model_registry
 from app.core.usage.types import UsageWindowRow
 from app.db.models import Account, UsageHistory
@@ -34,6 +37,9 @@ from app.modules.proxy.types import (
     RateLimitStatusPayloadData,
     RateLimitWindowSnapshotData,
 )
+from app.modules.rate_limit_reset_credits.automatic import automatic_redeem_candidate
+from app.modules.rate_limit_reset_credits.redeem_coordination import get_pinned_redeem_credit_id
+from app.modules.rate_limit_reset_credits.store import get_rate_limit_reset_credits_store
 from app.modules.usage.additional_quota_keys import get_additional_display_label_for_quota_key
 from app.modules.usage.background_repository import BackgroundAdditionalUsageRepository, BackgroundUsageRepository
 from app.modules.usage.mappers import usage_history_to_window_row
@@ -102,11 +108,58 @@ def _summarize_usage_header_window(
         for account_id in account_map.keys() - rows_by_account.keys()
     )
     summary = usage_core.summarize_usage_window(bounded_rows, account_map, window)
+    # A full weighted window does not prove when the pool can serve a turn.
+    # Report exhaustion separately, using all accounts and blocking windows.
     if summary.used_percent is not None and summary.used_percent >= 100.0:
-        if any(row.used_percent != 100.0 for row in bounded_rows):
-            return {}
-        summary = replace(summary, used_percent=100.0)
-    return _rate_limit_headers(window, summary)
+        return {}
+    return _rate_limit_headers(
+        window,
+        used_percent=summary.used_percent,
+        window_minutes=summary.window_minutes,
+        reset_at=summary.reset_at,
+    )
+
+
+def _first_pool_usage_reset(
+    rows_by_window: Mapping[str, list[UsageWindowRow]], account_map: Mapping[str, Account]
+) -> tuple[str, UsageWindowRow] | None:
+    blocked_by_account: dict[str, list[tuple[str, UsageWindowRow]]] = {account_id: [] for account_id in account_map}
+    for window, rows in rows_by_window.items():
+        for row in rows:
+            if (
+                row.used_percent is not None
+                and row.used_percent >= 100.0
+                and (usage_core.capacity_for_plan(account_map[row.account_id].plan_type, window) or 0) > 0
+            ):
+                blocked_by_account[row.account_id].append((window, row))
+    if not all(blocked_by_account.values()):
+        return None
+
+    # An account cannot return until its last blocking window resets. Keep
+    # the winning row with the deadline so its duration cannot come from a
+    # different account or window. Unknown deadlines cannot predict a return.
+    known_returns = [
+        max(blocked, key=lambda entry: entry[1].reset_at or 0)
+        for blocked in blocked_by_account.values()
+        if all(row.reset_at is not None for _, row in blocked)
+    ]
+    return min(known_returns, key=lambda entry: entry[1].reset_at or 0) if known_returns else None
+
+
+async def _has_ready_reset_credit(candidates: list[tuple[str, str]]) -> bool:
+    if not candidates:
+        return False
+    settings = await get_settings_cache().get()
+    if not settings.auto_redeem_reset_credits_before_expiry or not resolve_background_job_toggle(
+        settings, "rate_limit_reset_credits_refresh_enabled"
+    ):
+        return False
+    for account_id, request_id in candidates:
+        # A pin is an idempotency record, not an available credit. The
+        # scheduler does not make another automatic attempt for this key.
+        if await get_pinned_redeem_credit_id(account_id, request_id) is None:
+            return True
+    return False
 
 
 class _RateLimitMixin:
@@ -169,16 +222,42 @@ class _RateLimitMixin:
                 primary_rows_raw,
                 secondary_rows_raw,
             )
-            now_epoch = int(time.time())
-            primary_rows = usage_core.expire_elapsed_window_rows(primary_rows, now_epoch=now_epoch)
-            secondary_rows = usage_core.expire_elapsed_window_rows(secondary_rows, now_epoch=now_epoch)
-            monthly_rows = usage_core.expire_elapsed_window_rows(monthly_rows, now_epoch=now_epoch)
-
-            headers.update(_summarize_usage_header_window(primary_rows, account_map, "primary"))
-            headers.update(_summarize_usage_header_window(secondary_rows, account_map, "secondary"))
-            headers.update(_summarize_usage_header_window(monthly_rows, account_map, "monthly"))
-
+            now = time.time()
+            rows_by_window = {
+                window: usage_core.expire_elapsed_window_rows(rows, now_epoch=int(now))
+                for window, rows in (
+                    ("primary", primary_rows),
+                    ("secondary", secondary_rows),
+                    ("monthly", monthly_rows),
+                )
+            }
+            for window, rows in rows_by_window.items():
+                headers.update(_summarize_usage_header_window(rows, account_map, window))
             headers.update(_credits_headers(await self._latest_usage_entries(repos, account_map)))
+
+            first_return = _first_pool_usage_reset(rows_by_window, account_map)
+            if first_return is None:
+                return headers
+            window, row = first_return
+            if row.window_minutes is None or row.window_minutes <= 0:
+                return headers
+            credit_store = get_rate_limit_reset_credits_store()
+            now_utc = datetime.fromtimestamp(now, UTC)
+            credit_candidates = [
+                (account.id, candidate.request_id)
+                for account in selected_accounts
+                if (candidate := automatic_redeem_candidate(account, credit_store.get(account.id), now=now_utc))
+                is not None
+            ]
+
+        # Settings and the redeem ledger use their own sessions. Release the
+        # usage session first so this can also run with a single connection.
+        if not await _has_ready_reset_credit(credit_candidates):
+            headers.update(
+                _rate_limit_headers(
+                    window, used_percent=100.0, window_minutes=row.window_minutes, reset_at=row.reset_at
+                )
+            )
         return headers
 
     async def get_rate_limit_payload(self) -> RateLimitStatusPayloadData:

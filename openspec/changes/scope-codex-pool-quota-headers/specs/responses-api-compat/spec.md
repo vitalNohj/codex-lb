@@ -27,9 +27,26 @@ The proxy MUST NOT attach its Codex pool usage or credits headers to HTTP respon
 
 ### Requirement: A full usage header requires a full eligible pool
 
-A subscription-backed summary MUST cover the accounts eligible for the model, tier and API key. It MUST count eligible accounts with missing samples as zero measured use at nominal window capacity. Plans without the window add no capacity. The proxy MUST omit the window summary if its weighted value would reach 100% without all eligible accounts having a full, unexpired sample.
+A subscription-backed summary MUST cover the accounts eligible for the model, tier and API key. Missing samples MUST count as unused nominal capacity; plans without the window add no capacity. A weighted estimate alone MUST NOT claim 100% usage. For a streaming request or error response, a 100% header requires a selector-confirmed pool usage error with a matching reset deadline and known window duration.
 
 #### Scenario: No short-window sample for one eligible account
 
 - **WHEN** one account's short window is full but another eligible account lacks a short-window sample
-- **THEN** the short-window usage header is omitted or reports less than 100%
+- **THEN** that sample alone does not establish pool exhaustion, and the short-window estimate is omitted or reports less than 100%
+
+#### Scenario: The eligible pool is full across different window lengths
+
+- **WHEN** the selector confirms exhaustion and the proxy has timing for the first eligible account to return
+- **THEN** the 100% header reports the reset deadline and duration of the blocking window that releases that account
+- **AND** an account with multiple blocking windows cannot return before its last blocking window resets
+
+#### Scenario: A reset credit is ready for automatic redemption
+
+- **WHEN** an eligible account has a credit that the enabled automatic redemption policy can redeem
+- **THEN** the proxy omits all 100% usage headers
+
+#### Scenario: A streaming request can fail after HTTP headers are sent
+
+- **WHEN** the proxy starts a stream before its terminal outcome is known
+- **THEN** the stream keeps ordinary usage estimates but has no 100% usage header
+- **AND** an overload, upstream-unavailable, or incomplete-stream error does not turn the estimate into a pool-exhaustion claim

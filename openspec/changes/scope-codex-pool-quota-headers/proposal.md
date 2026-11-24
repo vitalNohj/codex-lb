@@ -5,7 +5,8 @@ An overload or a quota rejection from one ChatGPT account can look like a pool-w
 ## What Changes
 
 - Report pressure from one account as a short retry when the existing safe failover does not succeed. Do not disclose that account's usage or reset.
-- Keep the structured 429 and the earliest usable account's reset for confirmed pool exhaustion.
+- Keep the structured 429 for confirmed pool exhaustion. Report the reset deadline and the window duration of the first eligible account to return.
+- Do not claim 100% usage when automatic redemption can restore an eligible account or when an open stream can still fail for a reason unrelated to quota.
 - Send Codex pool usage headers only for subscription-backed routes. Compute each summary over the eligible pool, including accounts with no usage sample.
 
 ## Capabilities
